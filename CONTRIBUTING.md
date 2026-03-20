@@ -45,13 +45,13 @@ Recent **npm** versions can swallow `--edit` when invoked via `npx`. The repo’
 - **Never commit** `.env`, `.env.local`, private keys (`.pem`, `.key`), JWT secrets, database URLs with passwords, API keys, or Stellar seed phrases.
 - Use **`.env.example`** (or README) for variable *names* only, with placeholder values.
 - If you accidentally commit a secret: rotate the credential immediately and ask maintainers to purge it from git history.
-- **Gitleaks** runs on push/PR; it reduces risk but is not a substitute for careful review.
+- Prefer running a local secret scanner (e.g. [Gitleaks](https://github.com/gitleaks/gitleaks) CLI) before pushing if you use one; it is optional for this repo.
 
 ---
 
 ## Pull requests
 
-- **All GitHub Actions workflows must pass** (green) before a PR is merged — including API CI, Commitlint, and Gitleaks.
+- **All GitHub Actions workflows must pass** (green) before a PR is merged — **API CI** and **Commitlint**.
 - Link issues with `Closes #123` in the PR description where applicable.
 - Match existing code style; run `npm run lint` and `npm run type-check` locally (also run on pre-commit via Husky).
 

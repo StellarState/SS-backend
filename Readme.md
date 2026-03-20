@@ -208,7 +208,7 @@ pm2 start ecosystem.config.js
 
 ## 🤝 Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for **commit conventions**, **secrets policy**, and **PR / CI requirements** (Conventional Commits, Husky, Gitleaks).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for **commit conventions**, **secrets policy**, and **PR / CI requirements** (Conventional Commits, Husky, CI checks).
 
 ## 📄 License
 
