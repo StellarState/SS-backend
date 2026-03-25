@@ -13,6 +13,7 @@
     "test": "jest",
     "lint": "eslint \"src/**/*.ts\"",
     "type-check": "tsc --noEmit",
+    "validate-api": "node -e \"const YAML = require('yamljs'); const fs = require('fs'); try { const spec = YAML.load('openapi.yaml'); console.log('✅ OpenAPI spec is valid YAML'); console.log(`📋 Found ${Object.keys(spec.paths || {}).length} paths`); } catch(e) { console.error('❌ Invalid OpenAPI spec:', e.message); process.exit(1); }\"",
     "db:migrate": "typeorm migration:run -d src/config/data-source.ts",
     "prepare": "husky"
   },
@@ -28,8 +29,10 @@
     "pg": "^8.11.3",
     "reflect-metadata": "^0.2.1",
     "stellar-sdk": "^11.2.0",
+    "swagger-ui-express": "^5.0.0",
     "typeorm": "^0.3.17",
-    "winston": "^3.11.0"
+    "winston": "^3.11.0",
+    "yamljs": "^0.3.0"
   },
   "devDependencies": {
     "@commitlint/cli": "^20.5.0",
@@ -41,6 +44,8 @@
     "@types/jsonwebtoken": "^9.0.5",
     "@types/node": "^22.0.0",
     "@types/supertest": "^6.0.2",
+    "@types/swagger-ui-express": "^4.1.6",
+    "@types/yamljs": "^0.2.34",
     "@typescript-eslint/eslint-plugin": "^6.18.0",
     "@typescript-eslint/parser": "^6.18.0",
     "eslint": "^8.56.0",
