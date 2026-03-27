@@ -15,6 +15,7 @@
     "type-check": "tsc --noEmit",
     "validate-api": "node -e \"const YAML = require('yamljs'); const fs = require('fs'); try { const spec = YAML.load('openapi.yaml'); console.log('✅ OpenAPI spec is valid YAML'); console.log(`📋 Found ${Object.keys(spec.paths || {}).length} paths`); } catch(e) { console.error('❌ Invalid OpenAPI spec:', e.message); process.exit(1); }\"",
     "db:migrate": "typeorm migration:run -d src/config/data-source.ts",
+    "db:migrate": "node -r ts-node/register ./node_modules/typeorm/cli.js migration:run -d src/config/data-source.ts",
     "prepare": "husky"
   },
   "dependencies": {

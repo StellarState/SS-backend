@@ -20,6 +20,11 @@ export function createAuthRouter(authService: AuthService): Router {
   const controller = createAuthController(authService);
   const authMiddleware = createAuthMiddleware(authService);
 
+  router.use((req, _res, next) => {
+    req.routeBasePath = req.baseUrl;
+    next();
+  });
+
   router.post("/challenge", validateBody(challengeSchema), controller.challenge);
   router.post("/verify", validateBody(verifySchema), controller.verify);
   router.get("/me", authMiddleware, controller.me);
