@@ -6,6 +6,7 @@ import {
   UpdateDateColumn,
   DeleteDateColumn,
   ManyToOne,
+  OneToMany,
   JoinColumn,
   Index,
 } from "typeorm";
@@ -46,6 +47,9 @@ export class Investment {
   @Column({ name: "transaction_hash", type: "varchar", length: 64, nullable: true })
   transactionHash!: string | null;
 
+  @Column({ name: "stellar_operation_index", type: "integer", nullable: true })
+  stellarOperationIndex!: number | null;
+
   @CreateDateColumn({ name: "created_at" })
   createdAt!: Date;
 
@@ -62,4 +66,7 @@ export class Investment {
   @ManyToOne("User", "investments", { onDelete: "CASCADE" })
   @JoinColumn({ name: "investor_id" })
   investor!: User;
+
+  @OneToMany("Transaction", "investment")
+  transactions!: import("./Transaction.model").Transaction[];
 }
