@@ -15,7 +15,7 @@ export class User {
   @PrimaryGeneratedColumn("uuid")
   id!: string;
 
-  @Column({ type: "varchar", length: 56, unique: true })
+  @Column({ name: "stellarAddress", type: "varchar", length: 56, unique: true })
   @Index("idx_users_stellar_address", { unique: true })
   stellarAddress!: string;
 
@@ -23,6 +23,7 @@ export class User {
   email!: string | null;
 
   @Column({
+    name: "userType",
     type: "enum",
     enum: UserType,
     default: UserType.INVESTOR,
@@ -31,6 +32,7 @@ export class User {
   userType!: UserType;
 
   @Column({
+    name: "kycStatus",
     type: "enum",
     enum: KYCStatus,
     default: KYCStatus.PENDING,

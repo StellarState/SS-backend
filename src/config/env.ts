@@ -16,6 +16,13 @@ export interface AppConfig {
   observability: {
     metricsEnabled: boolean;
   };
+  http: {
+    trustProxy: boolean | number | string;
+    corsAllowedOrigins: string[];
+    corsAllowCredentials: boolean;
+    bodySizeLimit: string;
+    shutdownTimeoutMs: number;
+  };
   reconciliation: {
     enabled: boolean;
     intervalMs: number;
@@ -26,6 +33,11 @@ export interface AppConfig {
   stellar: {
     network: SupportedStellarNetwork;
     networkPassphrase: string;
+  };
+  sorobanEscrow: {
+    enabled: boolean;
+    contractId: string | null;
+    fundingMode: "wallet_xdr";
   };
 }
 
@@ -38,6 +50,8 @@ const DEFAULT_RECONCILIATION_INTERVAL_MS = 30 * 1000;
 const DEFAULT_RECONCILIATION_BATCH_SIZE = 25;
 const DEFAULT_RECONCILIATION_GRACE_PERIOD_MS = 60 * 1000;
 const DEFAULT_RECONCILIATION_MAX_RUNTIME_MS = 10 * 1000;
+const DEFAULT_BODY_SIZE_LIMIT = "1mb";
+const DEFAULT_SHUTDOWN_TIMEOUT_MS = 15 * 1000;
 
 function parsePort(value: string | undefined): number {
   if (!value) {
@@ -104,6 +118,40 @@ function parseBoolean(
   }
 }
 
+function parseCsv(value: string | undefined): string[] {
+  if (!value) {
+    return [];
+  }
+
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function parseTrustProxy(value: string | undefined): boolean | number | string {
+  if (!value) {
+    return false;
+  }
+
+  const normalized = value.trim().toLowerCase();
+
+  if (["true", "1", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+
+  if (["false", "0", "no", "off"].includes(normalized)) {
+    return false;
+  }
+
+  const numericValue = Number(value);
+  if (Number.isInteger(numericValue) && numericValue >= 0) {
+    return numericValue;
+  }
+
+  return value;
+}
+
 function resolveNetwork(network: string | undefined): AppConfig["stellar"] {
   switch ((network ?? "testnet").toLowerCase()) {
     case "testnet":
@@ -155,6 +203,21 @@ export function getConfig(): AppConfig {
         "METRICS_ENABLED",
       ),
     },
+    http: {
+      trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
+      corsAllowedOrigins: parseCsv(process.env.CORS_ALLOWED_ORIGINS),
+      corsAllowCredentials: parseBoolean(
+        process.env.CORS_ALLOW_CREDENTIALS,
+        true,
+        "CORS_ALLOW_CREDENTIALS",
+      ),
+      bodySizeLimit: process.env.HTTP_BODY_SIZE_LIMIT ?? DEFAULT_BODY_SIZE_LIMIT,
+      shutdownTimeoutMs: parsePositiveInteger(
+        process.env.HTTP_SHUTDOWN_TIMEOUT_MS,
+        DEFAULT_SHUTDOWN_TIMEOUT_MS,
+        "HTTP_SHUTDOWN_TIMEOUT_MS",
+      ),
+    },
     reconciliation: {
       enabled: parseBoolean(
         process.env.STELLAR_RECONCILIATION_ENABLED,
@@ -183,5 +246,14 @@ export function getConfig(): AppConfig {
       ),
     },
     stellar: resolveNetwork(process.env.STELLAR_NETWORK),
+    sorobanEscrow: {
+      enabled: parseBoolean(
+        process.env.SOROBAN_ESCROW_ENABLED,
+        false,
+        "SOROBAN_ESCROW_ENABLED",
+      ),
+      contractId: process.env.SOROBAN_ESCROW_CONTRACT_ID ?? null,
+      fundingMode: "wallet_xdr",
+    },
   };
 }
