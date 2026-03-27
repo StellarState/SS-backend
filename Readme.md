@@ -102,7 +102,8 @@ IPFS_JWT=your_pinata_jwt_token
 
 # JWT
 JWT_SECRET=your-super-secret-jwt-key
-JWT_EXPIRES_IN=7d
+JWT_EXPIRES_IN=15m
+AUTH_CHALLENGE_TTL_MS=300000
 
 # Email
 SENDGRID_API_KEY=SG.xxxxxxxxxxxxx
@@ -113,10 +114,12 @@ FROM_EMAIL=noreply@stellarsettle.com
 
 ### Authentication
 ```
-POST   /api/auth/wallet-login      # Login with Stellar wallet
-POST   /api/auth/refresh            # Refresh JWT token
-GET    /api/auth/me                 # Get current user
+POST   /api/v1/auth/challenge       # Create a short-lived wallet challenge
+POST   /api/v1/auth/verify          # Verify a signed challenge and issue a JWT
+GET    /api/v1/auth/me              # Get current user from JWT
 ```
+
+Authentication currently uses short-lived access JWTs only. Clients renew access by requesting and signing a new Stellar challenge instead of using refresh tokens.
 
 ### Invoices
 ```
