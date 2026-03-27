@@ -1,5 +1,5 @@
 import type { Server } from "http";
-import { createApp } from "./app";
+import { createApp, createRequestLifecycleTracker } from "./app";
 import dataSource from "./config/database";
 import { getConfig } from "./config/env";
 import { getPaymentVerificationConfig } from "./config/stellar";
@@ -26,6 +26,12 @@ function closeServer(server: Server): Promise<void> {
   });
 }
 
+function waitForTimeout(timeoutMs: number): Promise<false> {
+  return new Promise((resolve) => {
+    setTimeout(() => resolve(false), timeoutMs);
+  });
+}
+
 export async function bootstrap(): Promise<ApplicationRuntime> {
   const config = getConfig();
 
@@ -34,10 +40,19 @@ export async function bootstrap(): Promise<ApplicationRuntime> {
   }
 
   const authService = createAuthService(dataSource, config);
+  const requestLifecycleTracker = createRequestLifecycleTracker();
   const app = createApp({
     authService,
     logger,
     metricsEnabled: config.observability.metricsEnabled,
+    http: {
+      trustProxy: config.http.trustProxy,
+      corsAllowedOrigins: config.http.corsAllowedOrigins,
+      corsAllowCredentials: config.http.corsAllowCredentials,
+      bodySizeLimit: config.http.bodySizeLimit,
+      nodeEnv: config.nodeEnv,
+    },
+    requestLifecycleTracker,
   });
   const server = await new Promise<Server>((resolve) => {
     const listeningServer = app.listen(config.port, () => {
@@ -69,8 +84,21 @@ export async function bootstrap(): Promise<ApplicationRuntime> {
 
     shutdownPromise = (async () => {
       logger.info("Shutting down StellarSettle API.", { signal });
+      const closePromise = closeServer(server);
+      const drained = await Promise.race([
+        requestLifecycleTracker.waitForDrain(config.http.shutdownTimeoutMs),
+        waitForTimeout(config.http.shutdownTimeoutMs),
+      ]);
+
+      if (!drained) {
+        logger.warn("HTTP shutdown grace period elapsed with requests still in flight.", {
+          signal,
+          timeoutMs: config.http.shutdownTimeoutMs,
+        });
+      }
+
       await reconciliationWorker?.stop();
-      await closeServer(server);
+      await Promise.race([closePromise, waitForTimeout(config.http.shutdownTimeoutMs)]);
 
       if (dataSource.isInitialized) {
         await dataSource.destroy();

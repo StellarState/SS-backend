@@ -73,4 +73,7 @@ export class Invoice {
 
   @OneToMany("Investment", "invoice")
   investments!: import("./Investment.model").Investment[];
+
+  @OneToMany("Transaction", "invoice")
+  transactions!: import("./Transaction.model").Transaction[];
 }

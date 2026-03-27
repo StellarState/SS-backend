@@ -180,7 +180,8 @@ kyc_verifications
 notifications
 ```
 
-See [docs/DATABASE.md](docs/DATABASE.md) for complete schema.
+See [docs/DB_WORKFLOW.md](docs/DB_WORKFLOW.md) for the local migration workflow,
+entity-to-schema alignment notes, and transaction foreign-key ownership.
 
 ## 🧪 Testing
 ```bash
