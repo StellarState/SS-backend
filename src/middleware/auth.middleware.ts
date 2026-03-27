@@ -21,7 +21,7 @@ export function createAuthMiddleware(authService: AuthService) {
     try {
       req.user = await authService.getCurrentUser(token);
       next();
-    } catch (error) {
+    } catch (error: unknown) {
       next(error);
     }
   };
