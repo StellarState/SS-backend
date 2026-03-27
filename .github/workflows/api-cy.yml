@@ -4,9 +4,9 @@ name: API CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, develop, feature/openapi-docs]
   pull_request:
-    branches: [main, develop]
+    branches: [main, develop, feature/openapi-docs]
 
 jobs:
   test:
