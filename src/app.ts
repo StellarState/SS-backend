@@ -7,13 +7,19 @@ import { logger, type AppLogger } from "./observability/logger";
 import { getMetricsContentType, MetricsRegistry } from "./observability/metrics";
 import { createAuthRouter } from "./routes/auth.routes";
 import { createInvoiceRouter } from "./routes/invoice.routes";
+import { createSettlementRouter } from "./routes/settlement.routes";
+import { createDashboardRouter } from "./routes/dashboard.routes";
 import type { AuthService } from "./services/auth.service";
 import type { InvoiceService } from "./services/invoice.service";
+import type { SettlementService } from "./services/settlement.service";
+import type { DashboardService } from "./services/dashboard.service";
 import type { AppConfig } from "./config/env";
 
 export interface AppDependencies {
   authService: AuthService;
   invoiceService?: InvoiceService;
+  settlementService?: SettlementService;
+  dashboardService?: DashboardService;
   logger?: AppLogger;
   metricsEnabled?: boolean;
   metricsRegistry?: MetricsRegistry;
@@ -111,6 +117,8 @@ export function createRequestLifecycleTracker(): RequestLifecycleTracker {
 export function createApp({
   authService,
   invoiceService,
+  settlementService,
+  dashboardService,
   logger: appLogger = logger,
   metricsEnabled = true,
   metricsRegistry = new MetricsRegistry(),
@@ -179,6 +187,22 @@ export function createApp({
     app.use("/api/v1/invoices", createInvoiceRouter({
       invoiceService,
       config: ipfsConfig,
+    }));
+  }
+
+  // Add settlement routes if service is provided
+  if (settlementService) {
+    app.use("/api/v1/settlement", createSettlementRouter({
+      settlementService,
+      authService,
+    }));
+  }
+
+  // Add dashboard routes if service is provided
+  if (dashboardService) {
+    app.use("/api/v1/dashboard", createDashboardRouter({
+      dashboardService,
+      authService,
     }));
   }
 
