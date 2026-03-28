@@ -43,6 +43,16 @@ export interface AppConfig {
     contractId: string | null;
     fundingMode: "wallet_xdr";
   };
+  ipfs: {
+    apiUrl: string;
+    jwt: string;
+    maxFileSizeMB: number;
+    allowedMimeTypes: string[];
+    uploadRateLimit: {
+      windowMs: number;
+      maxUploads: number;
+    };
+  };
 }
 
 const DEFAULT_PORT = 3000;
@@ -56,6 +66,16 @@ const DEFAULT_RECONCILIATION_GRACE_PERIOD_MS = 60 * 1000;
 const DEFAULT_RECONCILIATION_MAX_RUNTIME_MS = 10 * 1000;
 const DEFAULT_BODY_SIZE_LIMIT = "1mb";
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 15 * 1000;
+const DEFAULT_IPFS_MAX_FILE_SIZE_MB = 10;
+const DEFAULT_IPFS_ALLOWED_MIME_TYPES = [
+  "application/pdf",
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+];
+const DEFAULT_IPFS_UPLOAD_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
+const DEFAULT_IPFS_UPLOAD_RATE_LIMIT_MAX_UPLOADS = 10;
 
 function parsePort(value: string | undefined): number {
   if (!value) {
@@ -258,6 +278,30 @@ export function getConfig(): AppConfig {
       ),
       contractId: process.env.SOROBAN_ESCROW_CONTRACT_ID ?? null,
       fundingMode: "wallet_xdr",
+    },
+    ipfs: {
+      apiUrl: requireString(process.env.IPFS_API_URL, "IPFS_API_URL"),
+      jwt: requireString(process.env.IPFS_JWT, "IPFS_JWT"),
+      maxFileSizeMB: parsePositiveInteger(
+        process.env.IPFS_MAX_FILE_SIZE_MB,
+        DEFAULT_IPFS_MAX_FILE_SIZE_MB,
+        "IPFS_MAX_FILE_SIZE_MB",
+      ),
+      allowedMimeTypes: parseCsv(process.env.IPFS_ALLOWED_MIME_TYPES).length > 0
+        ? parseCsv(process.env.IPFS_ALLOWED_MIME_TYPES)
+        : DEFAULT_IPFS_ALLOWED_MIME_TYPES,
+      uploadRateLimit: {
+        windowMs: parsePositiveInteger(
+          process.env.IPFS_UPLOAD_RATE_LIMIT_WINDOW_MS,
+          DEFAULT_IPFS_UPLOAD_RATE_LIMIT_WINDOW_MS,
+          "IPFS_UPLOAD_RATE_LIMIT_WINDOW_MS",
+        ),
+        maxUploads: parsePositiveInteger(
+          process.env.IPFS_UPLOAD_RATE_LIMIT_MAX_UPLOADS,
+          DEFAULT_IPFS_UPLOAD_RATE_LIMIT_MAX_UPLOADS,
+          "IPFS_UPLOAD_RATE_LIMIT_MAX_UPLOADS",
+        ),
+      },
     },
   };
 }
