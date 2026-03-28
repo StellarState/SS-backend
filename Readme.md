@@ -170,7 +170,29 @@ GET    /api/dashboard/investor       # Investor analytics
 
 Full API documentation: [docs/API.md](docs/API.md)
 
-## 🗃️ Database Schema
+## � Interactive API Documentation
+
+Interactive OpenAPI documentation is available when running the development server:
+
+- **Development**: `http://localhost:3000/api/docs`
+- **Production**: `https://api.stellarsettle.com/api/docs`
+
+### Documentation Features
+- Interactive API explorer
+- Request/response examples
+- Authentication testing
+- Schema validation
+- Real-time endpoint testing
+
+### Maintaining the Spec
+The OpenAPI specification is maintained in `openapi.yaml`. See [docs/OPENAPI.md](docs/OPENAPI.md) for detailed guidelines.
+
+```bash
+# Validate OpenAPI specification
+npm run validate-api
+```
+
+## �🗃️ Database Schema
 ```sql
 -- Core tables
 users

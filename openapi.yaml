@@ -1,0 +1,305 @@
+openapi: 3.0.3
+info:
+  title: StellarSettle API
+  description: Backend API for StellarSettle invoice financing platform
+  version: 0.1.0
+  contact:
+    name: StellarSettle Team
+    email: api@stellarsettle.com
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:3000
+    description: Development server
+  - url: https://api.stellarsettle.com
+    description: Production server
+
+paths:
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Health check endpoint
+      description: Returns the current health status of the API
+      operationId: healthCheck
+      responses:
+        '200':
+          description: API is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              example:
+                success: true
+                data:
+                  status: healthy
+                  timestamp: "2024-01-01T00:00:00Z"
+                  version: "0.1.0"
+                error: null
+                meta: {}
+
+  /api/v1/auth/wallet-login:
+    post:
+      tags:
+        - Authentication
+      summary: Login with Stellar wallet
+      description: Authenticate user using Stellar wallet signature
+      operationId: walletLogin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WalletLoginRequest'
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              example:
+                success: true
+                data:
+                  user:
+                    id: user_123
+                    walletAddress: GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+                    role: seller
+                    kycStatus: pending
+                  token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+                  refreshToken: refresh_token_here
+                error: null
+                meta: {}
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/auth/refresh:
+    post:
+      tags:
+        - Authentication
+      summary: Refresh JWT token
+      description: Get a new JWT token using refresh token
+      operationId: refreshToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshTokenRequest'
+      responses:
+        '200':
+          description: Token refreshed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              example:
+                success: true
+                data:
+                  token: new_jwt_token_here
+                  refreshToken: new_refresh_token_here
+                error: null
+                meta: {}
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/auth/me:
+    get:
+      tags:
+        - Authentication
+      summary: Get current user
+      description: Get information about the currently authenticated user
+      operationId: getCurrentUser
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: User information retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              example:
+                success: true
+                data:
+                  id: user_123
+                  walletAddress: GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+                  role: seller
+                  kycStatus: pending
+                  createdAt: "2024-01-01T00:00:00Z"
+                  updatedAt: "2024-01-01T00:00:00Z"
+                error: null
+                meta: {}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  schemas:
+    ApiResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          description: Whether the request was successful
+        data:
+          oneOf:
+            - type: object
+            - type: array
+            - type: 'null'
+          description: Response data payload
+        error:
+          $ref: '#/components/schemas/Error'
+        meta:
+          type: object
+          description: Additional metadata (pagination, etc.)
+      required:
+        - success
+        - error
+        - meta
+
+    Error:
+      type: object
+      properties:
+        message:
+          type: string
+          description: Human-readable error message
+        code:
+          type: string
+          description: Machine-readable error code
+        details:
+          type: object
+          description: Additional error details
+      required:
+        - message
+        - code
+
+    WalletLoginRequest:
+      type: object
+      properties:
+        walletAddress:
+          type: string
+          description: Stellar wallet address
+          example: GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+        signature:
+          type: string
+          description: Signed message for authentication
+          example: "signature_here"
+        publicKey:
+          type: string
+          description: Public key for verification
+          example: "public_key_here"
+      required:
+        - walletAddress
+        - signature
+        - publicKey
+
+    RefreshTokenRequest:
+      type: object
+      properties:
+        refreshToken:
+          type: string
+          description: Refresh token
+          example: refresh_token_here
+      required:
+        - refreshToken
+
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          description: User ID
+          example: user_123
+        walletAddress:
+          type: string
+          description: Stellar wallet address
+          example: GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+        role:
+          type: string
+          enum: [seller, investor, admin]
+          description: User role
+        kycStatus:
+          type: string
+          enum: [pending, approved, rejected]
+          description: KYC verification status
+        createdAt:
+          type: string
+          format: date-time
+          description: Account creation timestamp
+        updatedAt:
+          type: string
+          format: date-time
+          description: Last update timestamp
+      required:
+        - id
+        - walletAddress
+        - role
+        - kycStatus
+
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiResponse'
+          example:
+            success: false
+            data: null
+            error:
+              message: "Invalid request parameters"
+              code: "BAD_REQUEST"
+            meta: {}
+
+    Unauthorized:
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiResponse'
+          example:
+            success: false
+            data: null
+            error:
+              message: "Authentication required"
+              code: "UNAUTHORIZED"
+            meta: {}
+
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiResponse'
+          example:
+            success: false
+            data: null
+            error:
+              message: "Internal server error"
+              code: "INTERNAL_ERROR"
+            meta: {}
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT token obtained from login endpoint
+
+tags:
+  - name: Health
+    description: Health check endpoints
+  - name: Authentication
+    description: User authentication and authorization
