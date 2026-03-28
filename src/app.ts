@@ -7,12 +7,16 @@ import { createRequestObservabilityMiddleware } from "./middleware/request-obser
 import { logger, type AppLogger } from "./observability/logger";
 import { getMetricsContentType, MetricsRegistry } from "./observability/metrics";
 import { createAuthRouter } from "./routes/auth.routes";
+import { createInvoiceRouter } from "./routes/invoice.routes";
 import type { AuthService } from "./services/auth.service";
 import type { ApiResponseEnvelope } from "./utils/http-error";
 import dataSource from "./config/database";
+import type { InvoiceService } from "./services/invoice.service";
+import type { AppConfig } from "./config/env";
 
 export interface AppDependencies {
   authService: AuthService;
+  invoiceService?: InvoiceService;
   logger?: AppLogger;
   metricsEnabled?: boolean;
   metricsRegistry?: MetricsRegistry;
@@ -28,6 +32,7 @@ export interface AppDependencies {
       max?: number;
     };
   };
+  ipfsConfig?: AppConfig["ipfs"];
   requestLifecycleTracker?: RequestLifecycleTracker;
 }
 
@@ -113,10 +118,12 @@ export function createRequestLifecycleTracker(): RequestLifecycleTracker {
 
 export function createApp({
   authService,
+  invoiceService,
   logger: appLogger = logger,
   metricsEnabled = true,
   metricsRegistry = new MetricsRegistry(),
   http,
+  ipfsConfig,
   requestLifecycleTracker = createRequestLifecycleTracker(),
 }: AppDependencies) {
   const app = express();
@@ -238,6 +245,14 @@ export function createApp({
     authRouter.use(createAuthRateLimitMiddleware(appLogger));
   }
   app.use("/api/v1/auth", authRouter);
+
+  // Add invoice routes if service is provided
+  if (invoiceService && ipfsConfig) {
+    app.use("/api/v1/invoices", createInvoiceRouter({
+      invoiceService,
+      config: ipfsConfig,
+    }));
+  }
 
   app.use(notFoundMiddleware);
   app.use(createErrorMiddleware(appLogger));
