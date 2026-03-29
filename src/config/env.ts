@@ -1,5 +1,9 @@
+import { config } from "dotenv";
 import "dotenv/config";
 import { Networks } from "stellar-sdk";
+
+// Load environment variables
+config();
 
 type SupportedStellarNetwork = "testnet" | "mainnet" | "futurenet";
 
