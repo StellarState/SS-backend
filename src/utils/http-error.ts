@@ -1,6 +1,4 @@
-
-export class HttpError extends Error {
-  statusCode: number;
+// ---------------- TYPES ----------------
 
 export interface ErrorPayload {
   code: string;
@@ -18,12 +16,20 @@ export interface ApiResponseEnvelope<T = unknown> {
   };
 }
 
+
+// ---------------- APP ERROR ----------------
+
 export class AppError extends Error {
   statusCode: number;
   code: string;
   details?: unknown;
 
-  constructor(statusCode: number, message: string, code: string, details?: unknown) {
+  constructor(
+    statusCode: number,
+    message: string,
+    code: string,
+    details?: unknown
+  ) {
     super(message);
     this.name = "AppError";
     this.statusCode = statusCode;
@@ -32,19 +38,23 @@ export class AppError extends Error {
   }
 }
 
+
+// ---------------- HTTP ERROR ----------------
+
 export class HttpError extends Error {
   statusCode: number;
   code: string;
-
   details?: unknown;
 
-  constructor(statusCode: number, message: string, details?: unknown) {
+  constructor(
+    statusCode: number,
+    message: string,
+    details?: unknown
+  ) {
     super(message);
     this.name = "HttpError";
     this.statusCode = statusCode;
-
     this.code = `HTTP_${statusCode}`;
-
     this.details = details;
   }
 }

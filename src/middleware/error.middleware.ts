@@ -1,88 +1,56 @@
 import type { NextFunction, Request, Response } from "express";
 import type { AppLogger } from "../observability/logger";
 
-import { HttpError } from "../utils/http-error";
-
-import type { ApiResponseEnvelope } from "../utils/http-error";
 import { AppError, HttpError } from "../utils/http-error";
 
-
-export function notFoundMiddleware(_req: Request, _res: Response, next: NextFunction) {
+export function notFoundMiddleware(
+  _req: Request,
+  _res: Response,
+  next: NextFunction
+) {
   next(new HttpError(404, "Route not found."));
 }
-
-
-function sendEnvelopeResponse<T>(res: Response, statusCode: number, payload: ApiResponseEnvelope<T>) {
-  res.status(statusCode).json(payload);
-}
-
 
 export function createErrorMiddleware(logger: AppLogger) {
   return (
     error: unknown,
     req: Request,
     res: Response,
-    next: NextFunction,
+    _next: NextFunction
   ): void => {
-    void next;
-
-
-    if (error instanceof HttpError) {
 
     if (error instanceof AppError || error instanceof HttpError) {
-
       logger.warn("HTTP request failed.", {
-        requestId: req.requestId,
         method: req.method,
         path: req.path,
         statusCode: error.statusCode,
-
         error: error.message,
       });
+
       res.status(error.statusCode).json({
-        error: error.message,
-        details: error.details,
-      });
-
-        code: error.code,
-        error: error.message,
-      });
-
-      const envelope: ApiResponseEnvelope = {
         success: false,
         error: {
           code: error.code,
           message: error.message,
         },
-      };
-
-      sendEnvelopeResponse(res, error.statusCode, envelope);
+      });
 
       return;
     }
 
     logger.error("Unhandled request error.", {
-      requestId: req.requestId,
       method: req.method,
       path: req.path,
       statusCode: 500,
       error: error instanceof Error ? error.message : "Unknown error",
     });
 
-
     res.status(500).json({
-      error: "Internal server error.",
-    });
-
-    const envelope: ApiResponseEnvelope = {
       success: false,
       error: {
         code: "INTERNAL_ERROR",
         message: "Internal server error.",
       },
-    };
-
-    sendEnvelopeResponse(res, 500, envelope);
-
+    });
   };
 }

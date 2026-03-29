@@ -17,6 +17,16 @@ module.exports = {
     "prettier",
   ],
   ignorePatterns: ["dist/", "node_modules/", "coverage/", "*.cjs"],
+  rules: {
+    "@typescript-eslint/no-unused-vars": [
+      "error",
+      {
+        argsIgnorePattern: "^_",
+        varsIgnorePattern: "^_",
+        caughtErrorsIgnorePattern: "^_",
+      },
+    ],
+  },
   overrides: [
     {
       files: ["tests/**/*.ts"],
