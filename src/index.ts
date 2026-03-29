@@ -1,11 +1,20 @@
 import type { Server } from "http";
+
 import { createApp } from "./app";
+
+import { createApp, createRequestLifecycleTracker } from "./app";
+
 import dataSource from "./config/database";
 import { getConfig } from "./config/env";
 import { getPaymentVerificationConfig } from "./config/stellar";
 import { logger } from "./observability/logger";
 import { createAuthService } from "./services/auth.service";
+
 import { createNotificationService } from "./services/notification.service";
+
+import { createIPFSService } from "./services/ipfs.service";
+import { createInvoiceService } from "./services/invoice.service";
+
 import { createVerifyPaymentService } from "./services/stellar/verify-payment.service";
 import { createReconcilePendingStellarStateWorker } from "./workers/reconcile-pending-stellar-state.worker";
 
@@ -21,10 +30,19 @@ function closeServer(server: Server): Promise<void> {
         reject(error);
         return;
       }
+
       resolve();
     });
   });
 }
+
+
+function waitForTimeout(timeoutMs: number): Promise<false> {
+  return new Promise((resolve) => {
+    setTimeout(() => resolve(false), timeoutMs);
+  });
+}
+
 
 export async function bootstrap(): Promise<ApplicationRuntime> {
   const config = getConfig();
@@ -34,6 +52,7 @@ export async function bootstrap(): Promise<ApplicationRuntime> {
   }
 
   const authService = createAuthService(dataSource, config);
+
   const notificationService = createNotificationService(dataSource);
 
   const app = createApp({
@@ -41,6 +60,26 @@ export async function bootstrap(): Promise<ApplicationRuntime> {
     notificationService,
     logger,
     metricsEnabled: config.observability.metricsEnabled,
+  });
+
+  const ipfsService = createIPFSService(config.ipfs);
+  const invoiceService = createInvoiceService(dataSource, ipfsService);
+  const requestLifecycleTracker = createRequestLifecycleTracker();
+  const app = createApp({
+    authService,
+    invoiceService,
+    logger,
+    metricsEnabled: config.observability.metricsEnabled,
+    http: {
+      trustProxy: config.http.trustProxy,
+      corsAllowedOrigins: config.http.corsAllowedOrigins,
+      corsAllowCredentials: config.http.corsAllowCredentials,
+      bodySizeLimit: config.http.bodySizeLimit,
+      nodeEnv: config.nodeEnv,
+      rateLimit: config.http.rateLimit,
+    },
+    ipfsConfig: config.ipfs,
+    requestLifecycleTracker,
   });
 
   const server = await new Promise<Server>((resolve) => {
@@ -73,8 +112,26 @@ export async function bootstrap(): Promise<ApplicationRuntime> {
 
     shutdownPromise = (async () => {
       logger.info("Shutting down StellarSettle API.", { signal });
+
       await reconciliationWorker?.stop();
       await closeServer(server);
+
+      const closePromise = closeServer(server);
+      const drained = await Promise.race([
+        requestLifecycleTracker.waitForDrain(config.http.shutdownTimeoutMs),
+        waitForTimeout(config.http.shutdownTimeoutMs),
+      ]);
+
+      if (!drained) {
+        logger.warn("HTTP shutdown grace period elapsed with requests still in flight.", {
+          signal,
+          timeoutMs: config.http.shutdownTimeoutMs,
+        });
+      }
+
+      await reconciliationWorker?.stop();
+      await Promise.race([closePromise, waitForTimeout(config.http.shutdownTimeoutMs)]);
+
 
       if (dataSource.isInitialized) {
         await dataSource.destroy();
@@ -94,7 +151,14 @@ export async function bootstrap(): Promise<ApplicationRuntime> {
     void stop("SIGINT");
   });
 
+
   return { stop, server };
+
+  return {
+    stop,
+    server,
+  };
+
 }
 
 if (require.main === module) {
@@ -104,4 +168,8 @@ if (require.main === module) {
     });
     process.exitCode = 1;
   });
+
 }
+
+}
+
