@@ -7,6 +7,8 @@ import { logger } from "./observability/logger";
 import { createAuthService } from "./services/auth.service";
 import { createIPFSService } from "./services/ipfs.service";
 import { createInvoiceService } from "./services/invoice.service";
+import { createSettlementService } from "./services/settlement.service";
+import { createDashboardService } from "./services/dashboard.service";
 import { createVerifyPaymentService } from "./services/stellar/verify-payment.service";
 import { createReconcilePendingStellarStateWorker } from "./workers/reconcile-pending-stellar-state.worker";
 
@@ -44,10 +46,14 @@ export async function bootstrap(): Promise<ApplicationRuntime> {
   const authService = createAuthService(dataSource, config);
   const ipfsService = createIPFSService(config.ipfs);
   const invoiceService = createInvoiceService(dataSource, ipfsService);
+  const settlementService = createSettlementService(dataSource);
+  const dashboardService = createDashboardService(dataSource);
   const requestLifecycleTracker = createRequestLifecycleTracker();
   const app = createApp({
     authService,
     invoiceService,
+    settlementService,
+    dashboardService,
     logger,
     metricsEnabled: config.observability.metricsEnabled,
     http: {
@@ -73,11 +79,11 @@ export async function bootstrap(): Promise<ApplicationRuntime> {
 
   const reconciliationWorker = config.reconciliation.enabled
     ? createReconcilePendingStellarStateWorker(
-        dataSource,
-        createVerifyPaymentService(dataSource, getPaymentVerificationConfig()),
-        config.reconciliation,
-        logger,
-      )
+      dataSource,
+      createVerifyPaymentService(dataSource, getPaymentVerificationConfig()),
+      config.reconciliation,
+      logger,
+    )
     : null;
 
   reconciliationWorker?.start();
