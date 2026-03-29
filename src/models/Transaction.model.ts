@@ -7,6 +7,7 @@ import {
   Index,
 } from "typeorm";
 import { TransactionType, TransactionStatus } from "../types/enums";
+import type { Investment } from "./Investment.model";
 
 @Entity("transactions")
 export class Transaction {
@@ -16,6 +17,10 @@ export class Transaction {
   @Column({ name: "user_id", type: "uuid" })
   @Index("idx_transactions_user_id")
   userId!: string;
+
+  @Column({ name: "investment_id", type: "uuid", nullable: true })
+  @Index("idx_transactions_investment_id")
+  investmentId!: string | null;
 
   @Column({
     type: "enum",
@@ -29,6 +34,9 @@ export class Transaction {
 
   @Column({ name: "stellar_tx_hash", type: "varchar", length: 64, nullable: true })
   stellarTxHash!: string | null;
+
+  @Column({ name: "stellar_operation_index", type: "integer", nullable: true })
+  stellarOperationIndex!: number | null;
 
   @Column({
     type: "enum",
@@ -44,4 +52,8 @@ export class Transaction {
   @ManyToOne("User", "transactions", { onDelete: "CASCADE" })
   @JoinColumn({ name: "user_id" })
   user!: import("./User.model").User;
+
+  @ManyToOne("Investment", "transactions", { onDelete: "SET NULL", nullable: true })
+  @JoinColumn({ name: "investment_id" })
+  investment!: Investment | null;
 }

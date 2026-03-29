@@ -90,6 +90,12 @@ DATABASE_URL=postgresql://user:password@localhost:5432/stellarsettle
 # Stellar
 STELLAR_NETWORK=testnet
 STELLAR_HORIZON_URL=https://horizon-testnet.stellar.org
+STELLAR_USDC_ASSET_CODE=USDC
+STELLAR_USDC_ASSET_ISSUER=GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+STELLAR_ESCROW_PUBLIC_KEY=GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+STELLAR_VERIFY_ALLOWED_AMOUNT_DELTA=0.0001
+STELLAR_VERIFY_RETRY_ATTEMPTS=3
+STELLAR_VERIFY_RETRY_BASE_DELAY_MS=250
 PLATFORM_SECRET_KEY=SXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 
 # Smart Contracts
@@ -102,7 +108,18 @@ IPFS_JWT=your_pinata_jwt_token
 
 # JWT
 JWT_SECRET=your-super-secret-jwt-key
-JWT_EXPIRES_IN=7d
+JWT_EXPIRES_IN=15m
+AUTH_CHALLENGE_TTL_MS=300000
+
+# Observability
+METRICS_ENABLED=true
+
+# Background reconciliation
+STELLAR_RECONCILIATION_ENABLED=false
+STELLAR_RECONCILIATION_INTERVAL_MS=30000
+STELLAR_RECONCILIATION_BATCH_SIZE=25
+STELLAR_RECONCILIATION_GRACE_PERIOD_MS=60000
+STELLAR_RECONCILIATION_MAX_RUNTIME_MS=10000
 
 # Email
 SENDGRID_API_KEY=SG.xxxxxxxxxxxxx
@@ -113,10 +130,12 @@ FROM_EMAIL=noreply@stellarsettle.com
 
 ### Authentication
 ```
-POST   /api/auth/wallet-login      # Login with Stellar wallet
-POST   /api/auth/refresh            # Refresh JWT token
-GET    /api/auth/me                 # Get current user
+POST   /api/v1/auth/challenge       # Create a short-lived wallet challenge
+POST   /api/v1/auth/verify          # Verify a signed challenge and issue a JWT
+GET    /api/v1/auth/me              # Get current user from JWT
 ```
+
+Authentication currently uses short-lived access JWTs only. Clients renew access by requesting and signing a new Stellar challenge instead of using refresh tokens.
 
 ### Invoices
 ```
@@ -190,9 +209,16 @@ npm run test:e2e
 
 ## 📊 Monitoring
 
-- Health check: `GET /health`
+- Health check: `GET /health` (includes process uptime and request ID)
 - Metrics: `GET /metrics` (Prometheus format)
-- Logs: Winston with daily rotation
+- Metrics labels are intentionally low-cardinality: `method`, normalized route template, and `status_class`
+- Logs: Winston JSON logs with `X-Request-Id` correlation IDs
+
+## Background Reconciliation
+
+- Enable `STELLAR_RECONCILIATION_ENABLED=true` to start the in-process worker.
+- The worker scans a bounded batch of stale pending investments / transactions and reuses the existing Stellar payment verification path for idempotent reconciliation.
+- Current deployment assumption: run the worker on a single replica unless you add your own leader-election or advisory-lock strategy.
 
 ## 🚢 Deployment
 ```bash
@@ -208,7 +234,7 @@ pm2 start ecosystem.config.js
 
 ## 🤝 Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for **commit conventions**, **secrets policy**, and **PR / CI requirements** (Conventional Commits, Husky, Gitleaks).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for **commit conventions**, **secrets policy**, and **PR / CI requirements** (Conventional Commits, Husky, CI checks).
 
 ## 📄 License
 
