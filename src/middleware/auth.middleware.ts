@@ -5,6 +5,7 @@ import { HttpError } from "../utils/http-error";
 
 import jwt from "jsonwebtoken";
 import type { AuthService } from "../services/auth.service";
+import type { AuthenticatedRequest } from "../types/auth";
 import { HttpError } from "../utils/http-error";
 import { UserType, KYCStatus } from "../types/enums";
 
@@ -15,7 +16,11 @@ interface AuthTokenPayload {
 
 
 export function createAuthMiddleware(authService: AuthService) {
-  return async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
+  return async (
+    req: AuthenticatedRequest,
+    _res: Response,
+    next: NextFunction
+  ): Promise<void> => {
     const authorizationHeader = req.headers.authorization;
 
     if (!authorizationHeader?.startsWith("Bearer ")) {
@@ -73,14 +78,14 @@ export function authenticateJWT(
 
     // Create a minimal user object for the request
     // The full user data would be fetched from the database if needed
-    req.user = {
+    (req as AuthenticatedRequest).user = {
       id: payload.sub,
       stellarAddress: payload.stellarAddress,
-      email: null, // Not available from JWT
-      userType: null as unknown as UserType, // Not available from JWT
-      kycStatus: null as unknown as KYCStatus, // Not available from JWT
-      createdAt: new Date(), // Placeholder
-      updatedAt: new Date(), // Placeholder
+      email: null,
+      userType: null as unknown as UserType,
+      kycStatus: null as unknown as KYCStatus,
+      createdAt: new Date(),
+      updatedAt: new Date(),
     };
 
     next();
