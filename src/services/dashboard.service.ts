@@ -70,7 +70,7 @@ class TypeOrmDashboardRepository implements DashboardRepositoryContract {
     async getSellerMetrics(sellerId: string): Promise<SellerDashboardMetrics> {
         // Get all invoices for seller (excluding soft deletes)
         const invoices = await this.invoiceRepository.find({
-            where: { sellerId, deletedAt: null },
+            where: { sellerId, deletedAt: undefined },
             order: { dueDate: "ASC" },
         });
 
@@ -124,7 +124,7 @@ class TypeOrmDashboardRepository implements DashboardRepositoryContract {
     async getInvestorMetrics(investorId: string): Promise<InvestorDashboardMetrics> {
         // Get all investments for investor (excluding soft deletes)
         const investments = await this.investmentRepository.find({
-            where: { investorId, deletedAt: null },
+            where: { investorId, deletedAt: undefined },
             relations: ["invoice"],
             order: { createdAt: "ASC" },
         });
