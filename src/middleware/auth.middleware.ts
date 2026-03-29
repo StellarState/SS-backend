@@ -1,7 +1,9 @@
 import type { NextFunction, Request, Response } from "express";
 import jwt from "jsonwebtoken";
+
 import type { AuthService } from "../services/auth.service";
 import type { AuthenticatedRequest } from "../types/auth";
+
 import { HttpError } from "../utils/http-error";
 import { UserType, KYCStatus } from "../types/enums";
 
@@ -16,25 +18,20 @@ export function createAuthMiddleware(authService: AuthService) {
     _res: Response,
     next: NextFunction
   ): Promise<void> => {
-    const authorizationHeader = req.headers.authorization;
+    const authHeader = req.headers.authorization;
 
-    if (!authorizationHeader?.startsWith("Bearer ")) {
+    if (!authHeader?.startsWith("Bearer ")) {
       next(new HttpError(401, "Authorization token is required."));
       return;
     }
 
-    const token = authorizationHeader.slice("Bearer ".length).trim();
-
-    if (!token) {
-      next(new HttpError(401, "Authorization token is required."));
-      return;
-    }
+    const token = authHeader.slice(7);
 
     try {
       req.user = await authService.getCurrentUser(token);
       next();
-    } catch (error) {
-      next(error);
+    } catch {
+      next(new HttpError(401, "Invalid or expired token."));
     }
   };
 }
@@ -42,37 +39,23 @@ export function createAuthMiddleware(authService: AuthService) {
 export function authenticateJWT(
   req: Request,
   _res: Response,
-  next: NextFunction,
+  next: NextFunction
 ): void {
-  const authorizationHeader = req.headers.authorization;
+  const authHeader = req.headers.authorization;
 
-  if (!authorizationHeader?.startsWith("Bearer ")) {
+  if (!authHeader?.startsWith("Bearer ")) {
     next(new HttpError(401, "Authorization token is required."));
     return;
   }
 
-  const token = authorizationHeader.slice("Bearer ".length).trim();
-
-  if (!token) {
-    next(new HttpError(401, "Authorization token is required."));
-    return;
-  }
+  const token = authHeader.slice(7);
 
   try {
-    const jwtSecret = process.env.JWT_SECRET;
-    if (!jwtSecret) {
-      throw new Error("JWT_SECRET not configured");
-    }
+    const secret = process.env.JWT_SECRET;
+    if (!secret) throw new Error("JWT_SECRET missing");
 
-    const payload = jwt.verify(token, jwtSecret) as AuthTokenPayload;
+    const payload = jwt.verify(token, secret) as AuthTokenPayload;
 
-    if (!payload.sub || !payload.stellarAddress) {
-      next(new HttpError(401, "Invalid token payload."));
-      return;
-    }
-
-    // Create a minimal user object for the request
-    // The full user data would be fetched from the database if needed
     (req as AuthenticatedRequest).user = {
       id: payload.sub,
       stellarAddress: payload.stellarAddress,
@@ -84,11 +67,7 @@ export function authenticateJWT(
     };
 
     next();
-  } catch (error) {
-    if (error instanceof jwt.JsonWebTokenError) {
-      next(new HttpError(401, "Invalid or expired token."));
-      return;
-    }
-    next(error);
+  } catch {
+    next(new HttpError(401, "Invalid or expired token."));
   }
 }

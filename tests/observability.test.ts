@@ -119,7 +119,11 @@ describe("Observability", () => {
       .expect(200);
 
     expect(response.headers["x-request-id"]).toBe("client-request-id");
+
+    expect(response.body.requestId).toBe("client-request-id");
+
     expect(response.body.data?.requestId).toBe("client-request-id");
+
   });
 
   it("exposes Prometheus metrics for matched routes and unmatched requests", async () => {

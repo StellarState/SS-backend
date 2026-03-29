@@ -43,7 +43,9 @@ function createTransaction(overrides: Partial<Transaction> = {}): Transaction {
   return {
     id: overrides.id ?? crypto.randomUUID(),
     userId: overrides.userId ?? crypto.randomUUID(),
+
     invoiceId: overrides.invoiceId ?? null,
+
     investmentId: overrides.investmentId ?? null,
     type: overrides.type ?? TransactionType.INVESTMENT,
     amount: overrides.amount ?? "100.0000",
@@ -52,7 +54,9 @@ function createTransaction(overrides: Partial<Transaction> = {}): Transaction {
     status: overrides.status ?? TransactionStatus.PENDING,
     timestamp: overrides.timestamp ?? new Date(),
     user: overrides.user as Transaction["user"],
+
     invoice: overrides.invoice as Transaction["invoice"],
+
     investment: overrides.investment as Transaction["investment"],
   };
 }
@@ -162,7 +166,9 @@ describe("VerifyPaymentService", () => {
     expect(savedTransactions).toHaveLength(1);
     expect(savedTransactions[0].status).toBe(TransactionStatus.COMPLETED);
     expect(savedTransactions[0].stellarTxHash).toBe(stellarTxHash);
+
     expect(savedTransactions[0].invoiceId).toBe(context.investment.invoiceId);
+
 
     const secondResult = await context.service.verifyPayment({
       investmentId: context.investment.id,

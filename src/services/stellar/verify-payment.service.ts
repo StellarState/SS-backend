@@ -189,6 +189,7 @@ export class VerifyPaymentService {
         existingTransaction ??
         unitOfWork.createTransaction({
           investmentId: lockedInvestment.id,
+
           invoiceId: lockedInvestment.invoiceId,
           userId: lockedInvestment.investorId,
           type: TransactionType.INVESTMENT,
@@ -197,7 +198,9 @@ export class VerifyPaymentService {
         });
 
       transaction.userId = lockedInvestment.investorId;
+
       transaction.invoiceId = lockedInvestment.invoiceId;
+
       transaction.investmentId = lockedInvestment.id;
       transaction.type = TransactionType.INVESTMENT;
       transaction.amount = lockedInvestment.investmentAmount;
