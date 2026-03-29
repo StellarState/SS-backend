@@ -1,4 +1,4 @@
-import { DataSource, Repository } from "typeorm";
+import { DataSource } from "typeorm";
 import { Invoice } from "../models/Invoice.model";
 import { Investment } from "../models/Investment.model";
 import { Transaction } from "../models/Transaction.model";
