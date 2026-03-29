@@ -22,6 +22,11 @@ export interface AppConfig {
     corsAllowCredentials: boolean;
     bodySizeLimit: string;
     shutdownTimeoutMs: number;
+    rateLimit?: {
+      enabled: boolean;
+      windowMs: number;
+      max: number;
+    };
   };
   reconciliation: {
     enabled: boolean;
@@ -225,7 +230,7 @@ export function getConfig(): AppConfig {
     },
     http: {
       trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
-      corsAllowedOrigins: parseCsv(process.env.CORS_ALLOWED_ORIGINS),
+      corsAllowedOrigins: parseCsv(process.env.CORS_ORIGIN ?? process.env.CORS_ALLOWED_ORIGINS),
       corsAllowCredentials: parseBoolean(
         process.env.CORS_ALLOW_CREDENTIALS,
         true,
@@ -237,6 +242,15 @@ export function getConfig(): AppConfig {
         DEFAULT_SHUTDOWN_TIMEOUT_MS,
         "HTTP_SHUTDOWN_TIMEOUT_MS",
       ),
+      rateLimit: {
+        enabled: parseBoolean(process.env.RATE_LIMIT_ENABLED, true, "RATE_LIMIT_ENABLED"),
+        windowMs: parsePositiveInteger(
+          process.env.RATE_LIMIT_WINDOW_MS,
+          60 * 1000,
+          "RATE_LIMIT_WINDOW_MS",
+        ),
+        max: parsePositiveInteger(process.env.RATE_LIMIT_MAX, 100, "RATE_LIMIT_MAX"),
+      },
     },
     reconciliation: {
       enabled: parseBoolean(

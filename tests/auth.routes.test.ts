@@ -218,6 +218,11 @@ describe("Auth routes", () => {
 
     const response = await request(app).get("/api/v1/auth/me").expect(401);
 
-    expect(response.body.error).toBe("Authorization token is required.");
+    expect(response.body).toMatchObject({
+      success: false,
+      error: {
+        message: "Authorization token is required.",
+      },
+    });
   });
 });

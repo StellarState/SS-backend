@@ -2,12 +2,15 @@ import cors from "cors";
 import express from "express";
 import helmet from "helmet";
 import { createErrorMiddleware, notFoundMiddleware } from "./middleware/error.middleware";
+import { applyRateLimiters, createAuthRateLimitMiddleware } from "./middleware/rate-limit.middleware";
 import { createRequestObservabilityMiddleware } from "./middleware/request-observability.middleware";
 import { logger, type AppLogger } from "./observability/logger";
 import { getMetricsContentType, MetricsRegistry } from "./observability/metrics";
 import { createAuthRouter } from "./routes/auth.routes";
 import { createInvoiceRouter } from "./routes/invoice.routes";
 import type { AuthService } from "./services/auth.service";
+import type { ApiResponseEnvelope } from "./utils/http-error";
+import dataSource from "./config/database";
 import type { InvoiceService } from "./services/invoice.service";
 import type { AppConfig } from "./config/env";
 
@@ -23,6 +26,11 @@ export interface AppDependencies {
     corsAllowCredentials?: boolean;
     bodySizeLimit?: string;
     nodeEnv?: string;
+    rateLimit?: {
+      enabled?: boolean;
+      windowMs?: number;
+      max?: number;
+    };
   };
   ipfsConfig?: AppConfig["ipfs"];
   requestLifecycleTracker?: RequestLifecycleTracker;
@@ -124,6 +132,7 @@ export function createApp({
   const bodySizeLimit = http?.bodySizeLimit ?? "1mb";
   const trustProxy = http?.trustProxy ?? false;
   const nodeEnv = http?.nodeEnv ?? process.env.NODE_ENV ?? "development";
+  const rateLimitEnabled = http?.rateLimit?.enabled ?? true;
 
   app.set("trust proxy", trustProxy);
   app.use(helmet());
@@ -137,6 +146,16 @@ export function createApp({
     ),
   );
   app.use(express.json({ limit: bodySizeLimit }));
+  
+  if (rateLimitEnabled) {
+    applyRateLimiters(app, appLogger, {
+      global: {
+        windowMs: http?.rateLimit?.windowMs,
+        max: http?.rateLimit?.max,
+      },
+    });
+  }
+  
   app.use((req, res, next) => {
     requestLifecycleTracker.onRequestStart();
     const finalize = () => {
@@ -158,11 +177,60 @@ export function createApp({
   );
 
   app.get("/health", (req, res) => {
-    res.status(200).json({
-      status: "ok",
-      uptimeSeconds: Number(process.uptime().toFixed(3)),
-      requestId: req.requestId,
-    });
+    const envelope: ApiResponseEnvelope<{ status: string; timestamp: string; uptimeSeconds: number; requestId: string }> = {
+      success: true,
+      data: {
+        status: "ok",
+        timestamp: new Date().toISOString(),
+        uptimeSeconds: Number(process.uptime().toFixed(3)),
+        requestId: req.requestId ?? "unknown",
+      },
+    };
+    res.status(200).json(envelope);
+  });
+
+  app.get("/health/db", async (req, res) => {
+    try {
+      if (!dataSource.isInitialized) {
+        const envelope: ApiResponseEnvelope<{ requestId: string }> = {
+          success: false,
+          error: {
+            code: "DB_NOT_INITIALIZED",
+            message: "Database connection is not initialized.",
+          },
+          data: {
+            requestId: req.requestId ?? "unknown",
+          },
+        };
+        res.status(503).json(envelope);
+        return;
+      }
+
+      await dataSource.query("SELECT 1");
+      
+      const envelope: ApiResponseEnvelope<{ status: string; timestamp: string; connection: string; requestId: string }> = {
+        success: true,
+        data: {
+          status: "ok",
+          timestamp: new Date().toISOString(),
+          connection: "postgres",
+          requestId: req.requestId ?? "unknown",
+        },
+      };
+      res.status(200).json(envelope);
+    } catch (error) {
+      const envelope: ApiResponseEnvelope<{ requestId: string }> = {
+        success: false,
+        error: {
+          code: "DB_CONNECTION_ERROR",
+          message: "Database connection failed.",
+        },
+        data: {
+          requestId: req.requestId ?? "unknown",
+        },
+      };
+      res.status(503).json(envelope);
+    }
   });
 
   if (metricsEnabled) {
@@ -172,7 +240,11 @@ export function createApp({
     });
   }
 
-  app.use("/api/v1/auth", createAuthRouter(authService));
+  const authRouter = createAuthRouter(authService);
+  if (rateLimitEnabled) {
+    authRouter.use(createAuthRateLimitMiddleware(appLogger));
+  }
+  app.use("/api/v1/auth", authRouter);
 
   // Add invoice routes if service is provided
   if (invoiceService && ipfsConfig) {
