@@ -9,6 +9,9 @@ import {
 import { TransactionType, TransactionStatus } from "../types/enums";
 import type { Investment } from "./Investment.model";
 
+import type { Invoice } from "./Invoice.model";
+
+
 @Entity("transactions")
 export class Transaction {
   @PrimaryGeneratedColumn("uuid")
@@ -21,6 +24,12 @@ export class Transaction {
   @Column({ name: "investment_id", type: "uuid", nullable: true })
   @Index("idx_transactions_investment_id")
   investmentId!: string | null;
+
+
+  @Column({ name: "invoice_id", type: "uuid", nullable: true })
+  @Index("idx_transactions_invoice_id")
+  invoiceId!: string | null;
+
 
   @Column({
     type: "enum",
@@ -56,4 +65,10 @@ export class Transaction {
   @ManyToOne("Investment", "transactions", { onDelete: "SET NULL", nullable: true })
   @JoinColumn({ name: "investment_id" })
   investment!: Investment | null;
+
+
+  @ManyToOne("Invoice", "transactions", { onDelete: "SET NULL", nullable: true })
+  @JoinColumn({ name: "invoice_id" })
+  invoice!: Invoice | null;
+
 }
