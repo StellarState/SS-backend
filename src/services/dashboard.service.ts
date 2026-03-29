@@ -1,4 +1,4 @@
-import { DataSource, Repository } from "typeorm";
+import { DataSource, Repository, IsNull } from "typeorm";
 import { Invoice } from "../models/Invoice.model";
 import { Investment } from "../models/Investment.model";
 import { InvoiceStatus, InvestmentStatus } from "../types/enums";
@@ -70,7 +70,7 @@ class TypeOrmDashboardRepository implements DashboardRepositoryContract {
     async getSellerMetrics(sellerId: string): Promise<SellerDashboardMetrics> {
         // Get all invoices for seller (excluding soft deletes)
         const invoices = await this.invoiceRepository.find({
-            where: { sellerId, deletedAt: undefined },
+            where: { sellerId, deletedAt: IsNull() },
             order: { dueDate: "ASC" },
         });
 
@@ -124,7 +124,7 @@ class TypeOrmDashboardRepository implements DashboardRepositoryContract {
     async getInvestorMetrics(investorId: string): Promise<InvestorDashboardMetrics> {
         // Get all investments for investor (excluding soft deletes)
         const investments = await this.investmentRepository.find({
-            where: { investorId, deletedAt: undefined },
+            where: { investorId, deletedAt: IsNull() },
             relations: ["invoice"],
             order: { createdAt: "ASC" },
         });
