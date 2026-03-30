@@ -12,10 +12,12 @@ import { getMetricsContentType, MetricsRegistry } from "./observability/metrics"
 import { createAuthRouter } from "./routes/auth.routes";
 import { createNotificationRouter } from "./routes/notification.routes";
 import { createInvoiceRouter } from "./routes/invoice.routes";
+import { createInvestmentRouter } from "./routes/investment.routes";
 
 import type { AuthService } from "./services/auth.service";
 import type { NotificationService } from "./services/notification.service";
 import type { InvoiceService } from "./services/invoice.service";
+import type { InvestmentService } from "./services/investment.service";
 
 import dataSource from "./config/database";
 
@@ -49,6 +51,7 @@ export interface AppDependencies {
   authService: AuthService;
   notificationService?: NotificationService;
   invoiceService?: InvoiceService;
+  investmentService?: InvestmentService;
   logger?: AppLogger;
   metricsEnabled?: boolean;
   metricsRegistry?: MetricsRegistry;
@@ -71,6 +74,7 @@ export function createApp({
   authService,
   notificationService,
   invoiceService,
+  investmentService,
   logger: appLogger = logger,
   metricsEnabled = true,
   metricsRegistry = new MetricsRegistry(),
@@ -163,6 +167,10 @@ export function createApp({
 
   if (invoiceService && config) {
     app.use("/api/v1/invoices", createInvoiceRouter({ invoiceService, config }));
+  }
+
+  if (investmentService) {
+    app.use("/api/v1/investments", createInvestmentRouter({ investmentService, authService }));
   }
 
   app.use(notFoundMiddleware);
