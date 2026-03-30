@@ -52,6 +52,7 @@ export interface AppDependencies {
   logger?: AppLogger;
   metricsEnabled?: boolean;
   metricsRegistry?: MetricsRegistry;
+  ipfsConfig?: any;
 
   http?: {
     trustProxy?: boolean | number | string;
@@ -73,6 +74,7 @@ export function createApp({
   logger: appLogger = logger,
   metricsEnabled = true,
   metricsRegistry = new MetricsRegistry(),
+  ipfsConfig,
   http,
 }: AppDependencies) {
   const app = express();
@@ -159,8 +161,8 @@ export function createApp({
     app.use("/api/v1/notifications", createNotificationRouter(notificationService, authService));
   }
 
-  if (invoiceService) {
-    app.use("/api/v1/invoices", createInvoiceRouter({ invoiceService, config: {} as never }));
+  if (invoiceService && ipfsConfig) {
+    app.use("/api/v1/invoices", createInvoiceRouter({ invoiceService, config: ipfsConfig }));
   }
 
   app.use(notFoundMiddleware);
