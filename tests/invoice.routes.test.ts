@@ -12,13 +12,18 @@ describe("Invoice Routes", () => {
   let mockInvoiceService: any;
 
   const mockConfig = {
-    apiUrl: "https://api.pinata.cloud",
-    jwt: "test-jwt-token",
-    maxFileSizeMB: 10,
-    allowedMimeTypes: ["application/pdf", "image/jpeg", "image/png"],
-    uploadRateLimit: {
-      windowMs: 900000,
-      maxUploads: 10,
+    ipfs: {
+      apiUrl: "https://api.pinata.cloud",
+      jwt: "test-jwt-token",
+      maxFileSizeMB: 10,
+      allowedMimeTypes: ["application/pdf", "image/jpeg", "image/png"],
+      uploadRateLimit: {
+        windowMs: 900000,
+        maxUploads: 10,
+      },
+    },
+    kyc: {
+      skipVerification: true, // Default to true for existing tests
     },
   };
 
@@ -36,13 +41,13 @@ describe("Invoice Routes", () => {
     amount: "1000.00",
     discountRate: "10.00",
     netAmount: "900.00",
-    dueDate: new Date("2024-12-31"),
+    dueDate: "2024-12-31T00:00:00.000Z",
     status: InvoiceStatus.DRAFT,
     ipfsHash: null,
     riskScore: null,
     smartContractId: null,
-    createdAt: new Date(),
-    updatedAt: new Date(),
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
   };
 
   beforeEach(() => {
@@ -64,7 +69,7 @@ describe("Invoice Routes", () => {
       "/api/v1/invoices",
       createInvoiceRouter({
         invoiceService: mockInvoiceService,
-        config: mockConfig,
+        config: mockConfig as any,
       }),
     );
     app.use(createErrorMiddleware(logger));
@@ -146,6 +151,36 @@ describe("Invoice Routes", () => {
           dueDate: "2024-12-31",
         })
         .expect(400);
+    });
+
+    it("should reject creation when KYC is required but not approved", async () => {
+      // Create a new app instance with KYC enabled
+      const kycConfig = {
+        ...mockConfig,
+        kyc: { skipVerification: false },
+      };
+      const kycApp = express();
+      kycApp.use(express.json());
+      kycApp.use(
+        "/api/v1/invoices",
+        createInvoiceRouter({
+          invoiceService: mockInvoiceService,
+          config: kycConfig as any,
+        }),
+      );
+      kycApp.use(createErrorMiddleware(logger));
+
+      await request(kycApp)
+        .post("/api/v1/invoices")
+        .set("Authorization", `Bearer ${validToken}`)
+        .send({
+          invoiceNumber: "INV-001",
+          customerName: "Test Customer",
+          amount: "1000.00",
+          discountRate: "10.00",
+          dueDate: "2024-12-31",
+        })
+        .expect(403);
     });
 
     it("should reject unauthenticated requests", async () => {

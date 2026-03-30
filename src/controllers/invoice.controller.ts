@@ -37,11 +37,7 @@ export interface UpdateInvoiceRequest extends AuthenticatedRequest {
 }
 
 export interface GetInvoicesRequest extends AuthenticatedRequest {
-  query: {
-    page?: string;
-    limit?: string;
-    status?: string;
-  };
+  query: any;
 }
 
 export interface PublishInvoiceRequest extends AuthenticatedRequest {
@@ -107,8 +103,8 @@ export function createInvoiceController(invoiceService: InvoiceService) {
           throw new HttpError(401, "Authentication required");
         }
 
-        const page = parseInt(req.query.page || "1", 10);
-        const limit = parseInt(req.query.limit || "20", 10);
+        const page = Number(req.query.page) || 1;
+        const limit = Number(req.query.limit) || 20;
         const status = req.query.status;
 
         // Validate pagination

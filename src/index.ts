@@ -27,7 +27,7 @@ export async function bootstrap(): Promise<{ server: Server }> {
     authService,
     notificationService,
     invoiceService,
-    ipfsConfig: config.ipfs,
+    config,
     logger,
     metricsEnabled: config.observability.metricsEnabled,
   });

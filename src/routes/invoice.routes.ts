@@ -5,12 +5,12 @@ import Joi from "joi";
 import type { InvoiceService } from "../services/invoice.service";
 import type { AppConfig } from "../config/env";
 import { createInvoiceController } from "../controllers/invoice.controller";
-import { authenticateJWT } from "../middleware/auth.middleware";
+import { authenticateJWT, requireKYC } from "../middleware/auth.middleware";
 import { HttpError } from "../utils/http-error";
 
 export interface InvoiceRouterDependencies {
   invoiceService: InvoiceService;
-  config: AppConfig["ipfs"];
+  config: AppConfig;
 }
 
 /**
@@ -107,7 +107,11 @@ function validateQuery(schema: Joi.Schema) {
       );
     }
 
-    req.query = value;
+    // Replace req.query with validated value
+    // In Express, req.query is a getter/setter by default, but we can override it
+    // if we use the default query parser.
+    Object.keys(req.query).forEach(key => delete req.query[key]);
+    Object.assign(req.query, value);
     next();
   };
 }
@@ -123,10 +127,10 @@ export function createInvoiceRouter({
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: {
-      fileSize: config.maxFileSizeMB * 1024 * 1024, // Convert MB to bytes
+      fileSize: config.ipfs.maxFileSizeMB * 1024 * 1024, // Convert MB to bytes
     },
     fileFilter: (req, file, cb) => {
-      if (config.allowedMimeTypes.includes(file.mimetype)) {
+      if (config.ipfs.allowedMimeTypes.includes(file.mimetype)) {
         cb(null, true);
       } else {
         cb(new Error(`File type ${file.mimetype} is not allowed`));
@@ -136,17 +140,19 @@ export function createInvoiceRouter({
 
   // Rate limiting for document uploads
   const uploadRateLimit = rateLimit({
-    windowMs: config.uploadRateLimit.windowMs,
-    max: config.uploadRateLimit.maxUploads,
+    windowMs: config.ipfs.uploadRateLimit.windowMs,
+    max: config.ipfs.uploadRateLimit.maxUploads,
     message: {
       error: {
         code: "rate_limit_exceeded",
-        message: `Too many upload attempts. Maximum ${config.uploadRateLimit.maxUploads} uploads per ${config.uploadRateLimit.windowMs / (60 * 1000)} minutes.`,
+        message: `Too many upload attempts. Maximum ${config.ipfs.uploadRateLimit.maxUploads} uploads per ${config.ipfs.uploadRateLimit.windowMs / (60 * 1000)} minutes.`,
       },
     },
     standardHeaders: true,
     legacyHeaders: false,
   });
+
+  const kycGating = requireKYC(config.kyc.skipVerification);
 
   // ============ INVOICE CRUD ENDPOINTS ============
 
@@ -162,6 +168,7 @@ export function createInvoiceRouter({
   router.post(
     "/",
     authenticateJWT,
+    kycGating,
     validateBody(createInvoiceSchema),
     controller.createInvoice,
   );
@@ -173,17 +180,19 @@ export function createInvoiceRouter({
   router.put(
     "/:id",
     authenticateJWT,
+    kycGating,
     validateBody(updateInvoiceSchema),
     controller.updateInvoice,
   );
 
   // DELETE /api/v1/invoices/:id - Delete invoice
-  router.delete("/:id", authenticateJWT, controller.deleteInvoice);
+  router.delete("/:id", authenticateJWT, kycGating, controller.deleteInvoice);
 
   // POST /api/v1/invoices/:id/publish - Publish invoice
   router.post(
     "/:id/publish",
     authenticateJWT,
+    kycGating,
     controller.publishInvoice,
   );
 
@@ -192,6 +201,7 @@ export function createInvoiceRouter({
     "/:id/document",
     uploadRateLimit,
     authenticateJWT,
+    kycGating,
     upload.single("document"),
     controller.uploadDocument,
   );
