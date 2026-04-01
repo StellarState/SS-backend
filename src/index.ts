@@ -8,6 +8,9 @@ import { logger } from "./observability/logger";
 
 import { createAuthService } from "./services/auth.service";
 import { createNotificationService } from "./services/notification.service";
+import { createInvoiceService } from "./services/invoice.service";
+import { createIPFSService } from "./services/ipfs.service";
+import { createInvestmentService } from "./services/investment.service";
 
 export async function bootstrap(): Promise<{ server: Server }> {
   const config = getConfig();
@@ -18,10 +21,16 @@ export async function bootstrap(): Promise<{ server: Server }> {
 
   const authService = createAuthService(dataSource, config);
   const notificationService = createNotificationService(dataSource);
+  const ipfsService = createIPFSService(config.ipfs);
+  const invoiceService = createInvoiceService(dataSource, ipfsService);
+  const investmentService = createInvestmentService(dataSource);
 
   const app = createApp({
     authService,
     notificationService,
+    invoiceService,
+    investmentService,
+    config,
     logger,
     metricsEnabled: config.observability.metricsEnabled,
   });

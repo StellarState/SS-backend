@@ -71,3 +71,25 @@ export function authenticateJWT(
     next(new HttpError(401, "Invalid or expired token."));
   }
 }
+
+export function requireKYC(skipVerification = false) {
+  return (req: Request, _res: Response, next: NextFunction): void => {
+    if (skipVerification) {
+      next();
+      return;
+    }
+
+    const authReq = req as AuthenticatedRequest;
+    if (!authReq.user) {
+      next(new HttpError(401, "Authentication required"));
+      return;
+    }
+
+    if (authReq.user.kycStatus !== KYCStatus.APPROVED) {
+      next(new HttpError(403, "KYC approval required for this action"));
+      return;
+    }
+
+    next();
+  };
+}
