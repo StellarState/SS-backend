@@ -57,6 +57,9 @@ export interface AppConfig {
       maxUploads: number;
     };
   };
+  kyc: {
+    skipVerification: boolean;
+  };
 }
 
 
@@ -275,6 +278,14 @@ export function getConfig(): AppConfig {
           "IPFS_UPLOAD_RATE_LIMIT_MAX_UPLOADS"
         ),
       },
+    },
+
+    kyc: {
+      skipVerification: parseBoolean(
+        process.env.SKIP_KYC_VERIFICATION,
+        process.env.NODE_ENV !== "production",
+        "SKIP_KYC_VERIFICATION"
+      ),
     },
   };
 }
