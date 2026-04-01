@@ -1,7 +1,6 @@
 import { DataSource, EntityManager } from "typeorm";
 import { Invoice } from "../models/Invoice.model";
 import { Investment } from "../models/Investment.model";
-import { User } from "../models/User.model";
 import { InvoiceStatus, InvestmentStatus } from "../types/enums";
 import { ServiceError } from "../utils/service-error";
 import { Decimal } from "decimal.js";

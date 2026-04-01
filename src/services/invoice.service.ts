@@ -7,9 +7,9 @@ import type { IPFSService, IPFSUploadResult } from "./ipfs.service";
 export interface InvoiceRepositoryContract {
   findOne(options: { where: { id: string } }): Promise<Invoice | null>;
   findOneBy(options: { id?: string; invoiceNumber?: string }): Promise<Invoice | null>;
-  find(options: any): Promise<Invoice[]>;
+  find(options: { where: { sellerId: string; status?: InvoiceStatus}, skip?: number, take?: number, order?: { [key: string]: "ASC" | "DESC" } }): Promise<Invoice[]>;
   save(invoice: Invoice): Promise<Invoice>;
-  count(options: any): Promise<number>;
+  count(options: { where: { sellerId: string; status?: InvoiceStatus } }): Promise<number>;
   create(data: Partial<Invoice>): Invoice;
 }
 
@@ -207,7 +207,7 @@ export class InvoiceService {
     invoices: InvoiceDTO[];
     total: number;
   }> {
-    const where: any = {
+    const where: { sellerId: string; status?: InvoiceStatus; deletedAt: null } = {
       sellerId: options.sellerId,
       deletedAt: null,
     };

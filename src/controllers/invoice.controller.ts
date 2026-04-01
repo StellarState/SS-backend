@@ -3,6 +3,7 @@ import type { InvoiceService } from "../services/invoice.service";
 import { HttpError } from "../utils/http-error";
 import { ServiceError } from "../utils/service-error";
 import { AuthenticatedRequest } from "../types/auth";
+import { InvoiceStatus } from "@/types/enums";
 
 export interface UploadDocumentRequest extends Request {
   params: {
@@ -37,7 +38,11 @@ export interface UpdateInvoiceRequest extends AuthenticatedRequest {
 }
 
 export interface GetInvoicesRequest extends AuthenticatedRequest {
-  query: any;
+  query: {
+    page?: string;
+    limit?: string;
+    status?: string;
+  };
 }
 
 export interface PublishInvoiceRequest extends AuthenticatedRequest {
@@ -114,7 +119,7 @@ export function createInvoiceController(invoiceService: InvoiceService) {
 
         const result = await invoiceService.getInvoicesBySellerId({
           sellerId: req.user.id,
-          status: status as any,
+          status: status as InvoiceStatus | undefined,
           skip: (page - 1) * limit,
           take: limit,
         });

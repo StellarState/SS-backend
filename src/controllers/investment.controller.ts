@@ -1,4 +1,4 @@
-import { Request, Response } from "express";
+import { Response } from "express";
 import { InvestmentService } from "../services/investment.service";
 import { AuthenticatedRequest } from "../types/auth";
 import { requireApprovedKYC } from "../lib/kyc";
@@ -37,12 +37,12 @@ export class InvestmentController {
         success: true,
         data: investment,
       });
-    } catch (err: any) {
-      const statusCode = err.status || err.statusCode || 400;
+    } catch (err: unknown) {
+      const statusCode = (err as { status?: number }).status || (err as { statusCode?: number }).statusCode || 400;
       return res.status(statusCode).json({
         error: {
-          code: err.code || "INTERNAL_ERROR",
-          message: err.message || "Internal server error",
+          code: (err as { code?: string }).code || "INTERNAL_ERROR",
+          message: (err as { message?: string }).message || "Internal server error",
         },
       });
     }
