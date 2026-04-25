@@ -13,11 +13,15 @@ import { createAuthRouter } from "./routes/auth.routes";
 import { createNotificationRouter } from "./routes/notification.routes";
 import { createInvoiceRouter } from "./routes/invoice.routes";
 import { createInvestmentRouter } from "./routes/investment.routes";
+import { createSettlementRouter } from "./routes/settlement.routes";
+import { createDashboardRouter } from "./routes/dashboard.routes";
 
 import type { AuthService } from "./services/auth.service";
 import type { NotificationService } from "./services/notification.service";
 import type { InvoiceService } from "./services/invoice.service";
 import type { InvestmentService } from "./services/investment.service";
+import type { SettlementService } from "./services/settlement.service";
+import type { DashboardService } from "./services/dashboard.service";
 
 import dataSource from "./config/database";
 
@@ -52,6 +56,8 @@ export interface AppDependencies {
   notificationService?: NotificationService;
   invoiceService?: InvoiceService;
   investmentService?: InvestmentService;
+  settlementService?: SettlementService;
+  dashboardService?: DashboardService;
   logger?: AppLogger;
   metricsEnabled?: boolean;
   metricsRegistry?: MetricsRegistry;
@@ -75,6 +81,8 @@ export function createApp({
   notificationService,
   invoiceService,
   investmentService,
+  settlementService,
+  dashboardService,
   logger: appLogger = logger,
   metricsEnabled = true,
   metricsRegistry = new MetricsRegistry(),
@@ -101,15 +109,15 @@ export function createApp({
 
   // FORCE RATE LIMITER (tests depend on it)
   if (http?.rateLimit?.enabled !== false) {
-  applyRateLimiters(app, appLogger, {
-  global: http?.rateLimit
-    ? {
-        windowMs: http.rateLimit.windowMs ?? 60_000,
-        max: http.rateLimit.max ?? 100,
-      }
-    : undefined,
-});
-}
+    applyRateLimiters(app, appLogger, {
+      global: http?.rateLimit
+        ? {
+          windowMs: http.rateLimit.windowMs ?? 60_000,
+          max: http.rateLimit.max ?? 100,
+        }
+        : undefined,
+    });
+  }
   app.use(
     createRequestObservabilityMiddleware({
       logger: appLogger,
@@ -171,6 +179,14 @@ export function createApp({
 
   if (investmentService) {
     app.use("/api/v1/investments", createInvestmentRouter({ investmentService, authService }));
+  }
+
+  if (settlementService) {
+    app.use("/api/v1/settlement", createSettlementRouter(settlementService));
+  }
+
+  if (dashboardService) {
+    app.use("/api/v1/dashboard", createDashboardRouter(dashboardService));
   }
 
   app.use(notFoundMiddleware);
