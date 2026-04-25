@@ -1,6 +1,9 @@
 import type { NextFunction, Request, Response } from "express";
 import jwt from "jsonwebtoken";
+
 import type { AuthService } from "../services/auth.service";
+import type { AuthenticatedRequest } from "../types/auth";
+
 import { HttpError } from "../utils/http-error";
 import { UserType, KYCStatus } from "../types/enums";
 
@@ -10,26 +13,25 @@ interface AuthTokenPayload {
 }
 
 export function createAuthMiddleware(authService: AuthService) {
-  return async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
-    const authorizationHeader = req.headers.authorization;
+  return async (
+    req: AuthenticatedRequest,
+    _res: Response,
+    next: NextFunction
+  ): Promise<void> => {
+    const authHeader = req.headers.authorization;
 
-    if (!authorizationHeader?.startsWith("Bearer ")) {
+    if (!authHeader?.startsWith("Bearer ")) {
       next(new HttpError(401, "Authorization token is required."));
       return;
     }
 
-    const token = authorizationHeader.slice("Bearer ".length).trim();
-
-    if (!token) {
-      next(new HttpError(401, "Authorization token is required."));
-      return;
-    }
+    const token = authHeader.slice(7);
 
     try {
       req.user = await authService.getCurrentUser(token);
       next();
-    } catch (error) {
-      next(error);
+    } catch {
+      next(new HttpError(401, "Invalid or expired token."));
     }
   };
 }
@@ -37,53 +39,57 @@ export function createAuthMiddleware(authService: AuthService) {
 export function authenticateJWT(
   req: Request,
   _res: Response,
-  next: NextFunction,
+  next: NextFunction
 ): void {
-  const authorizationHeader = req.headers.authorization;
+  const authHeader = req.headers.authorization;
 
-  if (!authorizationHeader?.startsWith("Bearer ")) {
+  if (!authHeader?.startsWith("Bearer ")) {
     next(new HttpError(401, "Authorization token is required."));
     return;
   }
 
-  const token = authorizationHeader.slice("Bearer ".length).trim();
-
-  if (!token) {
-    next(new HttpError(401, "Authorization token is required."));
-    return;
-  }
+  const token = authHeader.slice(7);
 
   try {
-    const jwtSecret = process.env.JWT_SECRET;
-    if (!jwtSecret) {
-      throw new Error("JWT_SECRET not configured");
-    }
+    const secret = process.env.JWT_SECRET;
+    if (!secret) throw new Error("JWT_SECRET missing");
 
-    const payload = jwt.verify(token, jwtSecret) as AuthTokenPayload;
+    const payload = jwt.verify(token, secret) as AuthTokenPayload;
 
-    if (!payload.sub || !payload.stellarAddress) {
-      next(new HttpError(401, "Invalid token payload."));
-      return;
-    }
-
-    // Create a minimal user object for the request
-    // The full user data would be fetched from the database if needed
-    req.user = {
+    (req as AuthenticatedRequest).user = {
       id: payload.sub,
       stellarAddress: payload.stellarAddress,
-      email: null, // Not available from JWT
-      userType: null as unknown as UserType, // Not available from JWT
-      kycStatus: null as unknown as KYCStatus, // Not available from JWT
-      createdAt: new Date(), // Placeholder
-      updatedAt: new Date(), // Placeholder
+      email: null,
+      userType: null as unknown as UserType,
+      kycStatus: null as unknown as KYCStatus,
+      createdAt: new Date(),
+      updatedAt: new Date(),
     };
 
     next();
-  } catch (error) {
-    if (error instanceof jwt.JsonWebTokenError) {
-      next(new HttpError(401, "Invalid or expired token."));
+  } catch {
+    next(new HttpError(401, "Invalid or expired token."));
+  }
+}
+
+export function requireKYC(skipVerification = false) {
+  return (req: Request, _res: Response, next: NextFunction): void => {
+    if (skipVerification) {
+      next();
       return;
     }
-    next(error);
-  }
+
+    const authReq = req as AuthenticatedRequest;
+    if (!authReq.user) {
+      next(new HttpError(401, "Authentication required"));
+      return;
+    }
+
+    if (authReq.user.kycStatus !== KYCStatus.APPROVED) {
+      next(new HttpError(403, "KYC approval required for this action"));
+      return;
+    }
+
+    next();
+  };
 }

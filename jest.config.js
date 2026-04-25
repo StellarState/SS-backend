@@ -9,4 +9,8 @@ module.exports = {
   collectCoverageFrom: ["src/**/*.ts", "!src/**/*.d.ts"],
   coverageDirectory: "coverage",
   verbose: true,
+  moduleNameMapper: {
+    "^@/(.*)$": "<rootDir>/src/$1", // map @/ paths to src
+  },
+  setupFiles: ["tsconfig-paths/register"], // ensures TS path aliases work
 };
