@@ -26,6 +26,7 @@ import type { AppConfig } from "./config/env";
 
 import dataSource from "./config/database";
 
+//  REQUIRED
 export function createRequestLifecycleTracker() {
   let active = 0;
 
@@ -64,10 +65,9 @@ export interface AppDependencies {
   config?: AppConfig;
   http?: {
     trustProxy?: boolean | number | string;
+    nodeEnv?: string;
     corsAllowedOrigins?: string[];
     corsAllowCredentials?: boolean;
-    bodySizeLimit?: string;
-    nodeEnv?: string;
     rateLimit?: {
       enabled?: boolean;
       windowMs?: number;
@@ -118,6 +118,7 @@ export function createApp({
         : undefined,
     });
   }
+
   app.use(
     createRequestObservabilityMiddleware({
       logger: appLogger,
