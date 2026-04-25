@@ -79,7 +79,7 @@ describe("SettlementService", () => {
                 createTransaction: jest.fn().mockImplementation((input) => input),
             };
 
-            mockTransactionRunner.runInTransaction.mockImplementation((cb) => cb(unitOfWork));
+            mockTransactionRunner.runInTransaction.mockImplementation((cb: any) => cb(unitOfWork));
 
             const result = await settlementService.settleInvoice({
                 invoiceId: "invoice-123",
@@ -100,19 +100,22 @@ describe("SettlementService", () => {
         });
 
         it("should handle rounding correctly with odd distribution", async () => {
+            const freshInvoice = { ...mockInvoice, status: InvoiceStatus.FUNDED };
             const investments = [
                 {
                     ...mockInvestments[0],
                     investmentAmount: "333.3333",
+                    status: InvestmentStatus.CONFIRMED,
                 },
                 {
                     ...mockInvestments[1],
                     investmentAmount: "666.6667",
+                    status: InvestmentStatus.CONFIRMED,
                 },
             ];
 
             const unitOfWork = {
-                findInvoiceByIdForUpdate: jest.fn().mockResolvedValue(mockInvoice),
+                findInvoiceByIdForUpdate: jest.fn().mockResolvedValue(freshInvoice),
                 findInvestmentsByInvoiceIdForUpdate: jest.fn().mockResolvedValue(investments),
                 saveInvoice: jest.fn().mockImplementation((inv) => Promise.resolve(inv)),
                 saveInvestment: jest.fn().mockImplementation((inv) => Promise.resolve(inv)),
@@ -120,7 +123,7 @@ describe("SettlementService", () => {
                 createTransaction: jest.fn().mockImplementation((input) => input),
             };
 
-            mockTransactionRunner.runInTransaction.mockImplementation((cb) => cb(unitOfWork));
+            mockTransactionRunner.runInTransaction.mockImplementation((cb: any) => cb(unitOfWork));
 
             const result = await settlementService.settleInvoice({
                 invoiceId: "invoice-123",
@@ -143,7 +146,7 @@ describe("SettlementService", () => {
                 findInvoiceByIdForUpdate: jest.fn().mockResolvedValue(null),
             };
 
-            mockTransactionRunner.runInTransaction.mockImplementation((cb) => cb(unitOfWork));
+            mockTransactionRunner.runInTransaction.mockImplementation((cb: any) => cb(unitOfWork));
 
             await expect(
                 settlementService.settleInvoice({
@@ -170,7 +173,7 @@ describe("SettlementService", () => {
                 findInvoiceByIdForUpdate: jest.fn().mockResolvedValue(draftInvoice),
             };
 
-            mockTransactionRunner.runInTransaction.mockImplementation((cb) => cb(unitOfWork));
+            mockTransactionRunner.runInTransaction.mockImplementation((cb: any) => cb(unitOfWork));
 
             await expect(
                 settlementService.settleInvoice({
@@ -184,17 +187,18 @@ describe("SettlementService", () => {
         });
 
         it("should throw error when investments are not all CONFIRMED", async () => {
+            const freshInvoice = { ...mockInvoice, status: InvoiceStatus.FUNDED };
             const mixedInvestments = [
                 mockInvestments[0],
                 { ...mockInvestments[1], status: InvestmentStatus.PENDING },
             ];
 
             const unitOfWork = {
-                findInvoiceByIdForUpdate: jest.fn().mockResolvedValue(mockInvoice),
+                findInvoiceByIdForUpdate: jest.fn().mockResolvedValue(freshInvoice),
                 findInvestmentsByInvoiceIdForUpdate: jest.fn().mockResolvedValue(mixedInvestments),
             };
 
-            mockTransactionRunner.runInTransaction.mockImplementation((cb) => cb(unitOfWork));
+            mockTransactionRunner.runInTransaction.mockImplementation((cb: any) => cb(unitOfWork));
 
             await expect(
                 settlementService.settleInvoice({
@@ -208,12 +212,13 @@ describe("SettlementService", () => {
         });
 
         it("should throw error when no investments exist", async () => {
+            const freshInvoice = { ...mockInvoice, status: InvoiceStatus.FUNDED };
             const unitOfWork = {
-                findInvoiceByIdForUpdate: jest.fn().mockResolvedValue(mockInvoice),
+                findInvoiceByIdForUpdate: jest.fn().mockResolvedValue(freshInvoice),
                 findInvestmentsByInvoiceIdForUpdate: jest.fn().mockResolvedValue([]),
             };
 
-            mockTransactionRunner.runInTransaction.mockImplementation((cb) => cb(unitOfWork));
+            mockTransactionRunner.runInTransaction.mockImplementation((cb: any) => cb(unitOfWork));
 
             await expect(
                 settlementService.settleInvoice({
@@ -238,7 +243,7 @@ describe("SettlementService", () => {
                 findInvoiceByIdForUpdate: jest.fn().mockResolvedValue(settledInvoice),
             };
 
-            mockTransactionRunner.runInTransaction.mockImplementation((cb) => cb(unitOfWork));
+            mockTransactionRunner.runInTransaction.mockImplementation((cb: any) => cb(unitOfWork));
 
             await expect(
                 settlementService.settleInvoice({
@@ -252,16 +257,19 @@ describe("SettlementService", () => {
         });
 
         it("should create settlement transaction record for audit trail", async () => {
+            const freshInvoice = { ...mockInvoice, status: InvoiceStatus.FUNDED };
+            const freshInvestments = mockInvestments.map(inv => ({ ...inv, status: InvestmentStatus.CONFIRMED }));
+
             const unitOfWork = {
-                findInvoiceByIdForUpdate: jest.fn().mockResolvedValue(mockInvoice),
-                findInvestmentsByInvoiceIdForUpdate: jest.fn().mockResolvedValue(mockInvestments),
+                findInvoiceByIdForUpdate: jest.fn().mockResolvedValue(freshInvoice),
+                findInvestmentsByInvoiceIdForUpdate: jest.fn().mockResolvedValue(freshInvestments),
                 saveInvoice: jest.fn().mockImplementation((inv) => Promise.resolve(inv)),
                 saveInvestment: jest.fn().mockImplementation((inv) => Promise.resolve(inv)),
                 saveTransaction: jest.fn().mockImplementation((tx) => Promise.resolve({ ...tx, id: "tx-123" })),
                 createTransaction: jest.fn().mockImplementation((input) => input),
             };
 
-            mockTransactionRunner.runInTransaction.mockImplementation((cb) => cb(unitOfWork));
+            mockTransactionRunner.runInTransaction.mockImplementation((cb: any) => cb(unitOfWork));
 
             await settlementService.settleInvoice({
                 invoiceId: "invoice-123",
