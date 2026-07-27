@@ -29,6 +29,12 @@ export interface NotificationRepositoryContract {
     title: string,
     message: string,
   ): Promise<Notification>;
+  findByContent(
+    userId: string,
+    type: NotificationType,
+    title: string,
+    message: string,
+  ): Promise<Notification | null>;
   findByIdAndUserId(id: string, userId: string): Promise<Notification | null>;
   markRead(id: string, userId: string): Promise<Notification>;
   list(options: ListNotificationsOptions): Promise<NotificationPage>;
@@ -52,6 +58,26 @@ export class NotificationService {
     title: string,
     message: string,
   ): Promise<Notification> {
+    return this.notificationRepository.create(userId, type, title, message);
+  }
+
+  async createNotificationIfNotExists(
+    userId: string,
+    type: NotificationType,
+    title: string,
+    message: string,
+  ): Promise<Notification> {
+    const existingNotification = await this.notificationRepository.findByContent(
+      userId,
+      type,
+      title,
+      message,
+    );
+
+    if (existingNotification) {
+      return existingNotification;
+    }
+
     return this.notificationRepository.create(userId, type, title, message);
   }
 
@@ -93,6 +119,15 @@ class TypeOrmNotificationRepository implements NotificationRepositoryContract {
   ): Promise<Notification> {
     const entity = this.repository.create({ userId, type, title, message });
     return this.repository.save(entity);
+  }
+
+  findByContent(
+    userId: string,
+    type: NotificationType,
+    title: string,
+    message: string,
+  ): Promise<Notification | null> {
+    return this.repository.findOne({ where: { userId, type, title, message } });
   }
 
   findByIdAndUserId(id: string, userId: string): Promise<Notification | null> {

@@ -6,6 +6,8 @@ import { ServiceError } from "../utils/service-error";
 import { Decimal } from "decimal.js";
 import { logInvoiceTransition } from "../lib/invoice-lifecycle-log";
 import { logger } from "../observability/logger";
+import { NotificationType } from "../types/enums";
+import type { NotificationService } from "./notification.service";
 
 // Formula for expected return:
 // Investor's share of the invoice face value (amount) proportional to their contribution to the fundable amount (netAmount).
@@ -27,8 +29,16 @@ export interface InvestorDashboard {
 
 const ACTIVE_INVESTMENT_STATUSES = [InvestmentStatus.PENDING, InvestmentStatus.CONFIRMED];
 
+interface CreateInvestmentResult {
+  savedInvestment: Investment;
+  fundedInvoiceId?: string;
+}
+
 export class InvestmentService {
-  constructor(private readonly dataSource: DataSource) {}
+  constructor(
+    private readonly dataSource: DataSource,
+    private readonly notificationService?: NotificationService,
+  ) {}
 
   /**
    * Aggregates an investor's portfolio across all their investments.
@@ -80,7 +90,8 @@ export class InvestmentService {
       throw new ServiceError("INVALID_AMOUNT", "Investment amount must be greater than zero");
     }
 
-    return await this.dataSource.transaction(async (transactionalEntityManager: EntityManager) => {
+    const result = await this.dataSource.transaction(
+      async (transactionalEntityManager: EntityManager): Promise<CreateInvestmentResult> => {
       // 1. Lock the invoice row for update
       const invoice = await transactionalEntityManager
         .createQueryBuilder(Invoice, "invoice")
@@ -107,7 +118,7 @@ export class InvestmentService {
 
       // 4. Check remaining capacity
       // We count both PENDING and CONFIRMED investments towards the cap to prevent over-subscription
-      const activeInvestments = await transactionalEntityManager.find(Investment, {
+      const activeInvestments: Investment[] = await transactionalEntityManager.find(Investment, {
         where: [
           { invoiceId, status: InvestmentStatus.PENDING },
           { invoiceId, status: InvestmentStatus.CONFIRMED },
@@ -115,7 +126,7 @@ export class InvestmentService {
       });
 
       const totalInvested = activeInvestments.reduce(
-        (sum, inv) => sum.plus(new Decimal(inv.investmentAmount)),
+        (sum: Decimal, inv: Investment) => sum.plus(new Decimal(inv.investmentAmount)),
         new Decimal(0),
       );
 
@@ -159,13 +170,59 @@ export class InvestmentService {
           actorWallet: investorWallet,
           reason: "fully_funded",
         });
+
+        return { savedInvestment, fundedInvoiceId: invoice.id };
       }
 
-      return savedInvestment;
+      return { savedInvestment };
+      },
+    );
+
+    if (result.fundedInvoiceId) {
+      await this.notifyInvoiceFullyFunded(result.fundedInvoiceId);
+    }
+
+    return result.savedInvestment;
+  }
+
+  async notifyInvoiceFullyFunded(invoiceId: string): Promise<void> {
+    if (!this.notificationService) {
+      return;
+    }
+
+    const invoice = await this.dataSource.getRepository(Invoice).findOne({
+      where: { id: invoiceId },
     });
+
+    if (!invoice || invoice.status !== InvoiceStatus.FUNDED) {
+      return;
+    }
+
+    const investments = await this.dataSource.getRepository(Investment).find({
+      where: { invoiceId },
+    });
+
+    const fundedAmount = new Decimal(invoice.netAmount).toFixed(4);
+    const title = "Invoice fully funded";
+    const message = `Invoice ${invoice.invoiceNumber} has been fully funded for ${fundedAmount}.`;
+    const recipientIds = new Set<string>(
+      [invoice.sellerId, ...investments.map((investment: Investment) => investment.investorId)],
+    );
+
+    for (const recipientId of recipientIds) {
+      await this.notificationService.createNotificationIfNotExists(
+        recipientId,
+        NotificationType.INVOICE,
+        title,
+        message,
+      );
+    }
   }
 }
 
-export function createInvestmentService(dataSource: DataSource): InvestmentService {
-  return new InvestmentService(dataSource);
+export function createInvestmentService(
+  dataSource: DataSource,
+  notificationService?: NotificationService,
+): InvestmentService {
+  return new InvestmentService(dataSource, notificationService);
 }
