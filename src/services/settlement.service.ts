@@ -7,7 +7,14 @@ import { ServiceError } from "../utils/service-error";
 import { computeInvestorReturn } from "../lib/investor-return";
 import { decimalStringToScaledBigInt, scaledBigIntToDecimalString } from "../lib/decimal-bigint";
 import { logInvoiceTransition } from "../lib/invoice-lifecycle-log";
+import { logSettlementCompletion } from "../lib/settlement-completion-log";
 import { logger } from "../observability/logger";
+
+// settlement.service.ts stores/computes amounts as decimal strings scaled by
+// 10^4 (see decimal-bigint.ts), while stroopsToXlm expects a stroops count
+// (10^7 scale). Multiplying by 10^3 converts between the two without any
+// loss of precision, since 7 - 4 = 3.
+const DECIMAL_SCALE_TO_STROOP_FACTOR = 10n ** 3n;
 
 export interface SettleInvoiceInput {
   invoiceId: string;
@@ -119,6 +126,12 @@ export class SettlementService {
         toState: InvoiceStatus.SETTLED,
         actorWallet,
         reason: "admin_settled",
+      });
+
+      logSettlementCompletion(logger, {
+        invoiceId: invoice.id,
+        totalProceedsStroops: proceedsScaled * DECIMAL_SCALE_TO_STROOP_FACTOR,
+        investorCount: settlements.length,
       });
 
       return {
