@@ -1,5 +1,5 @@
 import { DataSource, Repository, SelectQueryBuilder } from "typeorm";
-import { createMarketplaceService } from "../src/services/marketplace.service";
+import { TypeORMMarketplaceRepository } from "../src/repositories/marketplace.repository";
 import { Invoice } from "../src/models/Invoice.model";
 import { InvoiceStatus } from "../src/types/enums";
 
@@ -7,7 +7,7 @@ describe("TypeORMMarketplaceRepository", () => {
   let mockDataSource: jest.Mocked<DataSource>;
   let mockRepository: jest.Mocked<Repository<Invoice>>;
   let mockQueryBuilder: jest.Mocked<SelectQueryBuilder<Invoice>>;
-  let marketplaceService: any;
+  let marketplaceRepository: TypeORMMarketplaceRepository;
 
   beforeEach(() => {
     mockQueryBuilder = {
@@ -38,7 +38,7 @@ describe("TypeORMMarketplaceRepository", () => {
       getRepository: jest.fn().mockReturnValue(mockRepository),
     } as any;
 
-    marketplaceService = createMarketplaceService(mockDataSource);
+    marketplaceRepository = new TypeORMMarketplaceRepository(mockDataSource);
   });
 
   describe("findPublishedInvoices", () => {
@@ -62,19 +62,19 @@ describe("TypeORMMarketplaceRepository", () => {
 
       const filters = {
         status: [InvoiceStatus.PUBLISHED],
-        sort: "due_date" as const,
-        sortOrder: "ASC" as const,
+        sort: "amount" as const,
+        sortOrder: "DESC" as const,
       };
       const pagination = { page: 1, limit: 20 };
 
-      await marketplaceService.getPublishedInvoices(filters, pagination);
+      await marketplaceRepository.findPublishedInvoices(filters, pagination);
 
       expect(mockRepository.createQueryBuilder).toHaveBeenCalledWith("invoice");
-      expect(mockQueryBuilder.where).toHaveBeenCalledWith("invoice.deleted_at IS NULL");
+      expect(mockQueryBuilder.where).toHaveBeenCalledWith("invoice.deletedAt IS NULL");
       expect(mockQueryBuilder.andWhere).toHaveBeenCalledWith("invoice.status IN (:...statuses)", {
         statuses: [InvoiceStatus.PUBLISHED],
       });
-      expect(mockQueryBuilder.orderBy).toHaveBeenCalledWith("invoice.due_date", "ASC");
+      expect(mockQueryBuilder.orderBy).toHaveBeenCalledWith("invoice.amount", "DESC");
       expect(mockQueryBuilder.addOrderBy).toHaveBeenCalledWith("invoice.id", "ASC");
     });
 
@@ -90,9 +90,9 @@ describe("TypeORMMarketplaceRepository", () => {
         sortOrder: "ASC" as const,
       };
 
-      await marketplaceService.getPublishedInvoices(filters, { page: 1, limit: 20 });
+      await marketplaceRepository.findPublishedInvoices(filters, { page: 1, limit: 20 });
 
-      expect(mockQueryBuilder.andWhere).toHaveBeenCalledWith("invoice.due_date <= :dueBefore", {
+      expect(mockQueryBuilder.andWhere).toHaveBeenCalledWith("invoice.dueDate <= :dueBefore", {
         dueBefore,
       });
     });
@@ -109,7 +109,7 @@ describe("TypeORMMarketplaceRepository", () => {
         sortOrder: "ASC" as const,
       };
 
-      await marketplaceService.getPublishedInvoices(filters, { page: 1, limit: 20 });
+      await marketplaceRepository.findPublishedInvoices(filters, { page: 1, limit: 20 });
 
       expect(mockQueryBuilder.andWhere).toHaveBeenCalledWith(
         "CAST(invoice.amount AS DECIMAL) >= :minAmount",
@@ -126,10 +126,10 @@ describe("TypeORMMarketplaceRepository", () => {
       mockQueryBuilder.getMany.mockResolvedValue([]);
 
       const testCases = [
-        { sort: "due_date", expected: "invoice.due_date" },
-        { sort: "discount_rate", expected: "invoice.discount_rate" },
+        { sort: "due_date", expected: "invoice.dueDate" },
+        { sort: "discount_rate", expected: "invoice.discountRate" },
         { sort: "amount", expected: "invoice.amount" },
-        { sort: "created_at", expected: "invoice.created_at" },
+        { sort: "created_at", expected: "invoice.createdAt" },
       ];
 
       for (const testCase of testCases) {
@@ -141,7 +141,7 @@ describe("TypeORMMarketplaceRepository", () => {
           sortOrder: "DESC" as const,
         };
 
-        await marketplaceService.getPublishedInvoices(filters, { page: 1, limit: 20 });
+        await marketplaceRepository.findPublishedInvoices(filters, { page: 1, limit: 20 });
 
         expect(mockQueryBuilder.orderBy).toHaveBeenCalledWith(testCase.expected, "DESC");
       }
@@ -153,12 +153,12 @@ describe("TypeORMMarketplaceRepository", () => {
 
       const filters = {
         status: [InvoiceStatus.PUBLISHED],
-        sort: "due_date" as const,
+        sort: "amount" as const,
         sortOrder: "ASC" as const,
       };
       const pagination = { page: 3, limit: 10 };
 
-      await marketplaceService.getPublishedInvoices(filters, pagination);
+      await marketplaceRepository.findPublishedInvoices(filters, pagination);
 
       expect(mockQueryBuilder.skip).toHaveBeenCalledWith(20); // (page - 1) * limit
       expect(mockQueryBuilder.take).toHaveBeenCalledWith(10);
@@ -174,7 +174,7 @@ describe("TypeORMMarketplaceRepository", () => {
         sortOrder: "ASC" as const,
       };
 
-      await marketplaceService.getPublishedInvoices(filters, { page: 1, limit: 20 });
+      await marketplaceRepository.findPublishedInvoices(filters, { page: 1, limit: 20 });
 
       expect(mockQueryBuilder.andWhere).toHaveBeenCalledWith("invoice.status IN (:...statuses)", {
         statuses: [InvoiceStatus.PUBLISHED, InvoiceStatus.FUNDED],
@@ -186,20 +186,20 @@ describe("TypeORMMarketplaceRepository", () => {
       mockQueryBuilder.getMany.mockResolvedValue([]);
 
       const filters = {
-        sort: "due_date" as const,
+        sort: "amount" as const,
         sortOrder: "ASC" as const,
         // No status, dueBefore, minAmount, maxAmount provided
       };
 
-      await marketplaceService.getPublishedInvoices(filters, { page: 1, limit: 20 });
+      await marketplaceRepository.findPublishedInvoices(filters, { page: 1, limit: 20 });
 
       // Should only have the base where clause for deleted_at
       expect(mockQueryBuilder.where).toHaveBeenCalledTimes(1);
-      expect(mockQueryBuilder.where).toHaveBeenCalledWith("invoice.deleted_at IS NULL");
+      expect(mockQueryBuilder.where).toHaveBeenCalledWith("invoice.deletedAt IS NULL");
       
       // Should not have additional where clauses for optional filters (except default status)
       const andWhereCalls = mockQueryBuilder.andWhere.mock.calls;
-      expect(andWhereCalls.some(call => typeof call[0] === 'string' && call[0].includes("due_date"))).toBe(false);
+      expect(andWhereCalls.some(call => typeof call[0] === 'string' && call[0].includes("dueDate"))).toBe(false);
       expect(andWhereCalls.some(call => typeof call[0] === 'string' && call[0].includes("amount"))).toBe(false);
       
       // Status filter should be applied with default value
@@ -210,13 +210,13 @@ describe("TypeORMMarketplaceRepository", () => {
       mockQueryBuilder.getCount.mockResolvedValue(25);
       mockQueryBuilder.getMany.mockResolvedValue(mockInvoices);
 
-      const result = await marketplaceService.getPublishedInvoices(
-        { status: [InvoiceStatus.PUBLISHED] },
+      const result = await marketplaceRepository.findPublishedInvoices(
+        { status: [InvoiceStatus.PUBLISHED], sort: "amount", sortOrder: "DESC" },
         { page: 1, limit: 20 },
       );
 
-      expect(result.meta.total).toBe(25);
-      expect(result.data).toHaveLength(1);
+      expect(result.total).toBe(25);
+      expect(result.invoices).toHaveLength(1);
       expect(mockQueryBuilder.getCount).toHaveBeenCalled();
       expect(mockQueryBuilder.getMany).toHaveBeenCalled();
     });

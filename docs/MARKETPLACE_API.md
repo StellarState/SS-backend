@@ -15,25 +15,27 @@ The marketplace endpoint allows unauthenticated access to published invoices, pr
 Returns a paginated list of invoices available for investment.
 
 #### Authentication
+
 - **No authentication required** - Public read access for published invoices only
 - This reduces friction for investors to discover opportunities
 
 #### Query Parameters
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `page` | integer | 1 | Page number (min: 1) |
-| `limit` | integer | 20 | Items per page (min: 1, max: 100) |
-| `status` | string/array | `["published"]` | Invoice status filter |
-| `dueBefore` | ISO date | - | Filter invoices due before this date |
-| `minAmount` | number | - | Minimum invoice amount |
-| `maxAmount` | number | - | Maximum invoice amount |
-| `sort` | string | `"due_date"` | Sort field: `due_date`, `discount_rate`, `amount`, `created_at` |
-| `sortOrder` | string | `"ASC"` | Sort order: `ASC` or `DESC` |
+| Parameter   | Type         | Default         | Description                                                     |
+| ----------- | ------------ | --------------- | --------------------------------------------------------------- |
+| `page`      | integer      | 1               | Page number (min: 1)                                            |
+| `limit`     | integer      | 20              | Items per page (min: 1, max: 100)                               |
+| `status`    | string/array | `["published"]` | Invoice status filter                                           |
+| `dueBefore` | ISO date     | -               | Filter invoices due before this date                            |
+| `minAmount` | number       | -               | Minimum invoice amount                                          |
+| `maxAmount` | number       | -               | Maximum invoice amount                                          |
+| `sort`      | string       | `"amount"`      | Sort field: `amount`, `due_date`, `discount_rate`, `created_at` |
+| `sortOrder` | string       | `"DESC"`        | Sort order: `ASC` or `DESC`                                     |
 
 #### Response Format
 
 **Success (200)**
+
 ```json
 {
   "success": true,
@@ -60,6 +62,7 @@ Returns a paginated list of invoices available for investment.
 ```
 
 **Error Responses**
+
 - `400` - Invalid query parameters
 - `500` - Server error
 
@@ -68,6 +71,7 @@ Returns a paginated list of invoices available for investment.
 The API exposes only investor-relevant fields while protecting seller privacy:
 
 ### ✅ **Public Fields (Exposed)**
+
 - `id` - Invoice identifier for investment references
 - `invoiceNumber` - Public invoice reference
 - `customerName` - Debtor information (relevant for credit assessment)
@@ -79,6 +83,7 @@ The API exposes only investor-relevant fields while protecting seller privacy:
 - `createdAt` - When invoice was created
 
 ### ❌ **Private Fields (Hidden)**
+
 - `sellerId` - Seller identity protection
 - `ipfsHash` - Internal document references
 - `riskScore` - Internal risk assessments
@@ -98,26 +103,31 @@ The field selection balances investor needs with seller privacy:
 ## Usage Examples
 
 ### Basic Listing
+
 ```bash
 curl "https://api.stellarsettle.com/api/v1/marketplace/invoices"
 ```
 
 ### Filtered Search
+
 ```bash
 curl "https://api.stellarsettle.com/api/v1/marketplace/invoices?minAmount=1000&maxAmount=50000&sort=discount_rate&sortOrder=DESC"
 ```
 
 ### Date-Based Filtering
+
 ```bash
 curl "https://api.stellarsettle.com/api/v1/marketplace/invoices?dueBefore=2024-12-31T23:59:59.999Z&sort=due_date"
 ```
 
 ### Pagination
+
 ```bash
 curl "https://api.stellarsettle.com/api/v1/marketplace/invoices?page=2&limit=50"
 ```
 
 ### Multiple Status Filter
+
 ```bash
 curl "https://api.stellarsettle.com/api/v1/marketplace/invoices?status=published&status=funded"
 ```
@@ -125,24 +135,28 @@ curl "https://api.stellarsettle.com/api/v1/marketplace/invoices?status=published
 ## Filtering & Sorting
 
 ### Status Filtering
+
 - **Default**: Only `published` invoices (ready for investment)
 - **Available statuses**: `published`, `funded`, `settled` (though `funded` and `settled` are less relevant for new investments)
 - **Multiple values**: Use array format or repeat parameter
 
 ### Amount Filtering
+
 - Both `minAmount` and `maxAmount` are optional
 - Validation ensures `minAmount ≤ maxAmount`
 - Useful for portfolio size constraints
 
 ### Date Filtering
+
 - `dueBefore`: Find invoices with shorter tenors
 - ISO 8601 date format required
 - Timezone-aware filtering
 
 ### Sorting Options
+
+- **`amount`**: Sort by invoice size (default)
 - **`due_date`**: Sort by payment due date (tenor)
 - **`discount_rate`**: Sort by yield/discount offered
-- **`amount`**: Sort by invoice size
 - **`created_at`**: Sort by listing recency
 
 ## Pagination
@@ -160,18 +174,24 @@ curl "https://api.stellarsettle.com/api/v1/marketplace/invoices?status=published
 ## Integration Notes
 
 ### Frontend Integration
+
 ```javascript
 // Fetch marketplace data
-const response = await fetch('/api/v1/marketplace/invoices?page=1&limit=20&sort=discount_rate&sortOrder=DESC');
+const response = await fetch(
+  "/api/v1/marketplace/invoices?page=1&limit=20&sort=discount_rate&sortOrder=DESC"
+);
 const { data, meta } = await response.json();
 
 // Display investment opportunities
-data.forEach(invoice => {
-  console.log(`${invoice.invoiceNumber}: ${invoice.discountRate}% discount, due ${invoice.dueDate}`);
+data.forEach((invoice) => {
+  console.log(
+    `${invoice.invoiceNumber}: ${invoice.discountRate}% discount, due ${invoice.dueDate}`
+  );
 });
 ```
 
 ### Investment Flow
+
 1. **Discovery**: Browse marketplace for suitable invoices
 2. **Analysis**: Evaluate discount rate, amount, tenor, and debtor
 3. **Investment**: Use separate investment API (out of scope for this endpoint)
@@ -186,6 +206,7 @@ data.forEach(invoice => {
 ## Future Enhancements
 
 Potential future features (out of current scope):
+
 - Full-text search across invoice documents
 - Advanced filtering (industry, geography, credit ratings)
 - Real-time updates via WebSocket

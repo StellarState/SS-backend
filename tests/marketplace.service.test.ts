@@ -98,8 +98,8 @@ describe("MarketplaceService", () => {
       expect(mockMarketplaceRepository.findPublishedInvoices).toHaveBeenCalledWith(
         {
           status: [InvoiceStatus.PUBLISHED],
-          sort: "due_date",
-          sortOrder: "ASC",
+          sort: "amount",
+          sortOrder: "DESC",
         },
         { page: 1, limit: 20 },
       );

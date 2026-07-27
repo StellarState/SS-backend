@@ -1,6 +1,7 @@
-import { DataSource, Repository } from "typeorm";
+import { DataSource } from "typeorm";
 import { Invoice } from "../models/Invoice.model";
 import { InvoiceStatus } from "../types/enums";
+import { TypeORMMarketplaceRepository } from "../repositories/marketplace.repository";
 
 export interface MarketplaceFilters {
   status?: InvoiceStatus[];
@@ -67,8 +68,8 @@ export class MarketplaceService {
       dueBefore: filters.dueBefore,
       minAmount: filters.minAmount,
       maxAmount: filters.maxAmount,
-      sort: filters.sort || "due_date",
-      sortOrder: filters.sortOrder || "ASC",
+      sort: filters.sort || "amount",
+      sortOrder: filters.sortOrder || "DESC",
     };
 
     // Validate pagination
@@ -110,82 +111,8 @@ export class MarketplaceService {
   }
 }
 
-class TypeORMMarketplaceRepository implements MarketplaceRepositoryContract {
-  private readonly repository: Repository<Invoice>;
-
-  constructor(repository: Repository<Invoice>) {
-    this.repository = repository;
-  }
-
-  async findPublishedInvoices(
-    filters: MarketplaceFilters,
-    pagination: PaginationOptions,
-  ): Promise<{ invoices: Invoice[]; total: number }> {
-    const queryBuilder = this.repository
-      .createQueryBuilder("invoice")
-      .where("invoice.deleted_at IS NULL");
-
-    // Apply status filter
-    if (filters.status && filters.status.length > 0) {
-      queryBuilder.andWhere("invoice.status IN (:...statuses)", {
-        statuses: filters.status,
-      });
-    }
-
-    // Apply date filter
-    if (filters.dueBefore) {
-      queryBuilder.andWhere("invoice.due_date <= :dueBefore", {
-        dueBefore: filters.dueBefore,
-      });
-    }
-
-    // Apply amount filters
-    if (filters.minAmount !== undefined) {
-      queryBuilder.andWhere("CAST(invoice.amount AS DECIMAL) >= :minAmount", {
-        minAmount: filters.minAmount,
-      });
-    }
-
-    if (filters.maxAmount !== undefined) {
-      queryBuilder.andWhere("CAST(invoice.amount AS DECIMAL) <= :maxAmount", {
-        maxAmount: filters.maxAmount,
-      });
-    }
-
-    // Apply sorting with stable ordering
-    const sortColumn = this.getSortColumn(filters.sort || "due_date");
-    queryBuilder.orderBy(sortColumn, filters.sortOrder || "ASC");
-    queryBuilder.addOrderBy("invoice.id", "ASC"); // Stable sort
-
-    // Get total count
-    const total = await queryBuilder.getCount();
-
-    // Apply pagination
-    const offset = (pagination.page - 1) * pagination.limit;
-    queryBuilder.skip(offset).take(pagination.limit);
-
-    const invoices = await queryBuilder.getMany();
-
-    return { invoices, total };
-  }
-
-  private getSortColumn(sort: string): string {
-    const sortMap: Record<string, string> = {
-      due_date: "invoice.due_date",
-      discount_rate: "invoice.discount_rate",
-      amount: "invoice.amount",
-      created_at: "invoice.created_at",
-    };
-
-    return sortMap[sort] || "invoice.due_date";
-  }
-}
-
 export function createMarketplaceService(dataSource: DataSource): MarketplaceService {
-  const invoiceRepository = dataSource.getRepository(Invoice);
-  const marketplaceRepository = new TypeORMMarketplaceRepository(invoiceRepository);
-
   return new MarketplaceService({
-    marketplaceRepository,
+    marketplaceRepository: new TypeORMMarketplaceRepository(dataSource),
   });
 }

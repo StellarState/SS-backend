@@ -1,23 +1,8 @@
 import crypto from "crypto";
-import { MarketplaceService, MarketplaceRepositoryContract } from "../../src/services/marketplace.service";
+import { MarketplaceService } from "../../src/services/marketplace.service";
 import { Invoice } from "../../src/models/Invoice.model";
 import { InvoiceStatus } from "../../src/types/enums";
-
-/**
- * In-memory stand-in for the TypeORM-backed marketplace repository. Mirrors
- * the real repository's status filtering (defaulting to PUBLISHED, or the
- * exact statuses requested) so this test exercises the real
- * MarketplaceService filtering logic end to end without a live database.
- */
-function createFakeMarketplaceRepository(invoices: Invoice[]): MarketplaceRepositoryContract {
-  return {
-    async findPublishedInvoices(filters) {
-      const statuses = filters.status && filters.status.length > 0 ? filters.status : [InvoiceStatus.PUBLISHED];
-      const matched = invoices.filter((invoice) => statuses.includes(invoice.status));
-      return { invoices: matched, total: matched.length };
-    },
-  };
-}
+import { createFakeMarketplaceRepository } from "./helpers/create-fake-repository";
 
 function createInvoice(overrides: Partial<Invoice> = {}): Invoice {
   return {

@@ -67,8 +67,8 @@ describe("Marketplace Routes", () => {
           dueBefore: undefined,
           minAmount: undefined,
           maxAmount: undefined,
-          sort: "due_date",
-          sortOrder: "ASC",
+          sort: "amount",
+          sortOrder: "DESC",
         },
         { page: 1, limit: 20 },
       );
@@ -228,8 +228,8 @@ describe("Marketplace Routes", () => {
           dueBefore: undefined,
           minAmount: undefined,
           maxAmount: undefined,
-          sort: "due_date",
-          sortOrder: "ASC",
+          sort: "amount",
+          sortOrder: "DESC",
         },
         { page: 1, limit: 10 },
       );
