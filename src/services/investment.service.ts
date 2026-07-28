@@ -24,9 +24,16 @@ export interface InvestorDashboard {
   totalInvested: string;
   totalReturns: string;
   activeInvestments: number;
+  activeCount: number;
+  activeTotal: string;
+  settledCount: number;
+  settledReturns: string;
+  failedCount: number;
 }
 
 const ACTIVE_INVESTMENT_STATUSES = [InvestmentStatus.PENDING, InvestmentStatus.CONFIRMED];
+const SETTLED_INVESTMENT_STATUSES = [InvestmentStatus.SETTLED];
+const FAILED_INVESTMENT_STATUSES = [InvestmentStatus.CANCELLED];
 
 export class InvestmentService {
   constructor(private readonly dataSource: DataSource) {}
@@ -47,24 +54,41 @@ export class InvestmentService {
 
     let totalInvested = new Decimal(0);
     let totalReturns = new Decimal(0);
-    let activeInvestments = 0;
+    let activeCount = 0;
+    let activeTotal = new Decimal(0);
+    let settledCount = 0;
+    let failedCount = 0;
 
     for (const investment of investments) {
-      totalInvested = totalInvested.plus(new Decimal(investment.investmentAmount));
-
-      if (investment.status === InvestmentStatus.SETTLED && investment.actualReturn !== null) {
-        totalReturns = totalReturns.plus(new Decimal(investment.actualReturn));
-      }
+     const amount = new Decimal(investment.investmentAmount);
+     totalInvested = totalInvested.plus(amount);
 
       if (ACTIVE_INVESTMENT_STATUSES.includes(investment.status)) {
-        activeInvestments += 1;
-      }
+       activeCount += 1;
+       activeTotal = activeTotal.plus(amount);
+     }
+
+     if (SETTLED_INVESTMENT_STATUSES.includes(investment.status)) {
+       settledCount += 1;
+       if (investment.actualReturn !== null) {
+         totalReturns = totalReturns.plus(new Decimal(investment.actualReturn));
+       }
+     }
+
+     if (FAILED_INVESTMENT_STATUSES.includes(investment.status)) {
+       failedCount += 1;
+     }
     }
 
     return {
-      totalInvested: totalInvested.toFixed(4),
-      totalReturns: totalReturns.toFixed(4),
-      activeInvestments,
+     totalInvested: totalInvested.toFixed(4),
+     totalReturns: totalReturns.toFixed(4),
+     activeInvestments: activeCount,
+     activeCount,
+     activeTotal: activeTotal.toFixed(4),
+     settledCount,
+     settledReturns: totalReturns.toFixed(4),
+     failedCount,
     };
   }
 
