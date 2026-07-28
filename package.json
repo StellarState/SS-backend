@@ -14,6 +14,7 @@
     "lint": "eslint \"src/**/*.ts\"",
     "type-check": "tsc --noEmit",
     "db:migrate": "node -r ts-node/register ./node_modules/typeorm/cli.js migration:run -d src/config/data-source.ts",
+    "verify:openapi": "ts-node -r tsconfig-paths/register scripts/verify-openapi-sync.ts",
     "prepare": "husky"
   },
   "dependencies": {
