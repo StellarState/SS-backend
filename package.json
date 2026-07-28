@@ -11,6 +11,7 @@
     "build": "tsc",
     "start": "node -r tsconfig-paths/register dist/index.js",
     "test": "jest",
+    "test:e2e": "jest tests/e2e --verbose",
     "lint": "eslint \"src/**/*.ts\"",
     "type-check": "tsc --noEmit",
     "db:migrate": "node -r ts-node/register ./node_modules/typeorm/cli.js migration:run -d src/config/data-source.ts",

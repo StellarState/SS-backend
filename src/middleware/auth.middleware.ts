@@ -10,6 +10,7 @@ import { UserType, KYCStatus } from "../types/enums";
 interface AuthTokenPayload {
   sub: string;
   stellarAddress: string;
+  userId?: string;
 }
 
 export function createAuthMiddleware(authService: AuthService) {
@@ -57,7 +58,7 @@ export function authenticateJWT(
     const payload = jwt.verify(token, secret) as AuthTokenPayload;
 
     (req as AuthenticatedRequest).user = {
-      id: payload.sub,
+      id: payload.userId || payload.sub,
       stellarAddress: payload.stellarAddress,
       email: null,
       userType: null as unknown as UserType,

@@ -221,6 +221,7 @@ export class AuthService {
     return jwt.sign(
       {
         stellarAddress: user.stellarAddress,
+        userId: user.id,
       },
       this.config.jwt.secret,
       {

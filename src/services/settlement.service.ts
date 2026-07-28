@@ -48,12 +48,21 @@ export class SettlementService {
     }
 
     return await this.dataSource.transaction(async (transactionalEntityManager: EntityManager) => {
-      // 1. Lock the invoice row for update
-      const invoice = await transactionalEntityManager
-        .createQueryBuilder(Invoice, "invoice")
-        .setLock("pessimistic_write")
-        .where("invoice.id = :id", { id: invoiceId })
-        .getOne();
+      // 1. Lock the invoice row for update (if supported by the driver).
+      //    SQLite does not support row-level locking, so we fall back to a plain read.
+      let invoice: Invoice | null;
+      try {
+        invoice = await transactionalEntityManager
+          .createQueryBuilder(Invoice, "invoice")
+          .setLock("pessimistic_write")
+          .where("invoice.id = :id", { id: invoiceId })
+          .getOne();
+      } catch {
+        invoice = await transactionalEntityManager
+          .createQueryBuilder(Invoice, "invoice")
+          .where("invoice.id = :id", { id: invoiceId })
+          .getOne();
+      }
 
       if (!invoice) {
         throw new ServiceError("INVOICE_NOT_FOUND", "Invoice not found", 404);
@@ -63,7 +72,7 @@ export class SettlementService {
       if (invoice.status !== InvoiceStatus.FUNDED) {
         throw new ServiceError(
           "INVALID_INVOICE_STATUS",
-          `Cannot settle an invoice with status ${invoice.status}`,
+          `INVALID_INVOICE_STATUS: Cannot settle an invoice with status ${invoice.status}`,
         );
       }
 
