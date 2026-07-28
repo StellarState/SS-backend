@@ -101,7 +101,7 @@ class InMemoryChallengeRepository implements ChallengeRepositoryContract {
   }
 }
 
-function createTestServer() {
+function createTestServer(challengeTtlMs = 60_000) {
   const userRepository = new InMemoryUserRepository();
   const challengeRepository = new InMemoryChallengeRepository();
   const authService = new AuthService({
@@ -113,7 +113,7 @@ function createTestServer() {
         expiresIn: "15m",
       },
       auth: {
-        challengeTtlMs: 60_000,
+        challengeTtlMs,
       },
       stellar: {
         network: "testnet",
@@ -128,7 +128,80 @@ function createTestServer() {
   };
 }
 
+afterEach(() => {
+jest.useRealTimers();
+});
+
 describe("Auth routes", () => {
+  it("creates unique challenges with a minimum length", async () => {
+    const { app } = createTestServer();
+    const keypair = Keypair.random();
+
+    const firstResponse = await request(app)
+      .post("/api/v1/auth/challenge")
+      .send({ publicKey: keypair.publicKey() })
+      .expect(201);
+
+    const secondResponse = await request(app)
+      .post("/api/v1/auth/challenge")
+      .send({ publicKey: keypair.publicKey() })
+      .expect(201);
+
+    expect(firstResponse.body.challenge.nonce).not.toBe(secondResponse.body.challenge.nonce);
+    expect(firstResponse.body.challenge.nonce).toHaveLength(64);
+    expect(secondResponse.body.challenge.nonce).toHaveLength(64);
+    expect(firstResponse.body.challenge.nonce.length).toBeGreaterThanOrEqual(32);
+    expect(secondResponse.body.challenge.nonce.length).toBeGreaterThanOrEqual(32);
+  });
+
+  it("accepts a fresh challenge and rejects it after the TTL expires", async () => {
+    jest.useFakeTimers();
+    const issuedAt = new Date("2026-07-28T00:00:00.000Z");
+    jest.setSystemTime(issuedAt);
+
+    const { app } = createTestServer(1_000);
+    const keypair = Keypair.random();
+
+    const challengeResponse = await request(app)
+      .post("/api/v1/auth/challenge")
+      .send({ publicKey: keypair.publicKey() })
+      .expect(201);
+
+    const { nonce, message } = challengeResponse.body.challenge;
+    const signature = keypair.sign(Buffer.from(message, "utf8")).toString("base64");
+
+    await request(app)
+      .post("/api/v1/auth/verify")
+      .send({
+        publicKey: keypair.publicKey(),
+        nonce,
+        signature,
+      })
+      .expect(200);
+
+    jest.setSystemTime(new Date(issuedAt.getTime() + 1_001));
+
+    const expiredChallengeResponse = await request(app)
+      .post("/api/v1/auth/challenge")
+      .send({ publicKey: keypair.publicKey() })
+      .expect(201);
+
+    const expiredSignature = keypair
+      .sign(Buffer.from(expiredChallengeResponse.body.challenge.message, "utf8"))
+      .toString("base64");
+
+    jest.setSystemTime(new Date(issuedAt.getTime() + 2_002));
+
+    await request(app)
+      .post("/api/v1/auth/verify")
+      .send({
+        publicKey: keypair.publicKey(),
+        nonce: expiredChallengeResponse.body.challenge.nonce,
+        signature: expiredSignature,
+      })
+      .expect(401);
+  });
+
   it("creates a JWT session and resolves /me for a valid Stellar signature", async () => {
     const { app } = createTestServer();
     const keypair = Keypair.random();
