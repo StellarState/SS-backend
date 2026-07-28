@@ -11,6 +11,8 @@ import {
   buildAuthFailureDetails,
   classifyJwtError,
 } from "../lib/auth-failure";
+import type { AppLogger } from "../observability/logger";
+import { buildWalletChallenge } from "../utils/stellar-challenge";
 
 interface ChallengeRecord {
   id: string;
@@ -55,7 +57,8 @@ interface AuthTokenPayload extends JwtPayload {
 export interface AuthServiceDependencies {
   userRepository: UserRepositoryContract;
   challengeRepository: ChallengeRepositoryContract;
-  config: Pick<AppConfig, "jwt" | "auth" | "stellar">;
+  config: Pick<AppConfig, "jwt" | "auth" | "stellar"> & { serverKeypair?: Keypair };
+  logger?: AppLogger;
 }
 
 export interface ChallengeResponse {
@@ -71,6 +74,7 @@ export interface VerifyChallengeInput {
   publicKey: string;
   nonce: string;
   signature: string;
+  ipAddress?: string;
 }
 
 export interface VerifyChallengeResponse {
@@ -84,19 +88,34 @@ export class AuthService {
   private readonly userRepository: UserRepositoryContract;
   private readonly challengeRepository: ChallengeRepositoryContract;
   private readonly config: Pick<AppConfig, "jwt" | "auth" | "stellar">;
+  private readonly logger?: AppLogger;
+  private readonly serverKeypair?: Keypair;
 
   constructor(dependencies: AuthServiceDependencies) {
     this.userRepository = dependencies.userRepository;
     this.challengeRepository = dependencies.challengeRepository;
     this.config = dependencies.config;
+    this.logger = dependencies.logger;
+    this.serverKeypair = dependencies.config.serverKeypair;
   }
 
   async createChallenge(publicKey: string): Promise<ChallengeResponse> {
     this.assertValidPublicKey(publicKey);
 
-    const nonce = crypto.randomBytes(32).toString("hex");
     const issuedAt = new Date();
     const expiresAt = new Date(issuedAt.getTime() + this.config.auth.challengeTtlMs);
+
+    let nonce: string;
+    if (this.serverKeypair) {
+      ({ nonce } = buildWalletChallenge(
+        publicKey,
+        this.config.stellar.networkPassphrase,
+        this.serverKeypair,
+      ));
+    } else {
+      nonce = crypto.randomBytes(32).toString("hex");
+    }
+
     const message = buildChallengeMessage({
       publicKey,
       nonce,
@@ -168,6 +187,14 @@ export class AuthService {
     const user = await this.upsertUser(input.publicKey);
     const publicUser = toPublicUser(user);
     const token = this.signToken(publicUser);
+
+    const decoded = jwt.decode(token) as { iat?: number; exp?: number } | null;
+    this.logger?.info("jwt.issued", {
+      wallet: publicUser.stellarAddress,
+      issued_at: decoded?.iat ? new Date(decoded.iat * 1000).toISOString() : new Date().toISOString(),
+      expires_at: decoded?.exp ? new Date(decoded.exp * 1000).toISOString() : null,
+      ip_address: input.ipAddress ?? null,
+    });
 
     return {
       token,
@@ -311,6 +338,7 @@ class TypeOrmChallengeRepository implements ChallengeRepositoryContract {
 export function createAuthService(
   dataSource: DataSource,
   config: Pick<AppConfig, "jwt" | "auth" | "stellar">,
+  logger?: AppLogger,
 ): AuthService {
   return new AuthService({
     userRepository: new TypeOrmUserRepository(dataSource.getRepository(User)),
@@ -318,6 +346,7 @@ export function createAuthService(
       dataSource.getRepository(AuthChallenge),
     ),
     config,
+    logger,
   });
 }
 
