@@ -1,4 +1,5 @@
-import type { Invoice } from "@/models/Invoice.model";
+import { Decimal } from "decimal.js";
+import type { Invoice } from "../models/Invoice.model";
 
 export interface ValidationError {
   field: string;
@@ -7,6 +8,7 @@ export interface ValidationError {
 }
 
 const MIN_LEAD_TIME_MS = 24 * 60 * 60 * 1000;
+export const MIN_FACE_VALUE_XLM = new Decimal("100");
 
 /**
  * Validates that an invoice meets the minimum field requirements
@@ -15,12 +17,12 @@ const MIN_LEAD_TIME_MS = 24 * 60 * 60 * 1000;
 export function validateInvoiceForPublish(invoice: Invoice): ValidationError[] {
   const errors: ValidationError[] = [];
 
-  const faceValue = parseFloat(invoice.amount);
-  if (!(faceValue > 0)) {
+  const faceValue = new Decimal(invoice.amount);
+  if (faceValue.lessThan(MIN_FACE_VALUE_XLM)) {
     errors.push({
       field: "amount",
-      code: "FACE_VALUE_NOT_POSITIVE",
-      message: "Invoice face value must be greater than zero.",
+      code: "FACE_VALUE_TOO_LOW",
+      message: `Invoice face value must be at least ${MIN_FACE_VALUE_XLM.toFixed(4)} XLM.`,
     });
   }
 

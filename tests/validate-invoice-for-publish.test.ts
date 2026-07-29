@@ -1,4 +1,7 @@
-import { validateInvoiceForPublish } from "../src/lib/validate-invoice-for-publish";
+import {
+  MIN_FACE_VALUE_XLM,
+  validateInvoiceForPublish,
+} from "../src/lib/validate-invoice-for-publish";
 import { Invoice } from "../src/models/Invoice.model";
 import { InvoiceStatus } from "../src/types/enums";
 
@@ -40,14 +43,28 @@ describe("validateInvoiceForPublish", () => {
     const invoice = createInvoice({ amount: "0.0000" });
     const errors = validateInvoiceForPublish(invoice);
     expect(errors).toHaveLength(1);
-    expect(errors[0]).toMatchObject({ field: "amount", code: "FACE_VALUE_NOT_POSITIVE" });
+    expect(errors[0]).toMatchObject({ field: "amount", code: "FACE_VALUE_TOO_LOW" });
   });
 
-  it("returns a validation error for a negative face value", () => {
-    const invoice = createInvoice({ amount: "-100.0000" });
+  it("returns a validation error for a below-minimum face value", () => {
+    const invoice = createInvoice({ amount: "99.9999" });
     const errors = validateInvoiceForPublish(invoice);
     expect(errors).toHaveLength(1);
-    expect(errors[0]).toMatchObject({ field: "amount", code: "FACE_VALUE_NOT_POSITIVE" });
+    expect(errors[0]).toMatchObject({
+      field: "amount",
+      code: "FACE_VALUE_TOO_LOW",
+      message: `Invoice face value must be at least ${MIN_FACE_VALUE_XLM.toFixed(4)} XLM.`,
+    });
+  });
+
+  it("returns no validation errors at the exact minimum face value", () => {
+    const invoice = createInvoice({ amount: MIN_FACE_VALUE_XLM.toFixed(4) });
+    expect(validateInvoiceForPublish(invoice)).toEqual([]);
+  });
+
+  it("returns no validation errors above the minimum face value", () => {
+    const invoice = createInvoice({ amount: "100.0001" });
+    expect(validateInvoiceForPublish(invoice)).toEqual([]);
   });
 
   it("returns a validation error for a due date in the past", () => {
@@ -80,7 +97,7 @@ describe("validateInvoiceForPublish", () => {
     const errors = validateInvoiceForPublish(invoice);
     expect(errors).toHaveLength(3);
     expect(errors.map((e) => e.code)).toEqual(
-      expect.arrayContaining(["FACE_VALUE_NOT_POSITIVE", "DUE_DATE_TOO_SOON", "MISSING_DOCUMENT"]),
+      expect.arrayContaining(["FACE_VALUE_TOO_LOW", "DUE_DATE_TOO_SOON", "MISSING_DOCUMENT"]),
     );
   });
 });

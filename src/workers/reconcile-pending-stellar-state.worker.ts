@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import { DataSource, LessThanOrEqual, Not, IsNull, Repository } from "typeorm";
 import type { AppConfig } from "../config/env";
 import type {
@@ -130,6 +131,14 @@ export class ReconcilePendingStellarStateWorker {
         cutoff,
         this.config.batchSize,
       );
+
+      const cycleId = randomUUID();
+      this.logger.info("Started Stellar reconciliation tick.", {
+        cycle_id: cycleId,
+        pending_count: candidates.length,
+        started_at: startedAt.toISOString(),
+      });
+
       const result: ReconciliationTickResult = {
         ...EMPTY_TICK_RESULT,
         candidatesFetched: candidates.length,
@@ -175,8 +184,12 @@ export class ReconcilePendingStellarStateWorker {
 
       result.durationMs = this.now().getTime() - startedAt.getTime();
 
-      this.logger.info("Completed Stellar reconciliation tick.", {
-        ...result,
+      this.logger.debug("Completed Stellar reconciliation tick.", {
+        cycle_id: cycleId,
+        confirmed_count: result.verified,
+        failed_count: result.failed,
+        skipped_count: result.alreadyVerified,
+        duration_ms: result.durationMs,
       });
 
       return result;

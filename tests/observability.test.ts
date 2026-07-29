@@ -137,6 +137,31 @@ describe("Observability", () => {
 
   });
 
+  it("logs structured auth failure metadata after a 401 response", async () => {
+    const logger = new CaptureLogger();
+    const app = createApp({
+      authService: createAuthServiceStub(),
+      logger,
+      metricsEnabled: true,
+      metricsRegistry: new MetricsRegistry(),
+    });
+
+    await request(app).get("/api/v1/auth/me").expect(401);
+
+    const authFailureLog = logger.entries.find(
+      (entry) => entry.level === "warn" && entry.message === "API authentication failure.",
+    );
+
+    expect(authFailureLog).toBeDefined();
+    expect(authFailureLog?.metadata).toMatchObject({
+      method: "GET",
+      path: "/api/v1/auth/me",
+      reason: "missing_token",
+      truncated_address: null,
+      failed_at: expect.any(String),
+    });
+  });
+
   it("exposes Prometheus metrics for matched routes and unmatched requests", async () => {
     const app = createApp({
       authService: createAuthServiceStub(),

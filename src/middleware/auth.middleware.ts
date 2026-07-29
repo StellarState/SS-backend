@@ -6,6 +6,10 @@ import type { AuthenticatedRequest } from "../types/auth";
 
 import { HttpError } from "../utils/http-error";
 import { UserType, KYCStatus } from "../types/enums";
+import {
+  buildAuthFailureDetails,
+  classifyJwtError,
+} from "../lib/auth-failure";
 
 interface AuthTokenPayload {
   sub: string;
@@ -21,7 +25,13 @@ export function createAuthMiddleware(authService: AuthService) {
     const authHeader = req.headers.authorization;
 
     if (!authHeader?.startsWith("Bearer ")) {
-      next(new HttpError(401, "Authorization token is required."));
+      next(
+        new HttpError(
+          401,
+          "Authorization token is required.",
+          buildAuthFailureDetails(undefined, "missing_token"),
+        ),
+      );
       return;
     }
 
@@ -30,8 +40,19 @@ export function createAuthMiddleware(authService: AuthService) {
     try {
       req.user = await authService.getCurrentUser(token);
       next();
-    } catch {
-      next(new HttpError(401, "Invalid or expired token."));
+    } catch (error) {
+      if (error instanceof HttpError) {
+        next(error);
+        return;
+      }
+
+      next(
+        new HttpError(
+          401,
+          "Invalid or expired token.",
+          buildAuthFailureDetails(token, classifyJwtError(error)),
+        ),
+      );
     }
   };
 }
@@ -44,7 +65,13 @@ export function authenticateJWT(
   const authHeader = req.headers.authorization;
 
   if (!authHeader?.startsWith("Bearer ")) {
-    next(new HttpError(401, "Authorization token is required."));
+    next(
+      new HttpError(
+        401,
+        "Authorization token is required.",
+        buildAuthFailureDetails(undefined, "missing_token"),
+      ),
+    );
     return;
   }
 
@@ -67,8 +94,14 @@ export function authenticateJWT(
     };
 
     next();
-  } catch {
-    next(new HttpError(401, "Invalid or expired token."));
+  } catch (error) {
+    next(
+      new HttpError(
+        401,
+        "Invalid or expired token.",
+        buildAuthFailureDetails(token, classifyJwtError(error)),
+      ),
+    );
   }
 }
 

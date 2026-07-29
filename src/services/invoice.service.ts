@@ -68,6 +68,12 @@ export interface PublishInvoiceInput {
   sellerId: string;
 }
 
+export interface CommitmentDTO {
+  investor_wallet: string;
+  amount: string;
+  share_percent: string;
+}
+
 export interface InvoiceDTO {
   id: string;
   sellerId: string;
@@ -83,6 +89,7 @@ export interface InvoiceDTO {
   smartContractId: string | null;
   createdAt: Date;
   updatedAt: Date;
+  commitments?: CommitmentDTO[];
 }
 
 export interface GetInvoicesOptions {

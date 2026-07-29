@@ -7,6 +7,10 @@ import { AuthChallenge } from "../models/AuthChallenge.model";
 import { User } from "../models/User.model";
 import type { PublicUser } from "../types/auth";
 import { HttpError } from "../utils/http-error";
+import {
+  buildAuthFailureDetails,
+  classifyJwtError,
+} from "../lib/auth-failure";
 
 interface ChallengeRecord {
   id: string;
@@ -178,12 +182,20 @@ export class AuthService {
 
     try {
       payload = jwt.verify(token, this.config.jwt.secret) as AuthTokenPayload;
-    } catch {
-      throw new HttpError(401, "Invalid or expired token.");
+    } catch (error) {
+      throw new HttpError(
+        401,
+        "Invalid or expired token.",
+        buildAuthFailureDetails(token, classifyJwtError(error)),
+      );
     }
 
     if (!payload.sub) {
-      throw new HttpError(401, "Invalid token payload.");
+      throw new HttpError(
+        401,
+        "Invalid token payload.",
+        buildAuthFailureDetails(token, "invalid_token"),
+      );
     }
 
     const user = await this.userRepository.findByStellarAddress(payload.sub);

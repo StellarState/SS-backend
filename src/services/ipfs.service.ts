@@ -35,7 +35,8 @@ export class IPFSService {
     fileBuffer: Buffer,
     filename: string,
     mimeType: string,
-    invoiceId?: string
+    invoiceId?: string,
+    attemptNumber: number = 1
   ): Promise<IPFSUploadResult> {
     // Validate file size
     const fileSizeMB = fileBuffer.length / (1024 * 1024);
@@ -55,6 +56,16 @@ export class IPFSService {
         400
       );
     }
+
+    // Log upload attempt before making the HTTP call
+    const gateway = new URL(this.config.apiUrl).hostname;
+    this.logger.info("IPFS document upload attempt", {
+      invoice_id: invoiceId,
+      file_size_bytes: fileBuffer.length,
+      gateway,
+      attempt_number: attemptNumber,
+      initiated_at: new Date().toISOString(),
+    });
 
     try {
       const formData = new FormData();

@@ -106,6 +106,98 @@ function createInvoice(overrides: Partial<Invoice> = {}): Invoice {
   } as Invoice;
 }
 
+describe("Settlement integration: rejecting settlement of non-fully-funded invoices (#88)", () => {
+  it("should reject settlement of a published invoice (no investments)", async () => {
+    const invoice = createInvoice({ status: InvoiceStatus.PUBLISHED });
+    const { dataSource } = createFakeDataSource(invoice);
+
+    const settlementService = new SettlementService(dataSource);
+
+    await expect(
+      settlementService.settleInvoice({
+        invoiceId: invoice.id,
+        proceeds: "6000.0000",
+        actorWallet: "GADMIN",
+      }),
+    ).rejects.toThrow(/Cannot settle an invoice with status published/);
+  });
+
+  it("should reject settlement of a partially funded invoice", async () => {
+    const invoice = createInvoice({ status: InvoiceStatus.PUBLISHED });
+    const { dataSource, investments } = createFakeDataSource(invoice);
+
+    const investmentService = new InvestmentService(dataSource);
+    const settlementService = new SettlementService(dataSource);
+
+    // Fund only 50%
+    const investorAId = crypto.randomUUID();
+    const investmentA = await investmentService.createInvestment({
+      invoiceId: invoice.id,
+      investorId: investorAId,
+      investmentAmount: "3000.0000",
+      investorWallet: "GINVESTORA",
+    });
+
+    // Mark confirmed but invoice is not fully funded
+    const stored = investments.get(investmentA.id)!;
+    stored.status = InvestmentStatus.CONFIRMED;
+    investments.set(investmentA.id, stored);
+
+    // Manually set status to PUBLISHED (not FUNDED) since only partial funding
+    invoice.status = InvoiceStatus.PUBLISHED;
+
+    await expect(
+      settlementService.settleInvoice({
+        invoiceId: invoice.id,
+        proceeds: "6000.0000",
+        actorWallet: "GADMIN",
+      }),
+    ).rejects.toThrow(/Cannot settle an invoice with status published/);
+  });
+
+  it("should succeed when invoice is fully funded", async () => {
+    const invoice = createInvoice({ status: InvoiceStatus.PUBLISHED });
+    const { dataSource, invoices, investments } = createFakeDataSource(invoice);
+
+    const investmentService = new InvestmentService(dataSource);
+    const settlementService = new SettlementService(dataSource);
+
+    const investorAId = crypto.randomUUID();
+    const investorBId = crypto.randomUUID();
+
+    const investmentA = await investmentService.createInvestment({
+      invoiceId: invoice.id,
+      investorId: investorAId,
+      investmentAmount: "4000.0000",
+      investorWallet: "GINVESTORA",
+    });
+
+    const investmentB = await investmentService.createInvestment({
+      invoiceId: invoice.id,
+      investorId: investorBId,
+      investmentAmount: "2000.0000",
+      investorWallet: "GINVESTORB",
+    });
+
+    for (const investment of [investmentA, investmentB]) {
+      const stored = investments.get(investment.id)!;
+      stored.status = InvestmentStatus.CONFIRMED;
+      investments.set(investment.id, stored);
+    }
+
+    expect(invoices.get(invoice.id)?.status).toBe(InvoiceStatus.FUNDED);
+
+    const result = await settlementService.settleInvoice({
+      invoiceId: invoice.id,
+      proceeds: "6600.0000",
+      actorWallet: "GADMIN",
+    });
+
+    expect(result.status).toBe(InvoiceStatus.SETTLED);
+    expect(result.settlements).toHaveLength(2);
+  });
+});
+
 describe("Settlement integration: funding multiple investors then settling", () => {
   it("distributes proceeds pro-rata to each investor and marks the invoice settled", async () => {
     const invoice = createInvoice();
@@ -163,5 +255,40 @@ describe("Settlement integration: funding multiple investors then settling", () 
       0,
     );
     expect(sumOfReturns).toBeCloseTo(6600, 4);
+  });
+});
+
+describe("Settlement integration: single investor 100% share", () => {
+  it("returns the full proceeds to the only investor", async () => {
+    const invoice = createInvoice();
+    const { dataSource, invoices, investments } = createFakeDataSource(invoice);
+
+    const investmentService = new InvestmentService(dataSource);
+    const settlementService = new SettlementService(dataSource);
+
+    const investorId = crypto.randomUUID();
+    const investment = await investmentService.createInvestment({
+      invoiceId: invoice.id,
+      investorId,
+      investmentAmount: "6000.0000",
+      investorWallet: "GINVESTOR100000000000000000000000000000000000000000000000",
+    });
+
+    const stored = investments.get(investment.id)!;
+    stored.status = InvestmentStatus.CONFIRMED;
+    investments.set(investment.id, stored);
+
+    expect(invoices.get(invoice.id)?.status).toBe(InvoiceStatus.FUNDED);
+
+    const result = await settlementService.settleInvoice({
+      invoiceId: invoice.id,
+      proceeds: "3300.0000",
+      actorWallet: "GADMINWALLET1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    });
+
+    expect(result.status).toBe(InvoiceStatus.SETTLED);
+    expect(result.settlements).toHaveLength(1);
+    expect(result.settlements[0]?.actualReturn).toBe("3300.0000");
+    expect(invoices.get(invoice.id)?.status).toBe(InvoiceStatus.SETTLED);
   });
 });

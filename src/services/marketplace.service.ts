@@ -9,6 +9,7 @@ export interface MarketplaceFilters {
   maxAmount?: number;
   sort?: "due_date" | "discount_rate" | "amount" | "created_at";
   sortOrder?: "ASC" | "DESC";
+  search?: string;
 }
 
 export interface PaginationOptions {
@@ -67,8 +68,9 @@ export class MarketplaceService {
       dueBefore: filters.dueBefore,
       minAmount: filters.minAmount,
       maxAmount: filters.maxAmount,
-      sort: filters.sort || "due_date",
-      sortOrder: filters.sortOrder || "ASC",
+      sort: filters.sort || "amount",
+      sortOrder: filters.sortOrder || "DESC",
+      search: filters.search,
     };
 
     // Validate pagination
@@ -149,6 +151,13 @@ class TypeORMMarketplaceRepository implements MarketplaceRepositoryContract {
     if (filters.maxAmount !== undefined) {
       queryBuilder.andWhere("CAST(invoice.amount AS DECIMAL) <= :maxAmount", {
         maxAmount: filters.maxAmount,
+      });
+    }
+
+    // Apply search filter (case-insensitive match on customer_name)
+    if (filters.search) {
+      queryBuilder.andWhere("LOWER(invoice.customer_name) LIKE :search", {
+        search: `%${filters.search.toLowerCase()}%`,
       });
     }
 

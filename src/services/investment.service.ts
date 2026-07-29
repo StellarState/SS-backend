@@ -8,6 +8,7 @@ import { logInvoiceTransition } from "../lib/invoice-lifecycle-log";
 import { logger } from "../observability/logger";
 import { NotificationType } from "../types/enums";
 import type { NotificationService } from "./notification.service";
+import { stroopsToXlm } from "../lib/stellar-format";
 
 // Formula for expected return:
 // Investor's share of the invoice face value (amount) proportional to their contribution to the fundable amount (netAmount).
@@ -156,7 +157,23 @@ export class InvestmentService {
 
       const savedInvestment = await transactionalEntityManager.save(Investment, investment);
 
-      // 7. Transition invoice to FUNDED if fully subscribed
+      // 7. Emit structured log for the investment commitment
+      const truncatedWallet =
+        investorWallet.length >= 8
+          ? `${investorWallet.slice(0, 4)}…${investorWallet.slice(-4)}`
+          : investorWallet;
+      const sharePercent = amount.dividedBy(netAmount).times(100).toFixed(2);
+
+      logger.info("investment.committed", {
+        investment_id: savedInvestment.id,
+        invoice_id: invoiceId,
+        investor_wallet: truncatedWallet,
+        amount_xlm: stroopsToXlm(BigInt(amount.times(10_000_000).toFixed(0))),
+        share_percent: sharePercent,
+        committed_at: savedInvestment.createdAt?.toISOString() ?? new Date().toISOString(),
+      });
+
+      // 8. Transition invoice to FUNDED if fully subscribed
       const newTotalInvested = totalInvested.plus(amount);
       if (newTotalInvested.gte(netAmount)) {
         const previousStatus = invoice.status;

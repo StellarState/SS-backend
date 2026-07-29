@@ -2,6 +2,7 @@ import type { NextFunction, Request, Response } from "express";
 import type { AppLogger } from "../observability/logger";
 
 import { AppError, HttpError } from "../utils/http-error";
+import type { AuthFailureDetails } from "../lib/auth-failure";
 
 export function notFoundMiddleware(
   _req: Request,
@@ -20,19 +21,34 @@ export function createErrorMiddleware(logger: AppLogger) {
   ): void => {
 
     if (error instanceof AppError || error instanceof HttpError) {
-      logger.warn("HTTP request failed.", {
-        method: req.method,
-        path: req.path,
-        statusCode: error.statusCode,
-        error: error.message,
-      });
-
       res.status(error.statusCode).json({
         success: false,
         error: {
           code: error.code,
           message: error.message,
         },
+      });
+
+      const authFailure = (error.details as { authFailure?: AuthFailureDetails } | undefined)
+        ?.authFailure;
+
+      if (error.statusCode === 401 && authFailure) {
+        logger.warn("API authentication failure.", {
+          method: req.method,
+          path: req.path,
+          reason: authFailure.reason,
+          truncated_address: authFailure.truncatedAddress,
+          failed_at: authFailure.failedAt,
+          statusCode: error.statusCode,
+        });
+        return;
+      }
+
+      logger.warn("HTTP request failed.", {
+        method: req.method,
+        path: req.path,
+        statusCode: error.statusCode,
+        error: error.message,
       });
 
       return;
