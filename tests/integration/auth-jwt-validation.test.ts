@@ -1,119 +1,202 @@
-import request from "supertest";
-import express from "express";
+import crypto from "crypto";
 import jwt from "jsonwebtoken";
-import { createInvoiceRouter } from "../../src/routes/invoice.routes";
-import { createErrorMiddleware } from "../../src/middleware/error.middleware";
-import { logger } from "../../src/observability/logger";
-import { InvoiceStatus } from "../../src/types/enums";
+import { Networks } from "stellar-sdk";
+import request from "supertest";
 
-describe("Auth JWT validation: expired token rejection", () => {
-  let app: express.Application;
-  let mockInvoiceService: any;
+import { createApp } from "../../src/app";
+import { AuthService } from "../../src/services/auth.service";
+import type {
+  ChallengeRepositoryContract,
+  UserRepositoryContract,
+} from "../../src/services/auth.service";
+import { User } from "../../src/models/User.model";
+import { KYCStatus, UserType } from "../../src/types/enums";
 
-  const sellerId = "seller-123";
+// ── In-memory repositories ────────────────────────────────────────────────────
 
-  const expiredToken = jwt.sign(
-    { sub: sellerId, stellarAddress: "GTEST123" },
-    "test-secret",
-    { expiresIn: "-5m" },
-  );
+type InMemoryUser = User;
 
-  const validToken = jwt.sign(
-    { sub: sellerId, stellarAddress: "GTEST123" },
-    "test-secret",
-  );
+interface InMemoryChallenge {
+  id: string;
+  stellarAddress: string;
+  nonceHash: string;
+  message: string;
+  network: string;
+  issuedAt: Date;
+  expiresAt: Date;
+  consumedAt: Date | null;
+}
 
-  const mockInvoice = {
-    id: "invoice-123",
-    sellerId,
-    invoiceNumber: "INV-001",
-    customerName: "Test Customer",
-    amount: "1000.00",
-    discountRate: "10.00",
-    netAmount: "900.00",
-    dueDate: "2024-12-31T00:00:00.000Z",
-    status: InvoiceStatus.DRAFT,
-    ipfsHash: null,
-    riskScore: null,
-    smartContractId: null,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
+class InMemoryUserRepository implements UserRepositoryContract {
+  private readonly users = new Map<string, InMemoryUser>();
 
-  beforeEach(() => {
-    mockInvoiceService = {
-      createInvoice: jest.fn(),
-      getInvoiceById: jest.fn(),
-      getInvoicesBySellerId: jest.fn(),
-      updateInvoice: jest.fn(),
-      deleteInvoice: jest.fn(),
-      publishInvoice: jest.fn(),
-      uploadDocument: jest.fn(),
+  async findById(id: string) {
+    return this.users.get(id) ?? null;
+  }
+
+  async findByStellarAddress(stellarAddress: string) {
+    return (
+      [...this.users.values()].find(
+        (user) => user.stellarAddress === stellarAddress,
+      ) ?? null
+    );
+  }
+
+  async save(user: Partial<InMemoryUser>) {
+    const now = new Date();
+    const entity: InMemoryUser = {
+      id: crypto.randomUUID(),
+      stellarAddress: user.stellarAddress ?? "",
+      email: user.email ?? null,
+      userType: user.userType ?? UserType.INVESTOR,
+      kycStatus: user.kycStatus ?? KYCStatus.PENDING,
+      createdAt: user.createdAt ?? now,
+      updatedAt: user.updatedAt ?? now,
+      deletedAt: user.deletedAt ?? null,
+      invoices: user.invoices ?? [],
+      investments: user.investments ?? [],
+      transactions: user.transactions ?? [],
+      kycVerifications: user.kycVerifications ?? [],
+      notifications: user.notifications ?? [],
     };
 
-    process.env.JWT_SECRET = "test-secret";
+    this.users.set(entity.id, entity);
+    return entity;
+  }
+}
 
-    app = express();
-    app.use(express.json());
-    app.use(
-      "/api/v1/invoices",
-      createInvoiceRouter({
-        invoiceService: mockInvoiceService,
-        config: {
-          ipfs: {
-            apiUrl: "https://api.pinata.cloud",
-            jwt: "test-jwt-token",
-            maxFileSizeMB: 10,
-            allowedMimeTypes: ["application/pdf", "image/jpeg", "image/png"],
-            uploadRateLimit: {
-              windowMs: 900000,
-              maxUploads: 10,
-            },
-          },
-          kyc: { skipVerification: true },
-        } as any,
-      }),
+class InMemoryChallengeRepository implements ChallengeRepositoryContract {
+  readonly challenges = new Map<string, InMemoryChallenge>();
+
+  async create(input: InMemoryChallenge) {
+    const challenge: InMemoryChallenge = {
+      id: crypto.randomUUID(),
+      stellarAddress: input.stellarAddress,
+      nonceHash: input.nonceHash,
+      message: input.message,
+      network: input.network,
+      issuedAt: input.issuedAt,
+      expiresAt: input.expiresAt,
+      consumedAt: null,
+    };
+
+    this.challenges.set(challenge.id, challenge);
+    return challenge;
+  }
+
+  async findByAddressAndNonceHash(stellarAddress: string, nonceHash: string) {
+    return (
+      [...this.challenges.values()].find(
+        (challenge) =>
+          challenge.stellarAddress === stellarAddress &&
+          challenge.nonceHash === nonceHash,
+      ) ?? null
     );
-    app.use(createErrorMiddleware(logger));
+  }
+
+  async consume(id: string, consumedAt: Date) {
+    const challenge = this.challenges.get(id);
+
+    if (!challenge || challenge.consumedAt) {
+      return false;
+    }
+
+    challenge.consumedAt = consumedAt;
+    return true;
+  }
+}
+
+// ── Test helpers ──────────────────────────────────────────────────────────────
+
+const VALID_JWT_SECRET = "valid-test-secret";
+
+function createTestApp() {
+  const authService = new AuthService({
+    userRepository: new InMemoryUserRepository(),
+    challengeRepository: new InMemoryChallengeRepository(),
+    config: {
+      jwt: {
+        secret: VALID_JWT_SECRET,
+        expiresIn: "15m",
+      },
+      auth: {
+        challengeTtlMs: 60_000,
+      },
+      stellar: {
+        network: "testnet",
+        networkPassphrase: Networks.TESTNET,
+      },
+    },
   });
 
-  afterEach(() => {
-    delete process.env.JWT_SECRET;
-  });
+  return createApp({ authService });
+}
 
-  it("rejects GET /api/v1/invoices with expired JWT token", async () => {
-    mockInvoiceService.getInvoicesBySellerId.mockResolvedValue({
-      invoices: [mockInvoice],
-      total: 1,
-    });
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+describe("JWT authentication validation", () => {
+  it("rejects GET /api/v1/auth/me when the JWT is signed with an invalid secret key", async () => {
+    const app = createTestApp();
+
+    const forgedToken = jwt.sign(
+      {
+        sub: "GFORGED_STELLAR_ADDRESS",
+        stellarAddress: "GFORGED_STELLAR_ADDRESS",
+        userId: crypto.randomUUID(),
+      },
+      "invalid-secret-key",
+      { expiresIn: "15m" },
+    );
 
     const response = await request(app)
-      .get("/api/v1/invoices")
+      .get("/api/v1/auth/me")
+      .set("Authorization", `Bearer ${forgedToken}`)
+      .expect(401);
+
+    expect(response.body).toMatchObject({
+      success: false,
+      error: {
+        message: "Invalid or expired token.",
+      },
+    });
+  });
+
+  it("rejects GET /api/v1/auth/me with expired JWT token", async () => {
+    const app = createTestApp();
+
+    const expiredToken = jwt.sign(
+      {
+        sub: "GEXPIRED_STELLAR_ADDRESS",
+        stellarAddress: "GEXPIRED_STELLAR_ADDRESS",
+        userId: crypto.randomUUID(),
+      },
+      VALID_JWT_SECRET,
+      { expiresIn: "-5m" },
+    );
+
+    const response = await request(app)
+      .get("/api/v1/auth/me")
       .set("Authorization", `Bearer ${expiredToken}`)
       .expect(401);
 
-    expect(response.body.success).toBe(false);
-    expect(response.body.error.message).toBe("Invalid or expired token.");
-  });
-
-  it("accepts GET /api/v1/invoices with valid JWT token", async () => {
-    mockInvoiceService.getInvoicesBySellerId.mockResolvedValue({
-      invoices: [mockInvoice],
-      total: 1,
+    expect(response.body).toMatchObject({
+      success: false,
+      error: {
+        message: "Invalid or expired token.",
+      },
     });
-
-    const response = await request(app)
-      .get("/api/v1/invoices")
-      .set("Authorization", `Bearer ${validToken}`)
-      .expect(200);
-
-    expect(response.body.success).toBe(true);
-    expect(response.body.data).toHaveLength(1);
   });
 
-  it("rejects GET /api/v1/invoices with no token", async () => {
-    await request(app)
-      .get("/api/v1/invoices")
-      .expect(401);
+  it("returns 401 from /me when the bearer token is missing", async () => {
+    const app = createTestApp();
+
+    const response = await request(app).get("/api/v1/auth/me").expect(401);
+
+    expect(response.body).toMatchObject({
+      success: false,
+      error: {
+        message: "Authorization token is required.",
+      },
+    });
   });
 });

@@ -24,6 +24,7 @@ All commit messages must follow [Conventional Commits](https://www.conventionalc
 | `test`    | Adding or updating tests |
 | `ci`      | CI / workflow changes |
 
+
 ### Examples
 
 - `feat(auth): add wallet challenge endpoint`

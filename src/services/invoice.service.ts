@@ -1,7 +1,9 @@
 import { DataSource } from "typeorm";
+import Decimal from "decimal.js";
 import { Invoice } from "../models/Invoice.model";
+import { Investment } from "../models/Investment.model";
 import { User } from "../models/User.model";
-import { InvoiceStatus, KYCStatus } from "../types/enums";
+import { InvoiceStatus, KYCStatus, InvestmentStatus } from "../types/enums";
 import { ServiceError } from "../utils/service-error";
 import { validateInvoiceForPublish } from "../lib/validate-invoice-for-publish";
 import { logInvoiceTransition } from "../lib/invoice-lifecycle-log";
@@ -25,6 +27,7 @@ export interface InvoiceRepositoryContract {
 export interface InvoiceServiceDependencies {
   invoiceRepository: InvoiceRepositoryContract;
   ipfsService: IPFSService;
+  dataSource?: DataSource;
 }
 
 export interface UploadDocumentInput {
@@ -114,10 +117,12 @@ const VALID_TRANSITIONS: Record<InvoiceStatus, InvoiceStatus[]> = {
 export class InvoiceService {
   private readonly invoiceRepository: InvoiceRepositoryContract;
   private readonly ipfsService: IPFSService;
+  private readonly dataSource?: DataSource;
 
   constructor(dependencies: InvoiceServiceDependencies) {
     this.invoiceRepository = dependencies.invoiceRepository;
     this.ipfsService = dependencies.ipfsService;
+    this.dataSource = dependencies.dataSource;
   }
 
   /**
@@ -422,6 +427,110 @@ export class InvoiceService {
   }
 
   /**
+   * Get all token holders for a published invoice with their token balances and percentage shares
+   */
+  async getInvoiceTokenHolders(invoiceId: string): Promise<
+    Array<{
+      walletAddress: string;
+      investmentAmount: string;
+      percentageShare: string;
+      status: InvestmentStatus;
+    }>
+  > {
+    const invoice = await this.invoiceRepository.findOne({
+      where: { id: invoiceId },
+    });
+
+    if (!invoice) {
+      throw new ServiceError("invoice_not_found", "Invoice not found", 404);
+    }
+
+    if (invoice.status === InvoiceStatus.DRAFT) {
+      throw new ServiceError(
+        "invalid_invoice_status",
+        "Token holders can only be queried for published invoices",
+        400
+      );
+    }
+
+    if (!this.dataSource) {
+      throw new ServiceError(
+        "internal_error",
+        "Database connection unavailable",
+        500
+      );
+    }
+
+    const investmentRepository = this.dataSource.getRepository(Investment);
+
+    const investments = await investmentRepository
+      .createQueryBuilder("investment")
+      .leftJoinAndSelect("investment.investor", "investor")
+      .where("investment.invoiceId = :invoiceId", { invoiceId })
+      .andWhere("investment.deletedAt IS NULL")
+      .getMany();
+
+    if (investments.length === 0) {
+      return [];
+    }
+
+    const totalInvested = investments.reduce(
+      (sum, inv) => sum.plus(new Decimal(inv.investmentAmount)),
+      new Decimal(0)
+    );
+
+    return investments.map((investment) => {
+      const investor = investment.investor as unknown as User;
+      const percentage = totalInvested.isZero()
+        ? new Decimal(0)
+        : new Decimal(investment.investmentAmount)
+            .dividedBy(totalInvested)
+            .times(100)
+            .toDecimalPlaces(2);
+
+      return {
+        walletAddress: investor.stellarAddress,
+        investmentAmount: investment.investmentAmount,
+        percentageShare: percentage.toString(),
+        status: investment.status,
+      };
+    });
+  }
+
+  /**
+   * Get on-chain escrow status for an invoice
+   */
+  async getInvoiceEscrowStatus(invoiceId: string): Promise<{
+    invoiceId: string;
+    hasEscrow: boolean;
+    contractId: string | null;
+    status: string | null;
+  }> {
+    const invoice = await this.invoiceRepository.findOne({
+      where: { id: invoiceId },
+    });
+
+    if (!invoice) {
+      throw new ServiceError("invoice_not_found", "Invoice not found", 404);
+    }
+
+    if (!invoice.smartContractId) {
+      throw new ServiceError(
+        "no_escrow_contract",
+        "This invoice does not have a deployed escrow contract",
+        404
+      );
+    }
+
+    return {
+      invoiceId: invoice.id,
+      hasEscrow: true,
+      contractId: invoice.smartContractId,
+      status: invoice.status,
+    };
+  }
+
+  /**
    * Convert Invoice model to DTO
    */
   private toDTO(invoice: Invoice): InvoiceDTO {
@@ -453,5 +562,6 @@ export function createInvoiceService(
   return new InvoiceService({
     invoiceRepository,
     ipfsService,
+    dataSource,
   });
 }

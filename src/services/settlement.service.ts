@@ -7,7 +7,14 @@ import { ServiceError } from "../utils/service-error";
 import { computeInvestorReturn } from "../lib/investor-return";
 import { decimalStringToScaledBigInt, scaledBigIntToDecimalString } from "../lib/decimal-bigint";
 import { logInvoiceTransition } from "../lib/invoice-lifecycle-log";
+import { logSettlementCompletion } from "../lib/settlement-completion-log";
 import { logger } from "../observability/logger";
+
+// settlement.service.ts stores/computes amounts as decimal strings scaled by
+// 10^4 (see decimal-bigint.ts), while stroopsToXlm expects a stroops count
+// (10^7 scale). Multiplying by 10^3 converts between the two without any
+// loss of precision, since 7 - 4 = 3.
+const DECIMAL_SCALE_TO_STROOP_FACTOR = 10n ** 3n;
 
 export interface SettleInvoiceInput {
   invoiceId: string;
@@ -48,12 +55,21 @@ export class SettlementService {
     }
 
     return await this.dataSource.transaction(async (transactionalEntityManager: EntityManager) => {
-      // 1. Lock the invoice row for update
-      const invoice = await transactionalEntityManager
-        .createQueryBuilder(Invoice, "invoice")
-        .setLock("pessimistic_write")
-        .where("invoice.id = :id", { id: invoiceId })
-        .getOne();
+      // 1. Lock the invoice row for update (if supported by the driver).
+      //    SQLite does not support row-level locking, so we fall back to a plain read.
+      let invoice: Invoice | null;
+      try {
+        invoice = await transactionalEntityManager
+          .createQueryBuilder(Invoice, "invoice")
+          .setLock("pessimistic_write")
+          .where("invoice.id = :id", { id: invoiceId })
+          .getOne();
+      } catch {
+        invoice = await transactionalEntityManager
+          .createQueryBuilder(Invoice, "invoice")
+          .where("invoice.id = :id", { id: invoiceId })
+          .getOne();
+      }
 
       if (!invoice) {
         throw new ServiceError("INVOICE_NOT_FOUND", "Invoice not found", 404);
@@ -63,7 +79,7 @@ export class SettlementService {
       if (invoice.status !== InvoiceStatus.FUNDED) {
         throw new ServiceError(
           "INVALID_INVOICE_STATUS",
-          `Cannot settle an invoice with status ${invoice.status}`,
+          `INVALID_INVOICE_STATUS: Cannot settle an invoice with status ${invoice.status}`,
         );
       }
 
@@ -119,6 +135,12 @@ export class SettlementService {
         toState: InvoiceStatus.SETTLED,
         actorWallet,
         reason: "admin_settled",
+      });
+
+      logSettlementCompletion(logger, {
+        invoiceId: invoice.id,
+        totalProceedsStroops: proceedsScaled * DECIMAL_SCALE_TO_STROOP_FACTOR,
+        investorCount: settlements.length,
       });
 
       return {

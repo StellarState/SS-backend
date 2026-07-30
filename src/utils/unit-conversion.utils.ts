@@ -18,7 +18,11 @@ const STROOP_DIVISOR = new Decimal(STROOPS_PER_XLM);
  * stroopsToXlm("10000000")    // "1.0000000"
  */
 export function stroopsToXlm(stroops: bigint | string): string {
-    return new Decimal(stroops.toString()).dividedBy(STROOP_DIVISOR).toFixed(STROOP_DECIMALS);
+  const dec = new Decimal(stroops.toString());
+  if (dec.isNaN()) {
+    throw new TypeError(`Invalid stroops amount: ${stroops}`);
+  }
+  return dec.dividedBy(STROOP_DIVISOR).toFixed(STROOP_DECIMALS);
 }
 
 /**
@@ -35,5 +39,9 @@ export function stroopsToXlm(stroops: bigint | string): string {
  * xlmToStroops(1)             // 10_000_000n
  */
 export function xlmToStroops(xlm: string | number): bigint {
-    return BigInt(new Decimal(xlm).times(STROOP_DIVISOR).toFixed(0, Decimal.ROUND_DOWN));
+  const dec = new Decimal(xlm);
+  if (dec.isNaN()) {
+    throw new TypeError(`Invalid XLM amount: ${xlm}`);
+  }
+  return BigInt(dec.times(STROOP_DIVISOR).toFixed(0, Decimal.ROUND_DOWN));
 }

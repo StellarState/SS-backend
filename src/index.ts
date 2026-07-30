@@ -21,7 +21,7 @@ export async function bootstrap(): Promise<{ server: Server }> {
     await dataSource.initialize();
   }
 
-  const authService = createAuthService(dataSource, config);
+  const authService = createAuthService(dataSource, config, logger);
   const notificationService = createNotificationService(dataSource);
   const ipfsService = createIPFSService(config.ipfs, logger);
   const invoiceService = createInvoiceService(dataSource, ipfsService);

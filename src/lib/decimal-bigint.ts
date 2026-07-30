@@ -5,8 +5,8 @@ const SCALE_FACTOR = 10n ** BigInt(SCALE);
  * Converts a fixed-4-decimal-place amount string (e.g. "1234.5600") into a
  * scaled bigint (12345600n) suitable for pure integer arithmetic.
  */
-export function decimalStringToScaledBigInt(value: string): bigint {
-  const normalized = value.trim();
+export function decimalStringToScaledBigInt(value: string | number): bigint {
+  const normalized = String(value).trim();
   const isNegative = normalized.startsWith("-");
   const unsigned = isNegative ? normalized.slice(1) : normalized;
   const [wholePart, fractionalPart = ""] = unsigned.split(".");

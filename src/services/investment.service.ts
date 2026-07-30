@@ -24,9 +24,16 @@ export interface InvestorDashboard {
   totalInvested: string;
   totalReturns: string;
   activeInvestments: number;
+  activeCount: number;
+  activeTotal: string;
+  settledCount: number;
+  settledReturns: string;
+  failedCount: number;
 }
 
 const ACTIVE_INVESTMENT_STATUSES = [InvestmentStatus.PENDING, InvestmentStatus.CONFIRMED];
+const SETTLED_INVESTMENT_STATUSES = [InvestmentStatus.SETTLED];
+const FAILED_INVESTMENT_STATUSES = [InvestmentStatus.CANCELLED];
 
 export class InvestmentService {
   constructor(private readonly dataSource: DataSource) {}
@@ -47,24 +54,41 @@ export class InvestmentService {
 
     let totalInvested = new Decimal(0);
     let totalReturns = new Decimal(0);
-    let activeInvestments = 0;
+    let activeCount = 0;
+    let activeTotal = new Decimal(0);
+    let settledCount = 0;
+    let failedCount = 0;
 
     for (const investment of investments) {
-      totalInvested = totalInvested.plus(new Decimal(investment.investmentAmount));
-
-      if (investment.status === InvestmentStatus.SETTLED && investment.actualReturn !== null) {
-        totalReturns = totalReturns.plus(new Decimal(investment.actualReturn));
-      }
+     const amount = new Decimal(investment.investmentAmount);
+     totalInvested = totalInvested.plus(amount);
 
       if (ACTIVE_INVESTMENT_STATUSES.includes(investment.status)) {
-        activeInvestments += 1;
-      }
+       activeCount += 1;
+       activeTotal = activeTotal.plus(amount);
+     }
+
+     if (SETTLED_INVESTMENT_STATUSES.includes(investment.status)) {
+       settledCount += 1;
+       if (investment.actualReturn !== null) {
+         totalReturns = totalReturns.plus(new Decimal(investment.actualReturn));
+       }
+     }
+
+     if (FAILED_INVESTMENT_STATUSES.includes(investment.status)) {
+       failedCount += 1;
+     }
     }
 
     return {
-      totalInvested: totalInvested.toFixed(4),
-      totalReturns: totalReturns.toFixed(4),
-      activeInvestments,
+     totalInvested: totalInvested.toFixed(4),
+     totalReturns: totalReturns.toFixed(4),
+     activeInvestments: activeCount,
+     activeCount,
+     activeTotal: activeTotal.toFixed(4),
+     settledCount,
+     settledReturns: totalReturns.toFixed(4),
+     failedCount,
     };
   }
 
@@ -82,12 +106,21 @@ export class InvestmentService {
     }
 
     return await this.dataSource.transaction(async (transactionalEntityManager: EntityManager) => {
-      // 1. Lock the invoice row for update
-      const invoice = await transactionalEntityManager
-        .createQueryBuilder(Invoice, "invoice")
-        .setLock("pessimistic_write")
-        .where("invoice.id = :id", { id: invoiceId })
-        .getOne();
+      // 1. Lock the invoice row for update (if supported by the driver).
+      //    SQLite does not support row-level locking, so we fall back to a plain read.
+      let invoice: Invoice | null;
+      try {
+        invoice = await transactionalEntityManager
+          .createQueryBuilder(Invoice, "invoice")
+          .setLock("pessimistic_write")
+          .where("invoice.id = :id", { id: invoiceId })
+          .getOne();
+      } catch {
+        invoice = await transactionalEntityManager
+          .createQueryBuilder(Invoice, "invoice")
+          .where("invoice.id = :id", { id: invoiceId })
+          .getOne();
+      }
 
       if (!invoice) {
         throw new ServiceError("INVOICE_NOT_FOUND", "Invoice not found", 404);
@@ -101,12 +134,21 @@ export class InvestmentService {
         );
       }
 
-      // 3. Prevent self-dealing
+      // 3. Reject if the invoice has passed its due date
+      if (invoice.dueDate && new Date(invoice.dueDate) < new Date()) {
+        throw new ServiceError(
+          "invoice_expired",
+          "Invoice has passed its due date and is no longer accepting investments",
+          422,
+        );
+      }
+
+      // 4. Prevent self-dealing
       if (invoice.sellerId === investorId) {
         throw new ServiceError("SELF_DEALING", "Investors cannot invest in their own invoices");
       }
 
-      // 4. Check remaining capacity
+      // 5. Check remaining capacity
       // We count both PENDING and CONFIRMED investments towards the cap to prevent over-subscription
       const activeInvestments = await transactionalEntityManager.find(Investment, {
         where: [
@@ -130,12 +172,12 @@ export class InvestmentService {
         );
       }
 
-      // 5. Calculate expected return
+      // 6. Calculate expected return
       // expectedReturn = investmentAmount * (invoice.amount / invoice.netAmount)
       const faceAmount = new Decimal(invoice.amount);
       const expectedReturn = amount.times(faceAmount.dividedBy(netAmount)).toDecimalPlaces(4);
 
-      // 6. Create investment
+      // 7. Create investment
       const investment = transactionalEntityManager.create(Investment, {
         invoiceId,
         investorId,
@@ -146,7 +188,7 @@ export class InvestmentService {
 
       const savedInvestment = await transactionalEntityManager.save(Investment, investment);
 
-      // 7. Emit structured log for the investment commitment
+      // 8. Emit structured log for the investment commitment
       const truncatedWallet =
         investorWallet.length >= 8
           ? `${investorWallet.slice(0, 4)}…${investorWallet.slice(-4)}`
@@ -162,7 +204,7 @@ export class InvestmentService {
         committed_at: savedInvestment.createdAt?.toISOString() ?? new Date().toISOString(),
       });
 
-      // 8. Transition invoice to FUNDED if fully subscribed
+      // 9. Transition invoice to FUNDED if fully subscribed
       const newTotalInvested = totalInvested.plus(amount);
       if (newTotalInvested.gte(netAmount)) {
         const previousStatus = invoice.status;

@@ -100,4 +100,35 @@ describe("validateInvoiceForPublish", () => {
       expect.arrayContaining(["FACE_VALUE_TOO_LOW", "DUE_DATE_TOO_SOON", "MISSING_DOCUMENT"]),
     );
   });
+
+  it("returns all three errors simultaneously for a fully invalid invoice and is deterministic", () => {
+    // Create an invoice that fails all validations
+    const fullyInvalidInvoice = createInvoice({
+      amount: "0.0000", // faceValue: 0
+      dueDate: futureDate(-5), // dueDate in the past
+      ipfsHash: null, // no attached documents
+    });
+
+    // First call: should return all errors
+    const errors = validateInvoiceForPublish(fullyInvalidInvoice);
+
+    // Assert exactly three errors are returned in a single call
+    expect(errors).toHaveLength(3);
+
+    // Assert each error identifies the correct field
+    const errorFields = errors.map((e) => e.field);
+    expect(errorFields).toContain("amount");
+    expect(errorFields).toContain("dueDate");
+    expect(errorFields).toContain("ipfsHash");
+
+    // Assert each error has the correct error code
+    const errorCodes = errors.map((e) => e.code);
+    expect(errorCodes).toContain("FACE_VALUE_NOT_POSITIVE");
+    expect(errorCodes).toContain("DUE_DATE_TOO_SOON");
+    expect(errorCodes).toContain("MISSING_DOCUMENT");
+
+    // Second call with the same invoice: should return the same errors (deterministic)
+    const errorsAgain = validateInvoiceForPublish(fullyInvalidInvoice);
+    expect(errorsAgain).toEqual(errors);
+  });
 });

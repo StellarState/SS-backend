@@ -15,6 +15,7 @@ import { createInvoiceRouter } from "./routes/invoice.routes";
 import { createInvestmentRouter } from "./routes/investment.routes";
 import { createSettlementRouter } from "./routes/settlement.routes";
 import { createMarketplaceRouter } from "./routes/marketplace.routes";
+import { createAdminRouter } from "./routes/admin/admin.routes";
 
 import type { AuthService } from "./services/auth.service";
 import type { NotificationService } from "./services/notification.service";
@@ -187,6 +188,10 @@ export function createApp({
 
   if (marketplaceService) {
     app.use("/api/v1/marketplace", createMarketplaceRouter({ marketplaceService }));
+  }
+
+  if (config?.admin.ipWhitelist.length) {
+    app.use("/api/v1/admin", createAdminRouter({ dataSource, allowedCidrs: config.admin.ipWhitelist }));
   }
 
   app.use(notFoundMiddleware);

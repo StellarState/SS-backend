@@ -214,5 +214,19 @@ export function createInvoiceRouter({
     controller.uploadDocument,
   );
 
+  // GET /api/v1/invoices/:id/tokens - Get invoice token holders
+  router.get(
+    "/:id/tokens",
+    authenticateJWT,
+    controller.getInvoiceTokenHolders,
+  );
+
+  // GET /api/v1/invoices/:id/escrow - Get invoice escrow status
+  router.get(
+    "/:id/escrow",
+    authenticateJWT,
+    controller.getInvoiceEscrowStatus,
+  );
+
   return router;
 }

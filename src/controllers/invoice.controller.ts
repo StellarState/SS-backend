@@ -336,5 +336,53 @@ export function createInvoiceController(invoiceService: InvoiceService) {
         next(error);
       }
     },
+
+    async getInvoiceTokenHolders(
+      req: Request & { params: { id: string } },
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> {
+      try {
+        const { id } = req.params;
+
+        const result = await invoiceService.getInvoiceTokenHolders(id);
+
+        res.status(200).json({
+          success: true,
+          data: result,
+        });
+      } catch (error) {
+        if (error instanceof ServiceError) {
+          next(new HttpError(error.statusCode, error.message));
+          return;
+        }
+
+        next(error);
+      }
+    },
+
+    async getInvoiceEscrowStatus(
+      req: Request & { params: { id: string } },
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> {
+      try {
+        const { id } = req.params;
+
+        const result = await invoiceService.getInvoiceEscrowStatus(id);
+
+        res.status(200).json({
+          success: true,
+          data: result,
+        });
+      } catch (error) {
+        if (error instanceof ServiceError) {
+          next(new HttpError(error.statusCode, error.message));
+          return;
+        }
+
+        next(error);
+      }
+    },
   };
 }

@@ -60,6 +60,9 @@ export interface AppConfig {
   kyc: {
     skipVerification: boolean;
   };
+  admin: {
+    ipWhitelist: string[];
+  };
 }
 
 
@@ -286,6 +289,10 @@ export function getConfig(): AppConfig {
         process.env.NODE_ENV !== "production",
         "SKIP_KYC_VERIFICATION"
       ),
+    },
+
+    admin: {
+      ipWhitelist: parseCsv(process.env.ADMIN_IP_WHITELIST),
     },
   };
 }

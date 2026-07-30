@@ -44,6 +44,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: OpenAPI Schema Drift Check
+        run: npm run verify:openapi
+
+      - name: Database Migration Safety Check
+        run: bash scripts/test-migrations.sh
+
       - name: Run linter
         run: npm run lint
 

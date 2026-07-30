@@ -19,7 +19,9 @@ export function createAuthController(authService: AuthService) {
       req: AuthenticatedRequest & { body: { publicKey: string; signature: string; nonce: string } },
       res: Response
     ): Promise<void> => {
-      const session = await authService.verifyChallenge(req.body);
+      const forwarded = req.headers["x-forwarded-for"];
+      const ipAddress = (Array.isArray(forwarded) ? forwarded[0] : forwarded?.split(",")[0]?.trim()) ?? req.ip;
+      const session = await authService.verifyChallenge({ ...req.body, ipAddress });
       res.status(200).json(session);
     },
 
