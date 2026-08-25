@@ -242,6 +242,13 @@ export function createInvoiceRouter({
     controller.getInvoiceEscrowStatus,
   );
 
+  // GET /api/v1/invoices/:id/analytics - Get invoice analytics (owner only)
+  router.get(
+    "/:id/analytics",
+    authenticateJWT,
+    controller.getInvoiceAnalytics,
+  );
+
   // POST /api/v1/invoices/calculate-terms - Calculate invoice discounting terms, fees, and APR
   router.post(
     "/calculate-terms",
