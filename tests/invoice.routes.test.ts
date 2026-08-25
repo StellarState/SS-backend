@@ -294,7 +294,7 @@ describe("Invoice Routes", () => {
       await request(app)
         .get("/api/v1/invoices?page=0&limit=20")
         .set("Authorization", `Bearer ${validToken}`)
-        .expect(400);
+        .expect(422);
     });
   });
 

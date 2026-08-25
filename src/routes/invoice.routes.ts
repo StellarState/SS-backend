@@ -8,6 +8,7 @@ import { createInvoiceController } from "../controllers/invoice.controller";
 import { authenticateJWT, requireKYC } from "../middleware/auth.middleware";
 import { createWalletRateLimiter } from "../middleware/rate-limit-wallet.middleware";
 import { HttpError } from "../utils/http-error";
+import { InvoiceStatus } from "../types/enums";
 
 export interface InvoiceRouterDependencies {
   invoiceService: InvoiceService;
@@ -71,7 +72,7 @@ const updateInvoiceSchema = Joi.object({
 const getInvoicesQuerySchema = Joi.object({
   page: Joi.number().integer().min(1).default(1),
   limit: Joi.number().integer().min(1).max(100).default(20),
-  status: Joi.string().optional(),
+  status: Joi.string().valid(...Object.values(InvoiceStatus)).optional(),
 });
 
 const calculateTermsSchema = Joi.object({
@@ -118,7 +119,7 @@ function validateQuery(schema: Joi.Schema) {
 
     if (error) {
       return next(
-        new HttpError(400, `Invalid query parameters: ${error.message}`)
+        new HttpError(422, `Invalid query parameters: ${error.message}`)
       );
     }
 
