@@ -10,7 +10,7 @@ import {
   JoinColumn,
   Index,
 } from "typeorm";
-import { InvoiceStatus } from "../types/enums";
+import { InvoiceStatus, SorobanEscrowStatus } from "../types/enums";
 
 @Entity("invoices")
 export class Invoice {
@@ -60,6 +60,18 @@ export class Invoice {
 
   @Column({ name: "rejection_reason", type: "text", nullable: true })
   rejectionReason!: string | null;
+
+  @Column({ name: "soroban_contract_id", type: "varchar", length: 56, nullable: true })
+  sorobanContractId!: string | null;
+
+  @Column({ name: "onchain_status", type: "enum", enum: SorobanEscrowStatus, nullable: true })
+  onchainStatus!: SorobanEscrowStatus | null;
+
+  @Column({ name: "creation_tx_hash", type: "varchar", length: 64, nullable: true })
+  creationTxHash!: string | null;
+
+  @Column({ name: "last_synced_ledger", type: "bigint", nullable: true })
+  lastSyncedLedger!: string | null;
 
   @CreateDateColumn({ name: "created_at" })
   createdAt!: Date;

@@ -25,6 +25,14 @@ export enum InvoiceStatus {
   REJECTED = "rejected",
 }
 
+export enum SorobanEscrowStatus {
+  UNINITIALIZED = "UNINITIALIZED",
+  ACTIVE = "ACTIVE",
+  SETTLED = "SETTLED",
+  REFUNDED = "REFUNDED",
+  PAUSED = "PAUSED",
+}
+
 export enum InvestmentStatus {
   PENDING = "pending",
   CONFIRMED = "confirmed",
