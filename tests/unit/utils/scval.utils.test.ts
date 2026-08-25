@@ -1,5 +1,5 @@
 import { scValToNative } from "stellar-sdk";
-import { scValI128, scValU64 } from "../../../../src/services/stellar/utils/scval.utils";
+import { scValI128, scValU64, scValSymbol, scValAddress } from "../../../../src/services/stellar/utils/scval.utils";
 
 describe("scValI128", () => {
   it("should encode zero correctly", () => {
@@ -44,5 +44,36 @@ describe("scValU64", () => {
     const maxU64 = 18446744073709551615;
     const val = scValU64(maxU64);
     expect(scValToNative(val)).toBe(18446744073709551615n);
+  });
+});
+
+describe("scValSymbol", () => {
+  it("should encode an invoice ID", () => {
+    const val = scValSymbol("INV-2026-001");
+    expect(scValToNative(val)).toBe("INV-2026-001");
+  });
+
+  it("should encode a short symbol", () => {
+    const val = scValSymbol("create_escrow");
+    expect(scValToNative(val)).toBe("create_escrow");
+  });
+
+  it("should encode an empty string", () => {
+    const val = scValSymbol("");
+    expect(scValToNative(val)).toBe("");
+  });
+});
+
+describe("scValAddress", () => {
+  it("should encode a Stellar address", () => {
+    const addr = "GBZXN7PIRZGNMHGA7MUUUF4GWPY5AYPV6LY4UV2GL6VJGIQRXFDNMADI";
+    const val = scValAddress(addr);
+    expect(scValToNative(val)).toBe(addr);
+  });
+
+  it("should encode a contract address", () => {
+    const addr = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM";
+    const val = scValAddress(addr);
+    expect(scValToNative(val)).toBe(addr);
   });
 });
