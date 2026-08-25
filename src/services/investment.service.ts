@@ -1,4 +1,4 @@
-import { DataSource, EntityManager } from "typeorm";
+import { DataSource, EntityManager, OptimisticLockVersionMismatchError } from "typeorm";
 import { Invoice } from "../models/Invoice.model";
 import { Investment } from "../models/Investment.model";
 import { InvoiceStatus, InvestmentStatus } from "../types/enums";
@@ -58,6 +58,10 @@ export interface InvestorAnalytics {
 const ACTIVE_INVESTMENT_STATUSES = [InvestmentStatus.PENDING, InvestmentStatus.CONFIRMED];
 const SETTLED_INVESTMENT_STATUSES = [InvestmentStatus.SETTLED];
 const FAILED_INVESTMENT_STATUSES = [InvestmentStatus.CANCELLED];
+const OPTIMISTIC_LOCK_MAX_RETRIES = 3;
+const OPTIMISTIC_LOCK_BASE_DELAY_MS = 50;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export class InvestmentService {
   constructor(private readonly dataSource: DataSource) {}
@@ -275,6 +279,7 @@ export class InvestmentService {
   /**
    * Creates a new investment commitment for an invoice.
    * Uses a database transaction with a row-level lock on the invoice to prevent over-subscription.
+   * Retries on optimistic lock version mismatch to handle concurrent updates safely.
    */
   async createInvestment(input: CreateInvestmentInput): Promise<Investment> {
     const { invoiceId, investorId, investmentAmount, investorWallet } = input;
@@ -285,123 +290,143 @@ export class InvestmentService {
       throw new ServiceError("INVALID_AMOUNT", "Investment amount must be greater than zero");
     }
 
-    return await this.dataSource.transaction(async (transactionalEntityManager: EntityManager) => {
-      // 1. Lock the invoice row for update (if supported by the driver).
-      //    SQLite does not support row-level locking, so we fall back to a plain read.
-      let invoice: Invoice | null;
+    let lastError: Error | undefined;
+
+    for (let attempt = 1; attempt <= OPTIMISTIC_LOCK_MAX_RETRIES; attempt++) {
       try {
-        invoice = await transactionalEntityManager
-          .createQueryBuilder(Invoice, "invoice")
-          .setLock("pessimistic_write")
-          .where("invoice.id = :id", { id: invoiceId })
-          .getOne();
-      } catch {
-        invoice = await transactionalEntityManager
-          .createQueryBuilder(Invoice, "invoice")
-          .where("invoice.id = :id", { id: invoiceId })
-          .getOne();
-      }
+        return await this.dataSource.transaction(
+          async (transactionalEntityManager: EntityManager) => {
+            // 1. Lock the invoice row for update (if supported by the driver).
+            //    SQLite does not support row-level locking, so we fall back to a plain read.
+            let invoice: Invoice | null;
+            try {
+              invoice = await transactionalEntityManager
+                .createQueryBuilder(Invoice, "invoice")
+                .setLock("pessimistic_write")
+                .where("invoice.id = :id", { id: invoiceId })
+                .getOne();
+            } catch {
+              invoice = await transactionalEntityManager
+                .createQueryBuilder(Invoice, "invoice")
+                .where("invoice.id = :id", { id: invoiceId })
+                .getOne();
+            }
 
-      if (!invoice) {
-        throw new ServiceError("INVOICE_NOT_FOUND", "Invoice not found", 404);
-      }
+            if (!invoice) {
+              throw new ServiceError("INVOICE_NOT_FOUND", "Invoice not found", 404);
+            }
 
-      // 2. Validate invoice status
-      if (invoice.status !== InvoiceStatus.PUBLISHED) {
-        throw new ServiceError(
-          "INVALID_INVOICE_STATUS",
-          `Cannot invest in an invoice with status ${invoice.status}`,
+            // 2. Validate invoice status
+            if (invoice.status !== InvoiceStatus.PUBLISHED) {
+              throw new ServiceError(
+                "INVALID_INVOICE_STATUS",
+                `Cannot invest in an invoice with status ${invoice.status}`,
+              );
+            }
+
+            // 3. Reject if the invoice has passed its due date
+            if (invoice.dueDate && new Date(invoice.dueDate) < new Date()) {
+              throw new ServiceError(
+                "invoice_expired",
+                "Invoice has passed its due date and is no longer accepting investments",
+                422,
+              );
+            }
+
+            // 4. Prevent self-dealing
+            if (invoice.sellerId === investorId) {
+              throw new ServiceError("SELF_DEALING", "Investors cannot invest in their own invoices");
+            }
+
+            // 5. Check remaining capacity
+            // We count both PENDING and CONFIRMED investments towards the cap to prevent over-subscription
+            const activeInvestments = await transactionalEntityManager.find(Investment, {
+              where: [
+                { invoiceId, status: InvestmentStatus.PENDING },
+                { invoiceId, status: InvestmentStatus.CONFIRMED },
+              ],
+            });
+
+            const totalInvested = activeInvestments.reduce(
+              (sum, inv) => sum.plus(new Decimal(inv.investmentAmount)),
+              new Decimal(0),
+            );
+
+            const netAmount = new Decimal(invoice.netAmount);
+            const remainingCapacity = netAmount.minus(totalInvested);
+
+            if (amount.gt(remainingCapacity)) {
+              throw new ServiceError(
+                "INSUFFICIENT_CAPACITY",
+                `Investment amount ${amount.toString()} exceeds remaining capacity ${remainingCapacity.toString()}`,
+              );
+            }
+
+            // 6. Calculate expected return
+            // expectedReturn = investmentAmount * (invoice.amount / invoice.netAmount)
+            const faceAmount = new Decimal(invoice.amount);
+            const expectedReturn = amount.times(faceAmount.dividedBy(netAmount)).toDecimalPlaces(4);
+
+            // 7. Create investment
+            const investment = transactionalEntityManager.create(Investment, {
+              invoiceId,
+              investorId,
+              investmentAmount: amount.toFixed(4),
+              expectedReturn: expectedReturn.toFixed(4),
+              status: InvestmentStatus.PENDING,
+            });
+
+            const savedInvestment = await transactionalEntityManager.save(Investment, investment);
+
+            // 8. Emit structured log for the investment commitment
+            const truncatedWallet =
+              investorWallet.length >= 8
+                ? `${investorWallet.slice(0, 4)}…${investorWallet.slice(-4)}`
+                : investorWallet;
+            const sharePercent = amount.dividedBy(netAmount).times(100).toFixed(2);
+
+            logger.info("investment.committed", {
+              investment_id: savedInvestment.id,
+              invoice_id: invoiceId,
+              investor_wallet: truncatedWallet,
+              amount_xlm: stroopsToXlm(BigInt(amount.times(10_000_000).toFixed(0))),
+              share_percent: sharePercent,
+              committed_at: savedInvestment.createdAt?.toISOString() ?? new Date().toISOString(),
+            });
+
+            // 9. Transition invoice to FUNDED if fully subscribed
+            const newTotalInvested = totalInvested.plus(amount);
+            if (newTotalInvested.gte(netAmount)) {
+              const previousStatus = invoice.status;
+              invoice.status = InvoiceStatus.FUNDED;
+              await transactionalEntityManager.save(Invoice, invoice);
+
+              logInvoiceTransition(logger, {
+                invoiceId: invoice.id,
+                fromState: previousStatus,
+                toState: InvoiceStatus.FUNDED,
+                actorWallet: investorWallet,
+                reason: "fully_funded",
+              });
+            }
+
+            return savedInvestment;
+          },
         );
+      } catch (error) {
+        lastError = error as Error;
+        if (
+          attempt < OPTIMISTIC_LOCK_MAX_RETRIES &&
+          error instanceof OptimisticLockVersionMismatchError
+        ) {
+          await sleep(OPTIMISTIC_LOCK_BASE_DELAY_MS * attempt);
+          continue;
+        }
+        throw error;
       }
+    }
 
-      // 3. Reject if the invoice has passed its due date
-      if (invoice.dueDate && new Date(invoice.dueDate) < new Date()) {
-        throw new ServiceError(
-          "invoice_expired",
-          "Invoice has passed its due date and is no longer accepting investments",
-          422,
-        );
-      }
-
-      // 4. Prevent self-dealing
-      if (invoice.sellerId === investorId) {
-        throw new ServiceError("SELF_DEALING", "Investors cannot invest in their own invoices");
-      }
-
-      // 5. Check remaining capacity
-      // We count both PENDING and CONFIRMED investments towards the cap to prevent over-subscription
-      const activeInvestments = await transactionalEntityManager.find(Investment, {
-        where: [
-          { invoiceId, status: InvestmentStatus.PENDING },
-          { invoiceId, status: InvestmentStatus.CONFIRMED },
-        ],
-      });
-
-      const totalInvested = activeInvestments.reduce(
-        (sum, inv) => sum.plus(new Decimal(inv.investmentAmount)),
-        new Decimal(0),
-      );
-
-      const netAmount = new Decimal(invoice.netAmount);
-      const remainingCapacity = netAmount.minus(totalInvested);
-
-      if (amount.gt(remainingCapacity)) {
-        throw new ServiceError(
-          "INSUFFICIENT_CAPACITY",
-          `Investment amount ${amount.toString()} exceeds remaining capacity ${remainingCapacity.toString()}`,
-        );
-      }
-
-      // 6. Calculate expected return
-      // expectedReturn = investmentAmount * (invoice.amount / invoice.netAmount)
-      const faceAmount = new Decimal(invoice.amount);
-      const expectedReturn = amount.times(faceAmount.dividedBy(netAmount)).toDecimalPlaces(4);
-
-      // 7. Create investment
-      const investment = transactionalEntityManager.create(Investment, {
-        invoiceId,
-        investorId,
-        investmentAmount: amount.toFixed(4),
-        expectedReturn: expectedReturn.toFixed(4),
-        status: InvestmentStatus.PENDING,
-      });
-
-      const savedInvestment = await transactionalEntityManager.save(Investment, investment);
-
-      // 8. Emit structured log for the investment commitment
-      const truncatedWallet =
-        investorWallet.length >= 8
-          ? `${investorWallet.slice(0, 4)}…${investorWallet.slice(-4)}`
-          : investorWallet;
-      const sharePercent = amount.dividedBy(netAmount).times(100).toFixed(2);
-
-      logger.info("investment.committed", {
-        investment_id: savedInvestment.id,
-        invoice_id: invoiceId,
-        investor_wallet: truncatedWallet,
-        amount_xlm: stroopsToXlm(BigInt(amount.times(10_000_000).toFixed(0))),
-        share_percent: sharePercent,
-        committed_at: savedInvestment.createdAt?.toISOString() ?? new Date().toISOString(),
-      });
-
-      // 9. Transition invoice to FUNDED if fully subscribed
-      const newTotalInvested = totalInvested.plus(amount);
-      if (newTotalInvested.gte(netAmount)) {
-        const previousStatus = invoice.status;
-        invoice.status = InvoiceStatus.FUNDED;
-        await transactionalEntityManager.save(Invoice, invoice);
-
-        logInvoiceTransition(logger, {
-          invoiceId: invoice.id,
-          fromState: previousStatus,
-          toState: InvoiceStatus.FUNDED,
-          actorWallet: investorWallet,
-          reason: "fully_funded",
-        });
-      }
-
-      return savedInvestment;
-    });
+    throw lastError ?? new ServiceError("INVESTMENT_FAILED", "Investment allocation failed");
   }
 }
 
