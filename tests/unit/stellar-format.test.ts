@@ -19,6 +19,10 @@ describe("stroopsToXlm", () => {
     expect(stroopsToXlm(stroops)).toBe("9007199254740991.0000000");
   });
 
+  it("converts 1000000000000 stroops without precision loss", () => {
+    expect(stroopsToXlm(1_000_000_000_000n)).toBe("100000.0000000");
+  });
+
   it("supports a decimal override", () => {
     expect(stroopsToXlm(12_345_678n, 2)).toBe("1.23");
   });

@@ -1,4 +1,5 @@
-import { stroopsToXlm, xlmToStroops } from "../../../src/utils/unit-conversion.utils";
+import { stroopsToXlm } from "../../../src/lib/stellar-format";
+import { xlmToStroops } from "../../../src/utils/unit-conversion.utils";
 
 describe("Unit Conversion Utilities", () => {
   describe("stroopsToXlm", () => {
@@ -6,34 +7,20 @@ describe("Unit Conversion Utilities", () => {
       expect(stroopsToXlm(0n)).toBe("0.0000000");
     });
 
-    it('should convert 0 stroops (string) to "0.0000000"', () => {
-      expect(stroopsToXlm("0")).toBe("0.0000000");
-    });
-
     it('should convert 1 stroop (bigint) to "0.0000001"', () => {
       expect(stroopsToXlm(1n)).toBe("0.0000001");
     });
 
-    it('should convert 1 stroop (string) to "0.0000001"', () => {
-      expect(stroopsToXlm("1")).toBe("0.0000001");
-    });
-
     it('should convert 10,000,000 stroops to "1.0000000"', () => {
       expect(stroopsToXlm(10000000n)).toBe("1.0000000");
-      expect(stroopsToXlm("10000000")).toBe("1.0000000");
     });
 
     it("should convert 100,000 XLM (1,000,000,000,000 stroops) correctly", () => {
       expect(stroopsToXlm(1000000000000n)).toBe("100000.0000000");
-      expect(stroopsToXlm("1000000000000")).toBe("100000.0000000");
     });
 
     it("should handle fractional representation without precision loss", () => {
       expect(stroopsToXlm(123456789n)).toBe("12.3456789");
-    });
-
-    it("should throw an Error for non-numeric input strings", () => {
-      expect(() => stroopsToXlm("invalid")).toThrow();
     });
   });
 
