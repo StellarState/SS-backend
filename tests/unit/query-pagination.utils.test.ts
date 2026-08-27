@@ -15,11 +15,13 @@ function makeQueryBuilder(rows: FakeRow[]): jest.Mocked<SelectQueryBuilder<FakeR
   const qb: Partial<jest.Mocked<SelectQueryBuilder<FakeRow>>> = {
     andWhere: jest.fn(),
     orderBy: jest.fn(),
+    addOrderBy: jest.fn(),
     take: jest.fn(),
     getMany: jest.fn().mockResolvedValue(rows),
   };
   qb.andWhere!.mockReturnValue(qb as any);
   qb.orderBy!.mockReturnValue(qb as any);
+  qb.addOrderBy!.mockReturnValue(qb as any);
   qb.take!.mockReturnValue(qb as any);
   return qb as any;
 }
@@ -201,6 +203,81 @@ describe("paginateQuery", () => {
     });
 
     expect(qb.andWhere).not.toHaveBeenCalled();
+  });
+
+  it("applies a secondary id tiebreaker so equal sort values order deterministically", async () => {
+    const rows = [
+      makeRow({ id: "1", createdAt: new Date("2024-01-01T00:00:00.000Z"), score: 50 }),
+      makeRow({ id: "2", createdAt: new Date("2024-01-01T00:00:00.000Z"), score: 50 }),
+      makeRow({ id: "3", createdAt: new Date("2024-01-01T00:00:00.000Z"), score: 50 }),
+    ];
+    const qb = makeQueryBuilder(rows);
+
+    await paginateQuery({
+      queryBuilder: qb,
+      cursorField: "row.score",
+      limit: 2,
+    });
+
+    // Primary column DESC plus secondary id ASC tiebreaker.
+    expect(qb.orderBy).toHaveBeenCalledWith("row.score", "DESC");
+    expect(qb.addOrderBy).toHaveBeenCalledWith("row.id", "ASC");
+  });
+
+  it("encodes the primary row value and its id in a page cursor for stable resumption", async () => {
+    const rows = [
+      makeRow({ id: "1", createdAt: new Date("2024-01-02T00:00:00.000Z"), score: 100 }),
+      makeRow({ id: "2", createdAt: new Date("2024-01-01T00:00:00.000Z"), score: 90 }),
+      makeRow({ id: "3", createdAt: new Date("2023-12-31T00:00:00.000Z"), score: 80 }),
+    ];
+    const qb = makeQueryBuilder(rows);
+
+    const result = await paginateQuery({
+      queryBuilder: qb,
+      cursorField: "row.score",
+      limit: 2,
+    });
+
+    expect(result.hasMore).toBe(true);
+    const decoded = decodeQueryCursor(result.nextCursor as string);
+    expect(decoded.field).toBe("row.score");
+    expect(decoded.value).toBe(90);
+    expect(decoded.id).toBe("2");
+  });
+
+  it("filters strictly past both the primary value and the id tiebreaker when a cursor carries an id", async () => {
+    const cursor = encodeQueryCursor("row.score", 90, "2");
+    const qb = makeQueryBuilder([makeRow({ id: "3", score: 90 })]);
+
+    await paginateQuery({
+      queryBuilder: qb,
+      cursorField: "row.score",
+      limit: 5,
+      cursor,
+    });
+
+    expect(qb.andWhere).toHaveBeenCalledWith(
+      "(row.score < :cursor_row_score OR (row.score = :cursor_row_score AND row.id > :cursor_row_id))",
+      { cursor_row_score: 90, cursor_row_id: "2" },
+    );
+  });
+
+  it("supports composite ASC filtering with an id tiebreaker", async () => {
+    const cursor = encodeQueryCursor("row.score", 90, "2");
+    const qb = makeQueryBuilder([makeRow({ id: "3", score: 90 })]);
+
+    await paginateQuery({
+      queryBuilder: qb,
+      cursorField: "row.score",
+      order: "ASC",
+      limit: 5,
+      cursor,
+    });
+
+    expect(qb.andWhere).toHaveBeenCalledWith(
+      "(row.score > :cursor_row_score OR (row.score = :cursor_row_score AND row.id > :cursor_row_id))",
+      { cursor_row_score: 90, cursor_row_id: "2" },
+    );
   });
 });
 
