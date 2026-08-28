@@ -18,7 +18,10 @@ export interface AdminRouterDependencies {
 export function createAdminRouter({
   dataSource,
   allowedCidrs,
-  invoiceService,
+  // Not yet wired to a route (see AdminRouterDependencies.invoiceService doc
+  // comment); kept as a named param so callers can pass it in ahead of that
+  // route landing, without the lint no-unused-vars check tripping on it.
+  invoiceService: _invoiceService,
 }: AdminRouterDependencies): Router {
   const router = Router();
   const ipWhitelist = ipWhitelistMiddleware(allowedCidrs);
