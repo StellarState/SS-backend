@@ -204,7 +204,23 @@ export class AuthService {
 
       const signature = decodeSignature(sanitizedSig);
       const keypair = Keypair.fromPublicKey(sanitizedKey);
-      const isValid = keypair.verify(Buffer.from(challenge.message, "utf8"), signature);
+
+      // `decodeSignature` only validates the wire encoding (hex/base64), not
+      // the decoded byte length. The underlying nacl verify throws (rather
+      // than returning false) for a signature that isn't exactly 64 bytes, so
+      // without this try/catch a malformed-but-validly-encoded signature
+      // crashes the request with an unhandled 500 instead of the intended
+      // "Invalid signature." 401.
+      let isValid: boolean;
+      try {
+        isValid = keypair.verify(Buffer.from(challenge.message, "utf8"), signature);
+      } catch (error) {
+        this.logger?.warn("auth.signature_verification_failed", {
+          wallet: sanitizedKey,
+          reason: error instanceof Error ? error.message : "unknown",
+        });
+        throw new HttpError(401, "Invalid signature.");
+      }
 
       if (!isValid) {
         this.logger?.warn("Invalid challenge signature", { stellarAddress: sanitizedKey });

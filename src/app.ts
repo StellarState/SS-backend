@@ -11,6 +11,7 @@ import { logger, type AppLogger } from "./observability/logger";
 import { getMetricsContentType, MetricsRegistry } from "./observability/metrics";
 
 import { createAuthRouter } from "./routes/auth.routes";
+import { createKycRouter, createKycWebhookRouter } from "./routes/kyc.routes";
 import { createNotificationRouter } from "./routes/notification.routes";
 import { createInvoiceRouter } from "./routes/invoice.routes";
 import { createInvestmentRouter } from "./routes/investment.routes";
@@ -179,7 +180,7 @@ export function createApp({
     });
   }
 
-  app.use("/api/v1/auth", createAuthRouter(authService));
+  app.use("/api/v1/auth", createAuthRouter(authService, appLogger));
 
   if (kycService) {
     app.use("/api/v1/kyc", createKycRouter(kycService, authService));

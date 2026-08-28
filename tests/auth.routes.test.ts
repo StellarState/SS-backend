@@ -286,6 +286,50 @@ describe("Auth routes", () => {
     ).toBe(true);
   });
 
+  it("returns 401 rather than crashing when the signature is the wrong byte length", async () => {
+    const { app } = createTestServer();
+    const keypair = Keypair.random();
+
+    const challengeResponse = await request(app)
+      .post("/api/v1/auth/challenge")
+      .send({ publicKey: keypair.publicKey() })
+      .expect(201);
+
+    const { nonce } = challengeResponse.body.challenge;
+
+    // Valid hex encoding, but far short of the 64 raw bytes a real Ed25519
+    // signature decodes to — the underlying verify call throws for this
+    // rather than returning false.
+    await request(app)
+      .post("/api/v1/auth/verify")
+      .send({
+        publicKey: keypair.publicKey(),
+        nonce,
+        signature: "00",
+      })
+      .expect(401);
+  });
+
+  it("rate limits repeated /challenge attempts from the same caller", async () => {
+    const { app } = createTestServer();
+    const keypair = Keypair.random();
+
+    // The auth rate limiter (createAuthRateLimitMiddleware) allows 10
+    // requests per window; it previously existed but was never wired into
+    // any router, so /challenge and /verify had no abuse protection at all.
+    for (let i = 0; i < 10; i += 1) {
+      await request(app)
+        .post("/api/v1/auth/challenge")
+        .send({ publicKey: keypair.publicKey() })
+        .expect(201);
+    }
+
+    await request(app)
+      .post("/api/v1/auth/challenge")
+      .send({ publicKey: keypair.publicKey() })
+      .expect(429);
+  });
+
   it("returns 401 from /me when the bearer token is missing", async () => {
     const { app } = createTestServer();
 

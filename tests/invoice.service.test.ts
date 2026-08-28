@@ -100,6 +100,32 @@ describe("InvoiceService", () => {
       expect(result.netAmount).toBe("900.0000");
     });
 
+    it("should calculate net amount precisely for values where floating-point arithmetic rounds wrong", async () => {
+      mockInvoiceRepository.findOneBy.mockResolvedValue(null);
+      mockInvoiceRepository.create.mockImplementation((data: Partial<Invoice>) => ({
+        ...mockInvoice,
+        ...data,
+      }));
+      mockInvoiceRepository.save.mockImplementation(async (invoice: Invoice) => invoice);
+
+      // 29.99 - 29.99 * 0.5 / 100: naive `parseFloat` arithmetic here used to
+      // produce "29.8400" instead of the correct "29.8401" because 29.99 and
+      // 0.5 aren't exactly representable as IEEE-754 doubles.
+      const result = await invoiceService.createInvoice({
+        sellerId: "seller-456",
+        invoiceNumber: "INV-002",
+        customerName: "Test Customer",
+        amount: "29.99",
+        discountRate: "0.5",
+        dueDate: new Date("2024-12-31"),
+      });
+
+      expect(mockInvoiceRepository.create).toHaveBeenCalledWith(
+        expect.objectContaining({ netAmount: "29.8401" }),
+      );
+      expect(result.netAmount).toBe("29.8401");
+    });
+
     it("should reject duplicate invoice number", async () => {
       mockInvoiceRepository.findOneBy.mockResolvedValue(mockInvoice);
 

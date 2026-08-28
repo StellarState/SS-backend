@@ -3,9 +3,9 @@ import Joi from "joi";
 import { createAuthController } from "../controllers/auth.controller";
 import { createAuthMiddleware } from "../middleware/auth.middleware";
 import { validateBody } from "../middleware/validate.middleware";
-import { createRateLimitMiddleware } from "../middleware/rate-limit.middleware";
-import { logger } from "../observability/logger";
+import { createAuthRateLimitMiddleware } from "../middleware/rate-limit.middleware";
 import type { AuthService } from "../services/auth.service";
+import type { AppLogger } from "../observability/logger";
 
 // Strict schemas: enforce Stellar G... format hint, length bounds, and sanitized inputs
 const STELLAR_PUBLIC_KEY_PATTERN = /^G[A-Z2-7]{55}$/;
@@ -30,33 +30,28 @@ const verifySchema = Joi.object({
   signature: Joi.string().trim().required().min(16).max(512),
 });
 
-export function createAuthRouter(authService: AuthService): Router {
+export function createAuthRouter(authService: AuthService, logger: AppLogger): Router {
   const router = Router();
   const controller = createAuthController(authService);
   const authMiddleware = createAuthMiddleware(authService);
-
-  // Isolated rate limiters for auth endpoints to prevent brute-force & enumeration
-  const challengeLimiter = createRateLimitMiddleware(logger, {
-    windowMs: 60 * 1000,
-    max: 20,
-    message: "Too many challenge requests, please try again later.",
-    code: "CHALLENGE_RATE_LIMIT_EXCEEDED",
-  });
-
-  const verifyLimiter = createRateLimitMiddleware(logger, {
-    windowMs: 60 * 1000,
-    max: 10,
-    message: "Too many verification attempts, please try again later.",
-    code: "VERIFY_RATE_LIMIT_EXCEEDED",
-  });
+  // `/challenge` and `/verify` are unauthenticated by design — the wallet
+  // signature *is* the auth check — which makes them the obvious target for
+  // brute-force/credential-stuffing-style abuse. `createAuthRateLimitMiddleware`
+  // already existed for exactly this but was never wired into any router.
+  const authRateLimiter = createAuthRateLimitMiddleware(logger);
 
   router.use((req, _res, next) => {
     req.routeBasePath = req.baseUrl;
     next();
   });
 
-  router.post("/challenge", challengeLimiter, validateBody(challengeSchema), controller.challenge);
-  router.post("/verify", verifyLimiter, validateBody(verifySchema), controller.verify);
+  router.post(
+    "/challenge",
+    authRateLimiter,
+    validateBody(challengeSchema),
+    controller.challenge,
+  );
+  router.post("/verify", authRateLimiter, validateBody(verifySchema), controller.verify);
   router.get("/me", authMiddleware, controller.me);
 
   return router;
