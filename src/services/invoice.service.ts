@@ -1,4 +1,4 @@
-import { DataSource } from "typeorm";
+import { DataSource, In } from "typeorm";
 import Decimal from "decimal.js";
 import { Invoice } from "../models/Invoice.model";
 import { Investment } from "../models/Investment.model";
@@ -14,10 +14,15 @@ export interface InvoiceRepositoryContract {
   findOne(options: { where: { id: string }; relations?: string[] }): Promise<Invoice | null>;
   findOneBy(options: { id?: string; invoiceNumber?: string }): Promise<Invoice | null>;
   find(options: {
-    where: { sellerId: string; status?: InvoiceStatus };
+    where: {
+      sellerId?: string;
+      status?: InvoiceStatus;
+      id?: ReturnType<typeof In<string>>;
+    };
     skip?: number;
     take?: number;
     order?: { [key: string]: "ASC" | "DESC" };
+    relations?: string[];
   }): Promise<Invoice[]>;
   save(invoice: Invoice): Promise<Invoice>;
   count(options: { where: { sellerId: string; status?: InvoiceStatus } }): Promise<number>;
@@ -467,11 +472,15 @@ export class InvoiceService {
     const publishable: Array<{ invoice: Invoice; sellerWallet: string }> = [];
     const rejections: BatchPublishRejection[] = [];
 
+    // A single batched fetch replaces one round-trip per invoice id.
+    const found = await this.invoiceRepository.find({
+      where: { id: In(uniqueIds) },
+      relations: ["seller"],
+    });
+    const byId = new Map(found.map((invoice) => [invoice.id, invoice]));
+
     for (const invoiceId of uniqueIds) {
-      const invoice = await this.invoiceRepository.findOne({
-        where: { id: invoiceId },
-        relations: ["seller"],
-      });
+      const invoice = byId.get(invoiceId) ?? null;
 
       if (!invoice) {
         rejections.push({
