@@ -9,6 +9,7 @@ import {
 } from "stellar-sdk";
 import type { AppLogger } from "../../observability/logger";
 import { logger as globalLogger } from "../../observability/logger";
+import { ServiceError } from "../../utils/service-error";
 import type {
   CreateEscrowParams,
   CreateEscrowResult,
@@ -155,7 +156,21 @@ export class InvoiceEscrowContractService {
       throw new Error("Soroban RPC server is not configured for simulation.");
     }
 
-    const simResponse = await this.rpcServer.simulateTransaction(transaction);
+    let simResponse: Awaited<ReturnType<SorobanRpc.Server["simulateTransaction"]>>;
+    try {
+      simResponse = await this.rpcServer.simulateTransaction(transaction);
+    } catch (error) {
+      this.logger.error("Soroban simulateTransaction call failed.", {
+        sorobanContractId: this.contractId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw new ServiceError(
+        "soroban_simulation_failed",
+        "Failed to simulate the transaction against the Soroban RPC endpoint.",
+        502,
+      );
+    }
+
     const successResponse = simResponse as unknown as {
       minResourceFee?: string;
       cost?: { cpuInsns?: string; memBytes?: string };
@@ -189,7 +204,21 @@ export class InvoiceEscrowContractService {
       throw new Error("Soroban RPC server is not configured for submission.");
     }
 
-    const response = await this.rpcServer.sendTransaction(transaction);
+    let response: Awaited<ReturnType<SorobanRpc.Server["sendTransaction"]>>;
+    try {
+      response = await this.rpcServer.sendTransaction(transaction);
+    } catch (error) {
+      this.logger.error("Soroban sendTransaction call failed.", {
+        sorobanContractId: this.contractId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw new ServiceError(
+        "soroban_submission_failed",
+        "Failed to submit the transaction to the Soroban RPC endpoint.",
+        502,
+      );
+    }
+
     return {
       status: response.status,
       txHash: response.hash,

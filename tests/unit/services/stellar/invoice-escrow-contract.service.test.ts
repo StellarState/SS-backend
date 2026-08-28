@@ -1,6 +1,7 @@
 import { Address, scValToNative } from "stellar-sdk";
 import { InvoiceEscrowContractService } from "../../../../src/services/stellar/invoice-escrow-contract.service";
 import type { AppLogger } from "../../../../src/observability/logger";
+import { ServiceError } from "../../../../src/utils/service-error";
 
 describe("InvoiceEscrowContractService", () => {
   const ESCROW_CONTRACT_ID = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM";
@@ -232,6 +233,52 @@ describe("InvoiceEscrowContractService", () => {
       const res = await rpcService.submitTransaction({} as any);
       expect(res.status).toBe("PENDING");
       expect(res.txHash).toBe("abc123hash");
+    });
+
+    it("wraps a simulateTransaction RPC failure in a ServiceError and logs it", async () => {
+      const mockServer = {
+        simulateTransaction: jest.fn().mockRejectedValue(new Error("ECONNRESET")),
+      } as any;
+
+      const rpcService = new InvoiceEscrowContractService({
+        contractId: ESCROW_CONTRACT_ID,
+        server: mockServer,
+        logger: mockLogger,
+      });
+
+      await expect(rpcService.simulateTransaction({} as any)).rejects.toBeInstanceOf(
+        ServiceError,
+      );
+      await expect(rpcService.simulateTransaction({} as any)).rejects.toMatchObject({
+        code: "soroban_simulation_failed",
+        statusCode: 502,
+      });
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        "Soroban simulateTransaction call failed.",
+        expect.objectContaining({ sorobanContractId: ESCROW_CONTRACT_ID }),
+      );
+    });
+
+    it("wraps a submitTransaction RPC failure in a ServiceError and logs it", async () => {
+      const mockServer = {
+        sendTransaction: jest.fn().mockRejectedValue(new Error("timeout")),
+      } as any;
+
+      const rpcService = new InvoiceEscrowContractService({
+        contractId: ESCROW_CONTRACT_ID,
+        server: mockServer,
+        logger: mockLogger,
+      });
+
+      await expect(rpcService.submitTransaction({} as any)).rejects.toBeInstanceOf(ServiceError);
+      await expect(rpcService.submitTransaction({} as any)).rejects.toMatchObject({
+        code: "soroban_submission_failed",
+        statusCode: 502,
+      });
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        "Soroban sendTransaction call failed.",
+        expect.objectContaining({ sorobanContractId: ESCROW_CONTRACT_ID }),
+      );
     });
   });
 });
