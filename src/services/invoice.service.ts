@@ -172,11 +172,20 @@ export class InvoiceService {
   /**
    * Calculate net_amount from amount and discount_rate
    * Formula: net_amount = amount - (amount * discount_rate / 100)
+   *
+   * Uses Decimal (as the rest of this file's money math already does in
+   * getInvoiceTokenHolders) rather than native floats: parseFloat-based
+   * arithmetic here silently rounded some amount/discountRate combinations
+   * to the wrong cent — e.g. amount="29.99", discountRate="0.5" produced
+   * "29.8400" instead of the correct "29.8401" — because IEEE-754 doubles
+   * can't represent most decimal fractions exactly.
    */
   private calculateNetAmount(amount: string, discountRate: string): string {
-    const amountNum = parseFloat(amount);
-    const discountNum = parseFloat(discountRate);
-    const netAmount = amountNum - amountNum * (discountNum / 100);
+    const amountDecimal = new Decimal(amount);
+    const discountDecimal = new Decimal(discountRate);
+    const netAmount = amountDecimal.minus(
+      amountDecimal.times(discountDecimal).dividedBy(100),
+    );
     return netAmount.toFixed(4);
   }
 
