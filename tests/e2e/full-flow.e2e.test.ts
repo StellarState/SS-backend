@@ -148,6 +148,7 @@ describe("E2E: Complete Invoice Financing Flow", () => {
         enabled: false,
         contractId: null,
         fundingMode: "wallet_xdr",
+        rpcUrl: null,
       },
       ipfs: {
         apiUrl: "https://api.pinata.cloud",
@@ -175,7 +176,15 @@ describe("E2E: Complete Invoice Financing Flow", () => {
       database: ":memory:",
       synchronize: true,
       logging: false,
-      entities: [User, Invoice, Investment, AuthChallenge, Transaction, KYCVerification, Notification],
+      entities: [
+        User,
+        Invoice,
+        Investment,
+        AuthChallenge,
+        Transaction,
+        KYCVerification,
+        Notification,
+      ],
     });
 
     await dataSource.initialize();
@@ -227,9 +236,7 @@ describe("E2E: Complete Invoice Financing Flow", () => {
       const { nonce, message } = challengeRes.body.challenge;
 
       // Sign the challenge message
-      const signature = sellerKeypair
-        .sign(Buffer.from(message, "utf8"))
-        .toString("hex");
+      const signature = sellerKeypair.sign(Buffer.from(message, "utf8")).toString("hex");
 
       // Verify challenge and get token
       const verifyRes = await request(app)
@@ -258,9 +265,7 @@ describe("E2E: Complete Invoice Financing Flow", () => {
 
       const { nonce, message } = challengeRes.body.challenge;
 
-      const signature = investorKeypair
-        .sign(Buffer.from(message, "utf8"))
-        .toString("hex");
+      const signature = investorKeypair.sign(Buffer.from(message, "utf8")).toString("hex");
 
       const verifyRes = await request(app)
         .post("/api/v1/auth/verify")
@@ -367,9 +372,7 @@ describe("E2E: Complete Invoice Financing Flow", () => {
       expect(invoice).toBeDefined();
       expect(invoice?.status).toBe(InvoiceStatus.PUBLISHED);
       expect(invoice?.sellerId).toBe(sellerId);
-      expect(invoice?.ipfsHash).toBe(
-        "QmMockHash1234567890123456789012345678901234567890"
-      );
+      expect(invoice?.ipfsHash).toBe("QmMockHash1234567890123456789012345678901234567890");
     });
   });
 
@@ -387,9 +390,7 @@ describe("E2E: Complete Invoice Financing Flow", () => {
       expect(Array.isArray(marketplaceRes.body.data)).toBe(true);
       expect(marketplaceRes.body.data.length).toBeGreaterThan(0);
 
-      const listedInvoice = marketplaceRes.body.data.find(
-        (inv: any) => inv.id === invoiceId
-      );
+      const listedInvoice = marketplaceRes.body.data.find((inv: any) => inv.id === invoiceId);
       expect(listedInvoice).toBeDefined();
       expect(listedInvoice.invoiceNumber).toBe("INV-E2E-001");
       expect(toNum(listedInvoice.amount)).toBeCloseTo(10000, 2);

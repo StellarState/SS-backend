@@ -121,7 +121,7 @@ describe("InvoiceService", () => {
       });
 
       expect(mockInvoiceRepository.create).toHaveBeenCalledWith(
-        expect.objectContaining({ netAmount: "29.8401" }),
+        expect.objectContaining({ netAmount: "29.8401" })
       );
       expect(result.netAmount).toBe("29.8401");
     });
@@ -329,6 +329,39 @@ describe("InvoiceService", () => {
         statusCode: 404,
       });
     });
+
+    it("should sanitize mutable text fields and normalize risk score", async () => {
+      mockInvoiceRepository.findOne.mockResolvedValue({ ...mockInvoice });
+      mockInvoiceRepository.save.mockImplementation(async (invoice: Invoice) => invoice);
+
+      const result = await invoiceService.updateInvoice({
+        sellerId: " seller-456 ",
+        invoiceId: " invoice-123 ",
+        customerName: "  Updated Customer  ",
+        riskScore: "7.5",
+      });
+
+      expect(result.customerName).toBe("Updated Customer");
+      expect(result.riskScore).toBe("7.50");
+      expect(mockInvoiceRepository.findOne).toHaveBeenCalledWith({
+        where: { id: "invoice-123" },
+      });
+    });
+
+    it("should isolate unexpected repository failures", async () => {
+      mockInvoiceRepository.findOne.mockRejectedValue(new Error("database unavailable"));
+
+      await expect(
+        invoiceService.updateInvoice({
+          sellerId: "seller-456",
+          invoiceId: "invoice-123",
+          customerName: "Updated",
+        })
+      ).rejects.toMatchObject({
+        code: "invoice_update_failed",
+        statusCode: 500,
+      });
+    });
   });
 
   // ============ DELETE INVOICE TESTS ============
@@ -379,7 +412,10 @@ describe("InvoiceService", () => {
       ...mockInvoice,
       dueDate: new Date(Date.now() + 48 * 60 * 60 * 1000),
       ipfsHash: "QmTestHash",
-      seller: { kycStatus: "approved", stellarAddress: "GSELLERWALLET1234567890ABCDEFGHIJKLMNOPQRSTUV" },
+      seller: {
+        kycStatus: "approved",
+        stellarAddress: "GSELLERWALLET1234567890ABCDEFGHIJKLMNOPQRSTUV",
+      },
     } as Invoice;
 
     it("should transition draft invoice to published", async () => {
@@ -399,7 +435,10 @@ describe("InvoiceService", () => {
       const soonDueInvoice = {
         ...mockInvoice,
         dueDate: new Date(Date.now() + 60 * 60 * 1000), // 1 hour in future
-        seller: { kycStatus: "approved", stellarAddress: "GSELLERWALLET1234567890ABCDEFGHIJKLMNOPQRSTUV" },
+        seller: {
+          kycStatus: "approved",
+          stellarAddress: "GSELLERWALLET1234567890ABCDEFGHIJKLMNOPQRSTUV",
+        },
       };
       mockInvoiceRepository.findOne.mockResolvedValue(soonDueInvoice);
 
@@ -419,7 +458,10 @@ describe("InvoiceService", () => {
         ...mockInvoice,
         status: InvoiceStatus.SETTLED,
         dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-        seller: { kycStatus: "approved", stellarAddress: "GSELLERWALLET1234567890ABCDEFGHIJKLMNOPQRSTUV" },
+        seller: {
+          kycStatus: "approved",
+          stellarAddress: "GSELLERWALLET1234567890ABCDEFGHIJKLMNOPQRSTUV",
+        },
       };
       mockInvoiceRepository.findOne.mockResolvedValue(settledInvoice);
 
@@ -466,7 +508,10 @@ describe("InvoiceService", () => {
       const invoiceWithPendingKYC = {
         ...publishableInvoice,
         status: InvoiceStatus.DRAFT,
-        seller: { kycStatus: "pending", stellarAddress: "GSELLERWALLET1234567890ABCDEFGHIJKLMNOPQRSTUV" },
+        seller: {
+          kycStatus: "pending",
+          stellarAddress: "GSELLERWALLET1234567890ABCDEFGHIJKLMNOPQRSTUV",
+        },
       };
       mockInvoiceRepository.findOne.mockResolvedValue(invoiceWithPendingKYC);
 
@@ -489,7 +534,7 @@ describe("InvoiceService", () => {
         invoiceService.publishInvoice({
           invoiceId: "invoice-123",
           sellerId: "seller-456",
-        }),
+        })
       ).rejects.toMatchObject({
         code: "invoice_not_publishable",
         statusCode: 400,

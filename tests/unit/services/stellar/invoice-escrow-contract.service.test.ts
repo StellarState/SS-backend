@@ -1,5 +1,8 @@
 import { Address, scValToNative } from "stellar-sdk";
-import { InvoiceEscrowContractService } from "../../../../src/services/stellar/invoice-escrow-contract.service";
+import {
+  InvoiceEscrowContractError,
+  InvoiceEscrowContractService,
+} from "../../../../src/services/stellar/invoice-escrow-contract.service";
 import type { AppLogger } from "../../../../src/observability/logger";
 
 describe("InvoiceEscrowContractService", () => {
@@ -34,20 +37,25 @@ describe("InvoiceEscrowContractService", () => {
     });
 
     it("should initialize correctly with string contract ID", () => {
-      const stringInitService = new InvoiceEscrowContractService(
-        ESCROW_CONTRACT_ID,
-        mockLogger,
-      );
+      const stringInitService = new InvoiceEscrowContractService(ESCROW_CONTRACT_ID, mockLogger);
       expect(stringInitService.contractId).toBe(ESCROW_CONTRACT_ID);
     });
 
     it("should throw error if contractId is empty", () => {
-      expect(() => new InvoiceEscrowContractService("")).toThrow(
-        "contractId is required.",
+      expect(() => new InvoiceEscrowContractService("")).toThrow("contractId is required.");
+      expect(() => new InvoiceEscrowContractService({ contractId: "" })).toThrow(
+        "contractId is required."
       );
+    });
+
+    it("should reject an invalid RPC timeout", () => {
       expect(
-        () => new InvoiceEscrowContractService({ contractId: "" }),
-      ).toThrow("contractId is required.");
+        () =>
+          new InvoiceEscrowContractService({
+            contractId: ESCROW_CONTRACT_ID,
+            rpcTimeoutMs: 0,
+          })
+      ).toThrow("rpcTimeoutMs must be a positive integer.");
     });
   });
 
@@ -58,15 +66,11 @@ describe("InvoiceEscrowContractService", () => {
         TEST_SELLER,
         TEST_AMOUNT_STROOPS,
         TEST_DUE_DATE,
-        TEST_TOKEN,
+        TEST_TOKEN
       );
 
       expect(op.body().switch().name).toBe("invokeHostFunction");
-      const invokeContractArgs = op
-        .body()
-        .invokeHostFunctionOp()
-        .hostFunction()
-        .invokeContract();
+      const invokeContractArgs = op.body().invokeHostFunctionOp().hostFunction().invokeContract();
 
       expect(invokeContractArgs.functionName().toString()).toBe("create_escrow");
 
@@ -114,7 +118,7 @@ describe("InvoiceEscrowContractService", () => {
           sorobanContractId: ESCROW_CONTRACT_ID,
           sellerAddress: TEST_SELLER,
           amountStroops: TEST_AMOUNT_STROOPS.toString(),
-        },
+        }
       );
     });
 
@@ -149,11 +153,7 @@ describe("InvoiceEscrowContractService", () => {
     it("should construct valid fund_escrow host function invocation", () => {
       const op = service.buildFundEscrowTx(TEST_INVOICE_ID, TEST_SELLER, TEST_AMOUNT_STROOPS);
       expect(op.body().switch().name).toBe("invokeHostFunction");
-      const invokeContractArgs = op
-        .body()
-        .invokeHostFunctionOp()
-        .hostFunction()
-        .invokeContract();
+      const invokeContractArgs = op.body().invokeHostFunctionOp().hostFunction().invokeContract();
 
       expect(invokeContractArgs.functionName().toString()).toBe("fund_escrow");
       const args = invokeContractArgs.args();
@@ -162,16 +162,21 @@ describe("InvoiceEscrowContractService", () => {
       expect(Address.fromScVal(args[1]).toString()).toBe(TEST_SELLER);
       expect(BigInt(scValToNative(args[2]))).toBe(TEST_AMOUNT_STROOPS);
     });
+
+    it("should reject non-positive and unsafe amounts", () => {
+      expect(() => service.buildFundEscrowTx(TEST_INVOICE_ID, TEST_SELLER, 0)).toThrow(
+        expect.objectContaining({ code: "invalid_amount" })
+      );
+      expect(() =>
+        service.buildFundEscrowTx(TEST_INVOICE_ID, TEST_SELLER, Number.MAX_SAFE_INTEGER + 1)
+      ).toThrow(expect.objectContaining({ code: "invalid_amount" }));
+    });
   });
 
   describe("buildRecordPaymentTx", () => {
     it("should construct valid record_payment host function invocation", () => {
       const op = service.buildRecordPaymentTx(TEST_INVOICE_ID, TEST_SELLER, TEST_AMOUNT_STROOPS);
-      const invokeContractArgs = op
-        .body()
-        .invokeHostFunctionOp()
-        .hostFunction()
-        .invokeContract();
+      const invokeContractArgs = op.body().invokeHostFunctionOp().hostFunction().invokeContract();
 
       expect(invokeContractArgs.functionName().toString()).toBe("record_payment");
       const args = invokeContractArgs.args();
@@ -183,16 +188,18 @@ describe("InvoiceEscrowContractService", () => {
   describe("buildSettleEscrowTx", () => {
     it("should construct valid settle_escrow host function invocation", () => {
       const op = service.buildSettleEscrowTx(TEST_INVOICE_ID);
-      const invokeContractArgs = op
-        .body()
-        .invokeHostFunctionOp()
-        .hostFunction()
-        .invokeContract();
+      const invokeContractArgs = op.body().invokeHostFunctionOp().hostFunction().invokeContract();
 
       expect(invokeContractArgs.functionName().toString()).toBe("settle_escrow");
       const args = invokeContractArgs.args();
       expect(args).toHaveLength(1);
       expect(scValToNative(args[0])).toBe(TEST_INVOICE_ID);
+    });
+
+    it("should reject empty invoice ids", () => {
+      expect(() => service.buildSettleEscrowTx("  ")).toThrow(
+        expect.objectContaining({ code: "invalid_invoice_id" })
+      );
     });
   });
 
@@ -232,6 +239,47 @@ describe("InvoiceEscrowContractService", () => {
       const res = await rpcService.submitTransaction({} as any);
       expect(res.status).toBe("PENDING");
       expect(res.txHash).toBe("abc123hash");
+    });
+
+    it("should wrap and log RPC failures without exposing implementation errors", async () => {
+      const mockServer = {
+        simulateTransaction: jest.fn().mockRejectedValue(new Error("socket reset by peer")),
+      } as any;
+      const rpcService = new InvoiceEscrowContractService({
+        contractId: ESCROW_CONTRACT_ID,
+        server: mockServer,
+        logger: mockLogger,
+      });
+
+      await expect(rpcService.simulateTransaction({} as any)).rejects.toMatchObject({
+        code: "rpc_request_failed",
+        message: "Soroban RPC simulation failed.",
+      });
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        "Soroban RPC request failed.",
+        expect.objectContaining({ operation: "simulation" })
+      );
+    });
+
+    it("should time out stalled RPC requests", async () => {
+      jest.useFakeTimers();
+      const mockServer = {
+        sendTransaction: jest.fn(() => new Promise(() => undefined)),
+      } as any;
+      const rpcService = new InvoiceEscrowContractService({
+        contractId: ESCROW_CONTRACT_ID,
+        server: mockServer,
+        logger: mockLogger,
+        rpcTimeoutMs: 25,
+      });
+
+      const submissionError = rpcService.submitTransaction({} as any).catch((error) => error);
+      await jest.advanceTimersByTimeAsync(25);
+
+      const error = await submissionError;
+      expect(error).toBeInstanceOf(InvoiceEscrowContractError);
+      expect(error).toMatchObject({ code: "rpc_timeout" });
+      jest.useRealTimers();
     });
   });
 });

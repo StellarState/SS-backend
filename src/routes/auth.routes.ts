@@ -1,4 +1,10 @@
-import { Router, type NextFunction, type Request, type RequestHandler, type Response } from "express";
+import {
+  Router,
+  type NextFunction,
+  type Request,
+  type RequestHandler,
+  type Response,
+} from "express";
 import Joi from "joi";
 import { createAuthController } from "../controllers/auth.controller";
 import { createAuthMiddleware } from "../middleware/auth.middleware";
@@ -10,7 +16,7 @@ import type { AppLogger } from "../observability/logger";
 // Strict schemas: enforce Stellar G... format hint, length bounds, and sanitized inputs.
 const STELLAR_PUBLIC_KEY_PATTERN = /^G[A-Z2-7]{55}$/;
 const NONCE_PATTERN = /^[A-Za-z0-9:_-]+$/;
-const SIGNATURE_PATTERN = /^[A-Za-z0-9+/=_:\-\.]+$/;
+const SIGNATURE_PATTERN = /^[A-Za-z0-9+/=_:.-]+$/;
 
 type AsyncRouteHandler = (req: Request, res: Response, next: NextFunction) => Promise<void> | void;
 
@@ -43,7 +49,10 @@ const verifySchema = Joi.object({
     .required(),
   signature: Joi.string()
     .trim()
-    .min(16)
+    // Encoding shape is validated here; cryptographic byte length remains an
+    // authentication concern in AuthService so malformed signatures continue
+    // to return 401 instead of changing the public contract to a 400.
+    .min(2)
     .max(512)
     .pattern(SIGNATURE_PATTERN)
     .messages({
@@ -57,7 +66,7 @@ const verifySchema = Joi.object({
 function wrapAuthHandler(
   routeName: string,
   handler: AsyncRouteHandler,
-  logger: AppLogger,
+  logger: AppLogger
 ): RequestHandler {
   return async (req, res, next) => {
     try {
@@ -95,29 +104,34 @@ export function createAuthRouter(authService: AuthService, logger: AppLogger): R
   const authMiddleware = createAuthMiddleware(authService);
   // `/challenge` and `/verify` are unauthenticated by design: the wallet
   // signature is the auth check, so they need their own abuse protection.
-  const authRateLimiter = createAuthRateLimitMiddleware(logger);
+  // Keep challenge generation and signature verification in independent
+  // buckets. Sharing one limiter allowed repeated challenge requests to
+  // consume the verification budget and lock a caller out of completing an
+  // otherwise valid login flow.
+  const challengeRateLimiter = createAuthRateLimitMiddleware(logger);
+  const verifyRateLimiter = createAuthRateLimitMiddleware(logger);
 
   router.use(markAuthRouteBase());
   router.use(noStoreAuthResponse());
 
   router.post(
     "/challenge",
-    authRateLimiter,
+    challengeRateLimiter,
     validateBody(challengeSchema),
-    wrapAuthHandler("auth.challenge", controller.challenge as AsyncRouteHandler, logger),
+    wrapAuthHandler("auth.challenge", controller.challenge as AsyncRouteHandler, logger)
   );
 
   router.post(
     "/verify",
-    authRateLimiter,
+    verifyRateLimiter,
     validateBody(verifySchema),
-    wrapAuthHandler("auth.verify", controller.verify as AsyncRouteHandler, logger),
+    wrapAuthHandler("auth.verify", controller.verify as AsyncRouteHandler, logger)
   );
 
   router.get(
     "/me",
     authMiddleware,
-    wrapAuthHandler("auth.me", controller.me as AsyncRouteHandler, logger),
+    wrapAuthHandler("auth.me", controller.me as AsyncRouteHandler, logger)
   );
 
   return router;

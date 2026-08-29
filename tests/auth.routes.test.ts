@@ -31,10 +31,7 @@ class InMemoryUserRepository implements UserRepositoryContract {
   }
 
   async findByStellarAddress(stellarAddress: string) {
-    return (
-      [...this.users.values()].find((user) => user.stellarAddress === stellarAddress) ??
-      null
-    );
+    return [...this.users.values()].find((user) => user.stellarAddress === stellarAddress) ?? null;
   }
 
   async save(user: Partial<InMemoryUser>) {
@@ -83,8 +80,7 @@ class InMemoryChallengeRepository implements ChallengeRepositoryContract {
     return (
       [...this.challenges.values()].find(
         (challenge) =>
-          challenge.stellarAddress === stellarAddress &&
-          challenge.nonceHash === nonceHash,
+          challenge.stellarAddress === stellarAddress && challenge.nonceHash === nonceHash
       ) ?? null
     );
   }
@@ -129,7 +125,7 @@ function createTestServer(challengeTtlMs = 60_000) {
 }
 
 afterEach(() => {
-jest.useRealTimers();
+  jest.useRealTimers();
 });
 
 describe("Auth routes", () => {
@@ -281,8 +277,8 @@ describe("Auth routes", () => {
 
     expect(
       [...challengeRepository.challenges.values()].some(
-        (challenge) => challenge.consumedAt !== null,
-      ),
+        (challenge) => challenge.consumedAt !== null
+      )
     ).toBe(true);
   });
 
@@ -328,6 +324,31 @@ describe("Auth routes", () => {
       .post("/api/v1/auth/challenge")
       .send({ publicKey: keypair.publicKey() })
       .expect(429);
+  });
+
+  it("keeps verification available when the challenge rate-limit bucket is full", async () => {
+    const { app } = createTestServer();
+    const keypair = Keypair.random();
+
+    const challengeResponse = await request(app)
+      .post("/api/v1/auth/challenge")
+      .send({ publicKey: keypair.publicKey() })
+      .expect(201);
+
+    for (let i = 0; i < 9; i += 1) {
+      await request(app)
+        .post("/api/v1/auth/challenge")
+        .send({ publicKey: keypair.publicKey() })
+        .expect(201);
+    }
+
+    const { nonce, message } = challengeResponse.body.challenge;
+    const signature = keypair.sign(Buffer.from(message, "utf8")).toString("base64");
+
+    await request(app)
+      .post("/api/v1/auth/verify")
+      .send({ publicKey: keypair.publicKey(), nonce, signature })
+      .expect(200);
   });
 
   it("returns 401 from /me when the bearer token is missing", async () => {
