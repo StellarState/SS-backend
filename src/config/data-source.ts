@@ -11,7 +11,6 @@
  */
 import { logger } from "../observability/logger";
 import dataSource from "./database";
-import { logger } from "../observability/logger";
 
 // Validate dataSource is properly initialized
 if (!dataSource) {

@@ -148,6 +148,7 @@ describe("E2E: Complete Invoice Financing Flow", () => {
         enabled: false,
         contractId: null,
         fundingMode: "wallet_xdr",
+        rpcUrl: null,
       },
       ipfs: {
         apiUrl: "https://api.pinata.cloud",

@@ -6,7 +6,8 @@ export type InvoiceTransitionReason =
   | "seller_published"
   | "seller_batch_published"
   | "fully_funded"
-  | "admin_settled";
+  | "admin_settled"
+  | "admin_rejected";
 
 export interface InvoiceTransitionLogInput {
   invoiceId: string;
