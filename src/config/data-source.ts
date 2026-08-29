@@ -1,6 +1,15 @@
 /**
- * DataSource entry for TypeORM CLI (migration:run, migration:generate, etc.)
+ * DataSource entry point consumed by the TypeORM CLI
+ * (`migration:run`, `migration:revert`, `migration:generate`, `migration:show`).
+ *
+ * This module is intentionally a thin re-export of the application DataSource
+ * defined in `./database`, so the CLI and the running application always share
+ * exactly one connection configuration. On top of that it performs a
+ * fast-failing pre-flight check with actionable logging: a misconfigured
+ * environment otherwise surfaces as an opaque driver error deep inside a
+ * migration transaction, which is painful to diagnose in CI/CD.
  */
+import { logger } from "../observability/logger";
 import dataSource from "./database";
 import { logger } from "../observability/logger";
 
