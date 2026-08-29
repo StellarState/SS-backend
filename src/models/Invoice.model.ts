@@ -26,6 +26,7 @@ export class Invoice {
   invoiceNumber!: string;
 
   @Column({ name: "customer_name", type: "varchar", length: 255 })
+  @Index("idx_invoices_customer_name")
   customerName!: string;
 
   @Column({ type: "decimal", precision: 18, scale: 4, default: 0 })
@@ -70,7 +71,7 @@ export class Invoice {
   @DeleteDateColumn({ name: "deleted_at" })
   deletedAt!: Date | null;
 
-  @ManyToOne("User", "invoices", { onDelete: "CASCADE" })
+  @ManyToOne("User", "invoices", { onDelete: "CASCADE", eager: false })
   @JoinColumn({ name: "seller_id" })
   seller!: import("./User.model").User;
 

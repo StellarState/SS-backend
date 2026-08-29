@@ -20,6 +20,7 @@ export class User {
   stellarAddress!: string;
 
   @Column({ type: "varchar", length: 255, nullable: true })
+  @Index("idx_users_email")
   email!: string | null;
 
   @Column({
@@ -52,7 +53,7 @@ export class User {
   @DeleteDateColumn({ name: "deleted_at" })
   deletedAt!: Date | null;
 
-  @OneToMany("Invoice", "seller")
+  @OneToMany("Invoice", "seller", { cascade: false })
   invoices!: import("./Invoice.model").Invoice[];
 
   @OneToMany("Investment", "investor")
