@@ -6,7 +6,8 @@ import type { AppConfig } from "../config/env";
 import { AuthChallenge } from "../models/AuthChallenge.model";
 import { User } from "../models/User.model";
 import type { PublicUser } from "../types/auth";
-import { HttpError } from "../utils/http-error";
+import { AppError, HttpError } from "../utils/http-error";
+import { logger } from "../observability/logger";
 import {
   buildAuthFailureDetails,
   classifyJwtError,
@@ -92,119 +93,137 @@ export class AuthService {
   }
 
   async createChallenge(publicKey: string): Promise<ChallengeResponse> {
-    this.assertValidPublicKey(publicKey);
+    try {
+      this.assertValidPublicKey(publicKey);
 
-    const nonce = crypto.randomBytes(32).toString("hex");
-    const issuedAt = new Date();
-    const expiresAt = new Date(issuedAt.getTime() + this.config.auth.challengeTtlMs);
-    const message = buildChallengeMessage({
-      publicKey,
-      nonce,
-      network: this.config.stellar.network,
-      networkPassphrase: this.config.stellar.networkPassphrase,
-      issuedAt,
-      expiresAt,
-    });
+      const nonce = crypto.randomBytes(32).toString("hex");
+      const issuedAt = new Date();
+      const expiresAt = new Date(issuedAt.getTime() + this.config.auth.challengeTtlMs);
+      const message = buildChallengeMessage({
+        publicKey,
+        nonce,
+        network: this.config.stellar.network,
+        networkPassphrase: this.config.stellar.networkPassphrase,
+        issuedAt,
+        expiresAt,
+      });
 
-    await this.challengeRepository.create({
-      stellarAddress: publicKey,
-      nonceHash: hashNonce(nonce),
-      message,
-      network: this.config.stellar.network,
-      issuedAt,
-      expiresAt,
-    });
+      await this.challengeRepository.create({
+        stellarAddress: publicKey,
+        nonceHash: hashNonce(nonce),
+        message,
+        network: this.config.stellar.network,
+        issuedAt,
+        expiresAt,
+      });
 
-    return {
-      publicKey,
-      nonce,
-      message,
-      issuedAt: issuedAt.toISOString(),
-      expiresAt: expiresAt.toISOString(),
-      network: this.config.stellar.network,
-    };
+      return {
+        publicKey,
+        nonce,
+        message,
+        issuedAt: issuedAt.toISOString(),
+        expiresAt: expiresAt.toISOString(),
+        network: this.config.stellar.network,
+      };
+    } catch (error) {
+      if (error instanceof HttpError) throw error;
+      logger.error('Failed to process', { error });
+      throw new AppError(500, 'Processing failed', 'PROCESSING_FAILED', { error });
+    }
   }
 
   async verifyChallenge(
     input: VerifyChallengeInput,
   ): Promise<VerifyChallengeResponse> {
-    this.assertValidPublicKey(input.publicKey);
+    try {
+      this.assertValidPublicKey(input.publicKey);
 
-    const challenge = await this.challengeRepository.findByAddressAndNonceHash(
-      input.publicKey,
-      hashNonce(input.nonce),
-    );
+      const challenge = await this.challengeRepository.findByAddressAndNonceHash(
+        input.publicKey,
+        hashNonce(input.nonce),
+      );
 
-    if (!challenge) {
-      throw new HttpError(401, "Invalid challenge.");
+      if (!challenge) {
+        throw new HttpError(401, "Invalid challenge.");
+      }
+
+      if (challenge.network !== this.config.stellar.network) {
+        throw new HttpError(401, "Challenge network mismatch.");
+      }
+
+      if (challenge.consumedAt) {
+        throw new HttpError(401, "Challenge already used.");
+      }
+
+      if (challenge.expiresAt.getTime() <= Date.now()) {
+        throw new HttpError(401, "Challenge expired.");
+      }
+
+      const signature = decodeSignature(input.signature);
+      const keypair = Keypair.fromPublicKey(input.publicKey);
+      const isValid = keypair.verify(Buffer.from(challenge.message, "utf8"), signature);
+
+      if (!isValid) {
+        throw new HttpError(401, "Invalid signature.");
+      }
+
+      const consumed = await this.challengeRepository.consume(challenge.id, new Date());
+
+      if (!consumed) {
+        throw new HttpError(401, "Challenge already used.");
+      }
+
+      const user = await this.upsertUser(input.publicKey);
+      const publicUser = toPublicUser(user);
+      const token = this.signToken(publicUser);
+
+      return {
+        token,
+        tokenType: "Bearer",
+        expiresIn: this.config.jwt.expiresIn,
+        user: publicUser,
+      };
+    } catch (error) {
+      if (error instanceof HttpError) throw error;
+      logger.error('Failed to process', { error });
+      throw new AppError(500, 'Processing failed', 'PROCESSING_FAILED', { error });
     }
-
-    if (challenge.network !== this.config.stellar.network) {
-      throw new HttpError(401, "Challenge network mismatch.");
-    }
-
-    if (challenge.consumedAt) {
-      throw new HttpError(401, "Challenge already used.");
-    }
-
-    if (challenge.expiresAt.getTime() <= Date.now()) {
-      throw new HttpError(401, "Challenge expired.");
-    }
-
-    const signature = decodeSignature(input.signature);
-    const keypair = Keypair.fromPublicKey(input.publicKey);
-    const isValid = keypair.verify(Buffer.from(challenge.message, "utf8"), signature);
-
-    if (!isValid) {
-      throw new HttpError(401, "Invalid signature.");
-    }
-
-    const consumed = await this.challengeRepository.consume(challenge.id, new Date());
-
-    if (!consumed) {
-      throw new HttpError(401, "Challenge already used.");
-    }
-
-    const user = await this.upsertUser(input.publicKey);
-    const publicUser = toPublicUser(user);
-    const token = this.signToken(publicUser);
-
-    return {
-      token,
-      tokenType: "Bearer",
-      expiresIn: this.config.jwt.expiresIn,
-      user: publicUser,
-    };
   }
 
   async getCurrentUser(token: string): Promise<PublicUser> {
-    let payload: AuthTokenPayload;
-
     try {
-      payload = jwt.verify(token, this.config.jwt.secret) as AuthTokenPayload;
+      let payload: AuthTokenPayload;
+
+      try {
+        payload = jwt.verify(token, this.config.jwt.secret) as AuthTokenPayload;
+      } catch (error) {
+        throw new HttpError(
+          401,
+          "Invalid or expired token.",
+          buildAuthFailureDetails(token, classifyJwtError(error)),
+        );
+      }
+
+      if (!payload.sub) {
+        throw new HttpError(
+          401,
+          "Invalid token payload.",
+          buildAuthFailureDetails(token, "invalid_token"),
+        );
+      }
+
+      const user = await this.userRepository.findByStellarAddress(payload.sub);
+
+      if (!user) {
+        throw new HttpError(401, "User no longer exists.");
+      }
+
+      return toPublicUser(user);
     } catch (error) {
-      throw new HttpError(
-        401,
-        "Invalid or expired token.",
-        buildAuthFailureDetails(token, classifyJwtError(error)),
-      );
+      if (error instanceof HttpError) throw error;
+      logger.error('Failed to process', { error });
+      throw new AppError(500, 'Processing failed', 'PROCESSING_FAILED', { error });
     }
-
-    if (!payload.sub) {
-      throw new HttpError(
-        401,
-        "Invalid token payload.",
-        buildAuthFailureDetails(token, "invalid_token"),
-      );
-    }
-
-    const user = await this.userRepository.findByStellarAddress(payload.sub);
-
-    if (!user) {
-      throw new HttpError(401, "User no longer exists.");
-    }
-
-    return toPublicUser(user);
   }
 
   private assertValidPublicKey(publicKey: string): void {
