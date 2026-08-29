@@ -72,4 +72,28 @@ export class InvestmentController {
       });
     }
   };
+
+  getInvestorAnalytics = async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const user = req.user;
+      if (!user) {
+        return res.status(401).json({ error: "Unauthorized" });
+      }
+
+      const analytics = await this.investmentService.calculateInvestorAnalytics(user.id);
+
+      return res.status(200).json({
+        success: true,
+        data: analytics,
+      });
+    } catch (err: unknown) {
+      const statusCode = (err as { status?: number }).status || (err as { statusCode?: number }).statusCode || 500;
+      return res.status(statusCode).json({
+        error: {
+          code: (err as { code?: string }).code || "INTERNAL_ERROR",
+          message: (err as { message?: string }).message || "Internal server error",
+        },
+      });
+    }
+  };
 }

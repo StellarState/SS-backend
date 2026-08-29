@@ -39,6 +39,7 @@ export function createRateLimitMiddleware(
     },
     standardHeaders: true,
     legacyHeaders: false,
+    validate: false,
     handler: (req, res, next, nextOptions) => {
       logger.warn("Rate limit exceeded.", {
         requestId: req.requestId,

@@ -28,6 +28,7 @@ export function createNotificationController(
 
       const sortOrder =
         (req.query.sort as string) === "asc" ? ("asc" as const) : ("desc" as const);
+      const cursor = req.query.cursor as string | undefined;
 
       const result = await notificationService.listNotifications({
         userId,
@@ -36,6 +37,7 @@ export function createNotificationController(
         read,
         type,
         sortOrder,
+        cursor,
       });
 
       res.status(200).json(result);

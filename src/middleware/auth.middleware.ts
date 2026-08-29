@@ -4,7 +4,7 @@ import jwt from "jsonwebtoken";
 import type { AuthService } from "../services/auth.service";
 import type { AuthenticatedRequest } from "../types/auth";
 
-import { HttpError } from "../utils/http-error";
+import { AppError, HttpError } from "../utils/http-error";
 import { UserType, KYCStatus } from "../types/enums";
 import {
   buildAuthFailureDetails,
@@ -14,6 +14,7 @@ import {
 interface AuthTokenPayload {
   sub: string;
   stellarAddress: string;
+  userId?: string;
 }
 
 export function createAuthMiddleware(authService: AuthService) {
@@ -84,11 +85,12 @@ export function authenticateJWT(
     const payload = jwt.verify(token, secret) as AuthTokenPayload;
 
     (req as AuthenticatedRequest).user = {
-      id: payload.sub,
+      id: payload.userId || payload.sub,
       stellarAddress: payload.stellarAddress,
       email: null,
       userType: null as unknown as UserType,
       kycStatus: null as unknown as KYCStatus,
+      isKycVerified: false,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -125,4 +127,21 @@ export function requireKYC(skipVerification = false) {
 
     next();
   };
+}
+
+export function checkKycVerified(
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+): void {
+  const user = (req as AuthenticatedRequest).user;
+  if (!user) {
+    next(new HttpError(401, "Authentication required"));
+    return;
+  }
+  if (user.kycStatus !== KYCStatus.APPROVED) {
+    next(new AppError(403, "KYC approval required for this action", "KYC_NOT_APPROVED"));
+    return;
+  }
+  next();
 }

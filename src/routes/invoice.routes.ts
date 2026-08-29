@@ -68,10 +68,37 @@ const updateInvoiceSchema = Joi.object({
     .max(100),
 });
 
+const batchPublishSchema = Joi.object({
+  invoiceIds: Joi.array()
+    .items(Joi.string().uuid().required())
+    .min(1)
+    .max(100)
+    .required()
+    .messages({
+      "array.min": "invoiceIds must contain at least one invoice id",
+      "array.max": "invoiceIds must contain at most 100 invoice ids",
+      "string.guid": "invoiceIds must contain valid invoice ids",
+    }),
+});
+
 const getInvoicesQuerySchema = Joi.object({
   page: Joi.number().integer().min(1).default(1),
   limit: Joi.number().integer().min(1).max(100).default(20),
   status: Joi.string().optional(),
+});
+
+const calculateTermsSchema = Joi.object({
+  faceValue: Joi.alternatives()
+    .try(
+      Joi.string().pattern(/^\d+(\.\d{1,4})?$/),
+      Joi.number().positive(),
+    )
+    .required()
+    .messages({ "alternatives.match": "faceValue must be a positive number or decimal string with max 4 decimal places" }),
+  dueDate: Joi.date().iso().required(),
+  discountBps: Joi.number().integer().min(0).max(10000).required(),
+  platformFeeBps: Joi.number().integer().min(0).max(10000).optional().default(0),
+  referenceDate: Joi.date().iso().optional(),
 });
 
 /**
@@ -180,6 +207,18 @@ export function createInvoiceRouter({
     controller.createInvoice,
   );
 
+  // POST /api/v1/invoices/batch-publish - Publish several drafts atomically.
+  // Declared ahead of the "/:id" routes so "batch-publish" is never matched as
+  // an invoice id.
+  router.post(
+    "/batch-publish",
+    authenticateJWT,
+    kycGating,
+    publishRateLimiter,
+    validateBody(batchPublishSchema),
+    controller.batchPublishInvoices,
+  );
+
   // GET /api/v1/invoices/:id - Get single invoice
   router.get("/:id", authenticateJWT, controller.getInvoice);
 
@@ -212,6 +251,27 @@ export function createInvoiceRouter({
     kycGating,
     upload.single("document"),
     controller.uploadDocument,
+  );
+
+  // GET /api/v1/invoices/:id/tokens - Get invoice token holders
+  router.get(
+    "/:id/tokens",
+    authenticateJWT,
+    controller.getInvoiceTokenHolders,
+  );
+
+  // GET /api/v1/invoices/:id/escrow - Get invoice escrow status
+  router.get(
+    "/:id/escrow",
+    authenticateJWT,
+    controller.getInvoiceEscrowStatus,
+  );
+
+  // POST /api/v1/invoices/calculate-terms - Calculate invoice discounting terms, fees, and APR
+  router.post(
+    "/calculate-terms",
+    validateBody(calculateTermsSchema),
+    controller.calculateTerms,
   );
 
   return router;

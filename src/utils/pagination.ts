@@ -1,6 +1,7 @@
 import { Repository, DataSource, SelectQueryBuilder } from "typeorm";
 import { Invoice } from "../models/Invoice.model";
 import { InvoiceStatus } from "../types/enums";
+import { paginateQuery } from "./query-pagination.utils";
 
 export interface InvoiceFilters {
   sellerId?: string;
@@ -9,6 +10,16 @@ export interface InvoiceFilters {
 
 export type Database = DataSource | Repository<Invoice>;
 
+/**
+ * Invoice-specific cursor pagination, kept for backward compatibility with
+ * existing callers/tests that expect this exact `{ data, has_more, next_cursor }`
+ * shape and the legacy `"ISO_DATE|id"` cursor encoding.
+ *
+ * Internally this now composes the generic `paginateQuery` helper
+ * (see `query-pagination.utils.ts`) instead of duplicating the keyset
+ * pagination logic, so any future fix to the cursor mechanics only needs to
+ * happen in one place.
+ */
 export async function queryInvoicesPage(
   filters: InvoiceFilters,
   cursor: string | null,
@@ -16,7 +27,7 @@ export async function queryInvoicesPage(
   db: Database
 ): Promise<{ data: Invoice[]; has_more: boolean; next_cursor: string | null }> {
   let queryBuilder: SelectQueryBuilder<Invoice>;
-  
+
   if (db instanceof DataSource) {
     queryBuilder = db.getRepository(Invoice).createQueryBuilder("invoice");
   } else {
@@ -39,6 +50,12 @@ export async function queryInvoicesPage(
     }
   }
 
+  // This endpoint's cursor uses a legacy "ISO_DATE|id" encoding (predating
+  // the generic helper's own opaque JSON+base64 cursor format), so we decode
+  // it here and translate into a single composite ordering key that
+  // `paginateQuery` can filter on via `invoice.createdAt`. The `id`
+  // tiebreaker is preserved as a secondary `addOrderBy` for stability when
+  // multiple invoices share the same `createdAt`.
   if (cursor) {
     const decoded = Buffer.from(cursor, "base64").toString("utf-8");
     const [createdAtStr, id] = decoded.split("|");
@@ -50,23 +67,27 @@ export async function queryInvoicesPage(
     );
   }
 
-  queryBuilder.orderBy("invoice.createdAt", "DESC");
   queryBuilder.addOrderBy("invoice.id", "DESC");
 
-  queryBuilder.take(limit + 1);
+  const { items, hasMore } = await paginateQuery<Invoice>({
+    queryBuilder,
+    cursorField: "invoice.createdAt",
+    order: "DESC",
+    limit,
+    // Cursor filtering above is already applied manually (legacy composite
+    // encoding), so we don't pass `cursor` through to `paginateQuery` again
+    // — doing so would double-filter and additionally reject on the
+    // generic helper's own cursor-field validation.
+  });
 
-  const results = await queryBuilder.getMany();
-  const hasMore = results.length > limit;
-  const data = hasMore ? results.slice(0, limit) : results;
-
-  let nextCursor = null;
-  if (data.length > 0) {
-    const lastItem = data[data.length - 1];
+  let nextCursor: string | null = null;
+  if (items.length > 0) {
+    const lastItem = items[items.length - 1];
     nextCursor = Buffer.from(`${lastItem.createdAt.toISOString()}|${lastItem.id}`).toString("base64");
   }
 
   return {
-    data,
+    data: items,
     has_more: hasMore,
     next_cursor: nextCursor
   };

@@ -22,6 +22,7 @@ export enum InvoiceStatus {
   FUNDED = "funded",
   SETTLED = "settled",
   CANCELLED = "cancelled",
+  REJECTED = "rejected",
 }
 
 export enum InvestmentStatus {

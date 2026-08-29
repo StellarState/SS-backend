@@ -48,6 +48,7 @@ export interface OrchestrateInvestmentFundingResult {
   investmentId: string;
   invoiceId: string;
   transactionId?: string;
+  txHash?: string;
   xdr?: string;
   contractId?: string;
   expiresAt?: string;
@@ -202,6 +203,7 @@ export class OrchestrateInvestmentFundingService {
         investmentId: lockedInvestment.id,
         invoiceId: lockedInvestment.invoiceId,
         transactionId: savedTransaction.id,
+        txHash: draft.txHash,
         xdr: draft.xdr,
         contractId,
         expiresAt: draft.expiresAt,

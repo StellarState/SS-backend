@@ -4,6 +4,7 @@ import { HttpError } from "../utils/http-error";
 import { ServiceError } from "../utils/service-error";
 import { AuthenticatedRequest } from "../types/auth";
 import { InvoiceStatus } from "@/types/enums";
+import { calculateInvoiceTerms } from "../utils/discount-calculator.utils";
 
 export interface UploadDocumentRequest extends Request {
   params: {
@@ -48,6 +49,12 @@ export interface GetInvoicesRequest extends AuthenticatedRequest {
 export interface PublishInvoiceRequest extends AuthenticatedRequest {
   params: {
     id: string;
+  };
+}
+
+export interface BatchPublishInvoicesRequest extends AuthenticatedRequest {
+  body: {
+    invoiceIds: string[];
   };
 }
 
@@ -298,6 +305,38 @@ export function createInvoiceController(invoiceService: InvoiceService) {
       }
     },
 
+    async batchPublishInvoices(
+      req: BatchPublishInvoicesRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> {
+      try {
+        if (!req.user) {
+          throw new HttpError(401, "Authentication required");
+        }
+
+        const result = await invoiceService.publishInvoicesBatch({
+          invoiceIds: req.body.invoiceIds,
+          sellerId: req.user.id,
+        });
+
+        res.status(200).json({
+          success: true,
+          data: result,
+        });
+      } catch (error) {
+        if (error instanceof ServiceError) {
+          // Per-invoice rejections are the point of the endpoint: the seller
+          // needs to see every problem at once, so they are passed through as
+          // error details rather than collapsed into a message.
+          next(new HttpError(error.statusCode, error.message, error.details));
+          return;
+        }
+
+        next(error);
+      }
+    },
+
     async uploadDocument(
       req: UploadDocumentRequest,
       res: Response,
@@ -334,6 +373,83 @@ export function createInvoiceController(invoiceService: InvoiceService) {
         }
 
         next(error);
+      }
+    },
+
+    async getInvoiceTokenHolders(
+      req: Request & { params: { id: string } },
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> {
+      try {
+        const { id } = req.params;
+
+        const result = await invoiceService.getInvoiceTokenHolders(id);
+
+        res.status(200).json({
+          success: true,
+          data: result,
+        });
+      } catch (error) {
+        if (error instanceof ServiceError) {
+          next(new HttpError(error.statusCode, error.message));
+          return;
+        }
+
+        next(error);
+      }
+    },
+
+    async getInvoiceEscrowStatus(
+      req: Request & { params: { id: string } },
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> {
+      try {
+        const { id } = req.params;
+
+        const result = await invoiceService.getInvoiceEscrowStatus(id);
+
+        res.status(200).json({
+          success: true,
+          data: result,
+        });
+      } catch (error) {
+        if (error instanceof ServiceError) {
+          next(new HttpError(error.statusCode, error.message));
+          return;
+        }
+
+        next(error);
+      }
+    },
+
+    async calculateTerms(
+      req: Request,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> {
+      try {
+        const { faceValue, dueDate, discountBps, platformFeeBps, referenceDate } = req.body;
+
+        const terms = calculateInvoiceTerms({
+          faceValue,
+          dueDate,
+          discountBps: Number(discountBps),
+          platformFeeBps: platformFeeBps !== undefined ? Number(platformFeeBps) : 0,
+          referenceDate,
+        });
+
+        res.status(200).json({
+          success: true,
+          data: terms,
+        });
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Failed to calculate invoice terms";
+        next(new HttpError(400, message));
       }
     },
   };

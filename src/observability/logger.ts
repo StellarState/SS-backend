@@ -1,4 +1,5 @@
 import winston from "winston";
+import { redactionFormat } from "./redaction-formatter";
 
 export type LogMetadata = Record<string, unknown>;
 
@@ -43,6 +44,7 @@ function createBaseLogger(): winston.Logger {
       service: "stellarsettle-api",
     },
     format: winston.format.combine(
+      redactionFormat(),
       winston.format.timestamp(),
       winston.format.errors({ stack: true }),
       winston.format.json(),

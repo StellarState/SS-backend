@@ -58,6 +58,9 @@ export class Invoice {
   @Column({ name: "smart_contract_id", type: "varchar", length: 64, nullable: true })
   smartContractId!: string | null;
 
+  @Column({ name: "rejection_reason", type: "text", nullable: true })
+  rejectionReason!: string | null;
+
   @CreateDateColumn({ name: "created_at" })
   createdAt!: Date;
 

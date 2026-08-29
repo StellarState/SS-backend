@@ -40,6 +40,9 @@ export class User {
   @Index("idx_users_kyc_status")
   kycStatus!: KYCStatus;
 
+  @Column({ name: "is_kyc_verified", type: "boolean", default: false })
+  isKycVerified?: boolean;
+
   @CreateDateColumn({ name: "created_at" })
   createdAt!: Date;
 

@@ -17,9 +17,8 @@ export function createErrorMiddleware(logger: AppLogger) {
     error: unknown,
     req: Request,
     res: Response,
-    _next: NextFunction
+    _next: NextFunction,
   ): void => {
-
     if (error instanceof AppError || error instanceof HttpError) {
       res.status(error.statusCode).json({
         success: false,

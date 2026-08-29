@@ -71,7 +71,7 @@ describe("validateInvoiceForPublish", () => {
     const invoice = createInvoice({ dueDate: futureDate(-1) });
     const errors = validateInvoiceForPublish(invoice);
     expect(errors).toHaveLength(1);
-    expect(errors[0]).toMatchObject({ field: "dueDate", code: "DUE_DATE_TOO_SOON" });
+    expect(errors[0]).toMatchObject({ field: "dueDate", code: "DUE_DATE_IN_PAST" });
   });
 
   it("returns a validation error for a due date less than 24 hours away", () => {
@@ -97,7 +97,38 @@ describe("validateInvoiceForPublish", () => {
     const errors = validateInvoiceForPublish(invoice);
     expect(errors).toHaveLength(3);
     expect(errors.map((e) => e.code)).toEqual(
-      expect.arrayContaining(["FACE_VALUE_TOO_LOW", "DUE_DATE_TOO_SOON", "MISSING_DOCUMENT"]),
+      expect.arrayContaining(["FACE_VALUE_TOO_LOW", "DUE_DATE_IN_PAST", "MISSING_DOCUMENT"]),
     );
+  });
+
+  it("returns all three errors simultaneously for a fully invalid invoice and is deterministic", () => {
+    // Create an invoice that fails all validations
+    const fullyInvalidInvoice = createInvoice({
+      amount: "0.0000", // faceValue: 0
+      dueDate: futureDate(-5), // dueDate in the past
+      ipfsHash: null, // no attached documents
+    });
+
+    // First call: should return all errors
+    const errors = validateInvoiceForPublish(fullyInvalidInvoice);
+
+    // Assert exactly three errors are returned in a single call
+    expect(errors).toHaveLength(3);
+
+    // Assert each error identifies the correct field
+    const errorFields = errors.map((e) => e.field);
+    expect(errorFields).toContain("amount");
+    expect(errorFields).toContain("dueDate");
+    expect(errorFields).toContain("ipfsHash");
+
+    // Assert each error has the correct error code
+    const errorCodes = errors.map((e) => e.code);
+    expect(errorCodes).toContain("FACE_VALUE_TOO_LOW");
+    expect(errorCodes).toContain("DUE_DATE_IN_PAST");
+    expect(errorCodes).toContain("MISSING_DOCUMENT");
+
+    // Second call with the same invoice: should return the same errors (deterministic)
+    const errorsAgain = validateInvoiceForPublish(fullyInvalidInvoice);
+    expect(errorsAgain).toEqual(errors);
   });
 });

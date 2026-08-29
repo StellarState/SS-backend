@@ -5,6 +5,7 @@ import { SettlementService } from "../../src/services/settlement.service";
 import { Invoice } from "../../src/models/Invoice.model";
 import { Investment } from "../../src/models/Investment.model";
 import { InvoiceStatus, InvestmentStatus } from "../../src/types/enums";
+import { logger } from "../../src/observability/logger";
 
 /**
  * Minimal in-memory TypeORM stand-in shared by InvestmentService and
@@ -199,6 +200,10 @@ describe("Settlement integration: rejecting settlement of non-fully-funded invoi
 });
 
 describe("Settlement integration: funding multiple investors then settling", () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
   it("distributes proceeds pro-rata to each investor and marks the invoice settled", async () => {
     const invoice = createInvoice();
     const { dataSource, invoices, investments } = createFakeDataSource(invoice);
@@ -255,6 +260,78 @@ describe("Settlement integration: funding multiple investors then settling", () 
       0,
     );
     expect(sumOfReturns).toBeCloseTo(6600, 4);
+  });
+
+  it("logs settlement completion with the correct invoice_id, total_proceeds, and investor_count", async () => {
+    const infoSpy = jest.spyOn(logger, "info");
+
+    const invoice = createInvoice();
+    const { dataSource, investments } = createFakeDataSource(invoice);
+
+    const investmentService = new InvestmentService(dataSource);
+    const settlementService = new SettlementService(dataSource);
+
+    const investorAId = crypto.randomUUID();
+    const investorBId = crypto.randomUUID();
+
+    const investmentA = await investmentService.createInvestment({
+      invoiceId: invoice.id,
+      investorId: investorAId,
+      investmentAmount: "4000.0000",
+      investorWallet: "GINVESTORA1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    });
+    const investmentB = await investmentService.createInvestment({
+      invoiceId: invoice.id,
+      investorId: investorBId,
+      investmentAmount: "2000.0000",
+      investorWallet: "GINVESTORB1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    });
+
+    for (const investment of [investmentA, investmentB]) {
+      const stored = investments.get(investment.id)!;
+      stored.status = InvestmentStatus.CONFIRMED;
+      investments.set(investment.id, stored);
+    }
+
+    await settlementService.settleInvoice({
+      invoiceId: invoice.id,
+      proceeds: "6600.0000",
+      actorWallet: "GADMINWALLET1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    });
+
+    const completionCall = infoSpy.mock.calls.find(
+      ([message]) => message === "Settlement flow completed.",
+    );
+    expect(completionCall).toBeDefined();
+
+    const metadata = completionCall?.[1] as Record<string, unknown>;
+    expect(metadata.invoice_id).toBe(invoice.id);
+    expect(metadata.total_proceeds).toBe("6600.0000000");
+    expect(metadata.investor_count).toBe(2);
+    expect(metadata.settled_at).toEqual(expect.any(String));
+  });
+
+  it("does not log settlement completion when settlement fails", async () => {
+    const infoSpy = jest.spyOn(logger, "info");
+
+    // Invoice is still PUBLISHED (never funded), so settlement must fail
+    // before any investor returns are recorded.
+    const invoice = createInvoice({ status: InvoiceStatus.PUBLISHED });
+    const { dataSource } = createFakeDataSource(invoice);
+    const settlementService = new SettlementService(dataSource);
+
+    await expect(
+      settlementService.settleInvoice({
+        invoiceId: invoice.id,
+        proceeds: "6600.0000",
+        actorWallet: "GADMINWALLET1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+      }),
+    ).rejects.toThrow();
+
+    const completionCall = infoSpy.mock.calls.find(
+      ([message]) => message === "Settlement flow completed.",
+    );
+    expect(completionCall).toBeUndefined();
   });
 });
 

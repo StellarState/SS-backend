@@ -67,8 +67,8 @@ describe("Marketplace Routes", () => {
           dueBefore: undefined,
           minAmount: undefined,
           maxAmount: undefined,
-          sort: "due_date",
-          sortOrder: "ASC",
+          sort: "amount",
+          sortOrder: "DESC",
         },
         { page: 1, limit: 20 },
       );
@@ -213,11 +213,11 @@ describe("Marketplace Routes", () => {
 
       await request(app)
         .get("/api/v1/marketplace/invoices")
-        .query({ 
-          page: 1, 
-          limit: 10, 
+        .query({
+          page: 1,
+          limit: 10,
           unknownParam: "should-be-stripped",
-          anotherUnknown: 123 
+          anotherUnknown: 123
         })
         .expect(200);
 
@@ -228,8 +228,9 @@ describe("Marketplace Routes", () => {
           dueBefore: undefined,
           minAmount: undefined,
           maxAmount: undefined,
-          sort: "due_date",
-          sortOrder: "ASC",
+          search: undefined,
+          sort: "amount",
+          sortOrder: "DESC",
         },
         { page: 1, limit: 10 },
       );
