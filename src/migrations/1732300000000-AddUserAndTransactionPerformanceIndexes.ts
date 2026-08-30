@@ -20,9 +20,18 @@ export class AddUserAndTransactionPerformanceIndexes1732300000000
       CREATE INDEX IF NOT EXISTS "idx_transactions_stellar_tx_hash"
       ON "transactions" ("stellar_tx_hash");
     `);
+
+    await queryRunner.query(`
+      CREATE INDEX IF NOT EXISTS "idx_transactions_user_id_timestamp"
+      ON "transactions" ("user_id", "timestamp");
+    `);
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
+    await queryRunner.query(`
+      DROP INDEX IF EXISTS "public"."idx_transactions_user_id_timestamp";
+    `);
+
     await queryRunner.query(`
       DROP INDEX IF EXISTS "public"."idx_transactions_stellar_tx_hash";
     `);

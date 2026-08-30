@@ -14,6 +14,7 @@ import type { Invoice } from "./Invoice.model";
 
 @Entity("transactions")
 @Index("idx_transactions_status_type_timestamp", ["status", "type", "timestamp"])
+@Index("idx_transactions_user_id_timestamp", ["userId", "timestamp"])
 export class Transaction {
   @PrimaryGeneratedColumn("uuid")
   id!: string;
