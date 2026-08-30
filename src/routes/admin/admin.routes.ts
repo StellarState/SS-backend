@@ -18,9 +18,11 @@ export interface AdminRouterDependencies {
 export function createAdminRouter({
   dataSource,
   allowedCidrs,
-  // Not yet wired to a route (see AdminRouterDependencies.invoiceService doc
-  // comment); kept as a named param so callers can pass it in ahead of that
-  // route landing, without the lint no-unused-vars check tripping on it.
+  // Not wired up yet: `./reject-invoice.ts` (POST /invoices/:id/reject)
+  // exists but isn't mounted here, and itself calls an
+  // `InvoiceService.rejectInvoice` that doesn't exist yet either. Out of
+  // scope for this change; kept as a documented no-op rather than silently
+  // dropped so the next person wiring it up has a marker to find.
   invoiceService: _invoiceService,
 }: AdminRouterDependencies): Router {
   const router = Router();

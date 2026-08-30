@@ -406,7 +406,7 @@ export function createVerifyPaymentService(
   });
 }
 
-class RetryableHorizonError extends Error {}
+export class RetryableHorizonError extends Error {}
 
 function ensureTrailingSlash(value: string): string {
   return value.endsWith("/") ? value : `${value}/`;
