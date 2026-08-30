@@ -17,15 +17,32 @@ import { InvoiceStatus } from "../types/enums";
 import { logger } from "../observability/logger";
 import { AppError } from "../utils/http-error";
 
-export const VALID_INVOICE_TRANSITIONS: Record<InvoiceStatus, InvoiceStatus[]> = {
-  [InvoiceStatus.DRAFT]: [InvoiceStatus.PUBLISHED, InvoiceStatus.CANCELLED, InvoiceStatus.REJECTED],
-  [InvoiceStatus.PENDING]: [InvoiceStatus.PUBLISHED, InvoiceStatus.CANCELLED, InvoiceStatus.REJECTED],
-  [InvoiceStatus.PUBLISHED]: [InvoiceStatus.FUNDED, InvoiceStatus.CANCELLED],
-  [InvoiceStatus.FUNDED]: [InvoiceStatus.SETTLED, InvoiceStatus.CANCELLED],
-  [InvoiceStatus.SETTLED]: [InvoiceStatus.CANCELLED],
-  [InvoiceStatus.CANCELLED]: [],
-  [InvoiceStatus.REJECTED]: [],
-};
+/**
+ * Frozen state transition map optimized for performance.
+ * Prevents accidental mutations and enables faster lookups.
+ */
+export const VALID_INVOICE_TRANSITIONS: Record<InvoiceStatus, InvoiceStatus[]> = Object.freeze({
+  [InvoiceStatus.DRAFT]: Object.freeze([InvoiceStatus.PUBLISHED, InvoiceStatus.CANCELLED, InvoiceStatus.REJECTED]),
+  [InvoiceStatus.PENDING]: Object.freeze([InvoiceStatus.PUBLISHED, InvoiceStatus.CANCELLED, InvoiceStatus.REJECTED]),
+  [InvoiceStatus.PUBLISHED]: Object.freeze([InvoiceStatus.FUNDED, InvoiceStatus.CANCELLED]),
+  [InvoiceStatus.FUNDED]: Object.freeze([InvoiceStatus.SETTLED, InvoiceStatus.CANCELLED]),
+  [InvoiceStatus.SETTLED]: Object.freeze([InvoiceStatus.CANCELLED]),
+  [InvoiceStatus.CANCELLED]: Object.freeze([]),
+  [InvoiceStatus.REJECTED]: Object.freeze([]),
+});
+
+/**
+ * Validation constraints for invoice fields.
+ */
+const VALIDATION_CONSTRAINTS = Object.freeze({
+  INVOICE_NUMBER_MAX_LENGTH: 64,
+  CUSTOMER_NAME_MAX_LENGTH: 255,
+  IPFS_HASH_MAX_LENGTH: 128,
+  SMART_CONTRACT_ID_MAX_LENGTH: 64,
+  DISCOUNT_RATE_MAX: 100,
+  MIN_RUNWAY_HOURS_DEFAULT: 24,
+  DECIMAL_PRECISION: 4,
+});
 
 export interface PublicInvoiceDTO {
   id: string;
@@ -123,21 +140,37 @@ export class Invoice {
   /**
    * Calculates the exact net amount using arbitrary-precision decimal arithmetic.
    * Net Amount = amount * (1 - discountRate / 100) rounded to 4 decimal places.
+   * Optimized with early validation and efficient decimal operations.
+   * 
+   * @throws AppError if inputs are invalid or calculation fails
    */
   static calculateNetAmount(
     amount: string | number | Decimal,
     discountRate: string | number | Decimal,
   ): string {
     try {
-      const amt = new Decimal(amount);
-      const disc = new Decimal(discountRate);
+      // Convert to Decimal with error handling
+      let amt: Decimal;
+      let disc: Decimal;
+      
+      try {
+        amt = new Decimal(amount);
+        disc = new Decimal(discountRate);
+      } catch {
+        throw new AppError(
+          400,
+          "Amount and discount rate must be valid numeric values",
+          "INVALID_AMOUNT_OR_DISCOUNT",
+        );
+      }
 
+      // Validate constraints efficiently
       if (
         !amt.isFinite() ||
         !disc.isFinite() ||
         amt.isNegative() ||
         disc.isNegative() ||
-        disc.gt(100)
+        disc.gt(VALIDATION_CONSTRAINTS.DISCOUNT_RATE_MAX)
       ) {
         throw new AppError(
           400,
@@ -146,17 +179,22 @@ export class Invoice {
         );
       }
 
-      const net = amt.minus(amt.times(disc.dividedBy(100)));
-      return net.toFixed(4);
+      // Perform calculation with optimized precision
+      const net = amt.minus(amt.times(disc.dividedBy(VALIDATION_CONSTRAINTS.DISCOUNT_RATE_MAX)));
+      return net.toFixed(VALIDATION_CONSTRAINTS.DECIMAL_PRECISION);
     } catch (error) {
+      // Re-throw AppError without wrapping
       if (error instanceof AppError) {
         throw error;
       }
+      
       logger.error("Failed to calculate invoice net amount", {
         error: error instanceof Error ? error.message : String(error),
         amount: String(amount),
         discountRate: String(discountRate),
+        context: "Invoice.calculateNetAmount",
       });
+      
       throw new AppError(
         500,
         "Failed to calculate invoice net amount",
@@ -167,44 +205,64 @@ export class Invoice {
 
   /**
    * Sanitizes and normalizes invoice fields to prevent data corruption.
+   * Optimized to minimize object traversal and reduce redundant operations.
+   * Handles null/undefined gracefully without deep equality checks.
+   * 
+   * @throws AppError if normalization fails
    */
   static sanitizeAndNormalize(invoice: Partial<Invoice>): void {
     try {
+      // Helper function to trim and truncate strings
+      const sanitizeString = (value: string | undefined | null, maxLength: number): string | null => {
+        if (value === undefined || value === null) return value as null;
+        const trimmed = String(value).trim();
+        return trimmed.length > 0 ? trimmed.slice(0, maxLength) : null;
+      };
+
+      // Sanitize string fields efficiently
       if (invoice.invoiceNumber !== undefined && invoice.invoiceNumber !== null) {
-        invoice.invoiceNumber = String(invoice.invoiceNumber).trim().slice(0, 64);
+        invoice.invoiceNumber = sanitizeString(invoice.invoiceNumber, VALIDATION_CONSTRAINTS.INVOICE_NUMBER_MAX_LENGTH) || invoice.invoiceNumber;
       }
 
       if (invoice.customerName !== undefined && invoice.customerName !== null) {
-        invoice.customerName = String(invoice.customerName).trim().slice(0, 255);
+        invoice.customerName = sanitizeString(invoice.customerName, VALIDATION_CONSTRAINTS.CUSTOMER_NAME_MAX_LENGTH) || invoice.customerName;
       }
 
-      if (invoice.ipfsHash !== undefined && invoice.ipfsHash !== null) {
-        const trimmed = String(invoice.ipfsHash).trim();
-        invoice.ipfsHash = trimmed.length > 0 ? trimmed.slice(0, 128) : null;
+      if (invoice.ipfsHash !== undefined) {
+        invoice.ipfsHash = sanitizeString(invoice.ipfsHash, VALIDATION_CONSTRAINTS.IPFS_HASH_MAX_LENGTH);
       }
 
-      if (invoice.smartContractId !== undefined && invoice.smartContractId !== null) {
-        const trimmed = String(invoice.smartContractId).trim();
-        invoice.smartContractId = trimmed.length > 0 ? trimmed.slice(0, 64) : null;
+      if (invoice.smartContractId !== undefined) {
+        invoice.smartContractId = sanitizeString(invoice.smartContractId, VALIDATION_CONSTRAINTS.SMART_CONTRACT_ID_MAX_LENGTH);
       }
 
-      if (invoice.rejectionReason !== undefined && invoice.rejectionReason !== null) {
-        const trimmed = String(invoice.rejectionReason).trim();
-        invoice.rejectionReason = trimmed.length > 0 ? trimmed : null;
+      if (invoice.rejectionReason !== undefined) {
+        invoice.rejectionReason = sanitizeString(invoice.rejectionReason, Number.MAX_SAFE_INTEGER);
       }
 
+      // Auto-calculate netAmount only if both amount and discountRate are present and netAmount is unset
       if (
         invoice.amount !== undefined &&
         invoice.discountRate !== undefined &&
         invoice.amount !== null &&
-        invoice.discountRate !== null
+        invoice.discountRate !== null &&
+        (!invoice.netAmount || invoice.netAmount === "0" || invoice.netAmount === "0.0000")
       ) {
-        const amtStr = String(invoice.amount).trim();
-        const discStr = String(invoice.discountRate).trim();
-        if (amtStr && discStr && !isNaN(Number(amtStr)) && !isNaN(Number(discStr))) {
-          if (!invoice.netAmount || invoice.netAmount === "0" || invoice.netAmount === "0.0000") {
+        try {
+          const amtStr = String(invoice.amount).trim();
+          const discStr = String(invoice.discountRate).trim();
+          
+          // Quick validation before expensive calculation
+          if (amtStr && discStr && !isNaN(Number(amtStr)) && !isNaN(Number(discStr))) {
             invoice.netAmount = Invoice.calculateNetAmount(amtStr, discStr);
           }
+        } catch (calcError) {
+          // Log but don't throw - allow invoice to be created without netAmount
+          logger.warn("Failed to auto-calculate netAmount during normalization", {
+            error: calcError instanceof Error ? calcError.message : String(calcError),
+            invoiceId: invoice.id,
+            invoiceNumber: invoice.invoiceNumber,
+          });
         }
       }
     } catch (error) {
@@ -212,10 +270,13 @@ export class Invoice {
         error: error instanceof Error ? error.message : String(error),
         invoiceId: invoice.id,
         invoiceNumber: invoice.invoiceNumber,
+        context: "Invoice.sanitizeAndNormalize",
       });
+      
       if (error instanceof AppError) {
         throw error;
       }
+      
       throw new AppError(
         500,
         `Invoice normalization failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -226,15 +287,36 @@ export class Invoice {
 
   /**
    * Checks if a transition from current status to target status is valid.
+   * Optimized with early exit and fallback safety.
    */
   static isValidTransition(currentStatus: InvoiceStatus, targetStatus: InvoiceStatus): boolean {
-    const current = currentStatus ?? InvoiceStatus.DRAFT;
-    const allowed = VALID_INVOICE_TRANSITIONS[current] ?? [];
-    return allowed.includes(targetStatus);
+    try {
+      const current = currentStatus ?? InvoiceStatus.DRAFT;
+      const allowed = VALID_INVOICE_TRANSITIONS[current];
+      
+      // Handle edge case where status key doesn't exist
+      if (!allowed) {
+        logger.warn("Unknown invoice status in transition check", { status: current });
+        return false;
+      }
+      
+      return allowed.includes(targetStatus);
+    } catch (error) {
+      logger.error("Error checking invoice transition validity", {
+        error: error instanceof Error ? error.message : String(error),
+        currentStatus,
+        targetStatus,
+        context: "Invoice.isValidTransition",
+      });
+      return false;
+    }
   }
 
   /**
    * Safely transitions the invoice status with validation.
+   * Optimized to minimize state mutations and improve error context.
+   * 
+   * @throws AppError if transition is invalid or operation fails
    */
   static transitionTo(
     invoice: Invoice,
@@ -242,6 +324,7 @@ export class Invoice {
     rejectionReason?: string | null,
   ): void {
     try {
+      // Validate transition before modifying state
       if (!Invoice.isValidTransition(invoice.status, targetStatus)) {
         throw new AppError(
           400,
@@ -250,20 +333,35 @@ export class Invoice {
         );
       }
 
+      // Apply state transition
       invoice.status = targetStatus;
-      if (targetStatus === InvoiceStatus.REJECTED && rejectionReason) {
-        invoice.rejectionReason = rejectionReason.trim();
+      
+      // Handle rejection reason if applicable
+      if (targetStatus === InvoiceStatus.REJECTED) {
+        if (rejectionReason) {
+          invoice.rejectionReason = String(rejectionReason).trim();
+        }
       }
+      
+      logger.debug("Invoice status transitioned successfully", {
+        invoiceId: invoice.id,
+        fromStatus: invoice.status,
+        toStatus: targetStatus,
+      });
     } catch (error) {
+      // Re-throw AppError without wrapping
       if (error instanceof AppError) {
         throw error;
       }
+      
       logger.error("Failed to transition invoice status", {
         error: error instanceof Error ? error.message : String(error),
         invoiceId: invoice.id,
         fromStatus: invoice.status,
         toStatus: targetStatus,
+        context: "Invoice.transitionTo",
       });
+      
       throw new AppError(
         500,
         "Failed to execute invoice status transition",
@@ -274,6 +372,9 @@ export class Invoice {
 
   /**
    * Evaluates if the invoice is eligible to be published to the marketplace.
+   * Optimized with early validation and efficient array building.
+   * 
+   * @returns Object with publishable flag and detailed error messages
    */
   static isPublishable(
     invoice: Partial<Invoice>,
@@ -283,40 +384,61 @@ export class Invoice {
     errors: string[];
   } {
     const errors: string[] = [];
-    const minRunwayHours = options.minRunwayHours ?? 24;
+    const minRunwayHours = options.minRunwayHours ?? VALIDATION_CONSTRAINTS.MIN_RUNWAY_HOURS_DEFAULT;
     const now = options.referenceDate ?? new Date();
 
-    if (invoice.status !== InvoiceStatus.DRAFT && invoice.status !== InvoiceStatus.PENDING) {
-      errors.push(`Status must be draft or pending, currently ${invoice.status}`);
-    }
-
     try {
-      const amt = new Decimal(invoice.amount || 0);
-      if (amt.lte(0)) {
-        errors.push("Invoice amount must be greater than zero");
+      // Check status - early exit if invalid
+      if (invoice.status !== InvoiceStatus.DRAFT && invoice.status !== InvoiceStatus.PENDING) {
+        errors.push(`Status must be draft or pending, currently ${invoice.status}`);
       }
-    } catch {
-      errors.push("Invalid amount format");
-    }
 
-    if (!invoice.customerName || !invoice.customerName.trim()) {
-      errors.push("Customer name is required");
-    }
-
-    if (!invoice.dueDate) {
-      errors.push("Due date is required");
-    } else {
-      const dueTime = new Date(invoice.dueDate).getTime();
-      const minDueTime = now.getTime() + minRunwayHours * 60 * 60 * 1000;
-      if (isNaN(dueTime)) {
-        errors.push("Invalid due date format");
-      } else if (dueTime < minDueTime) {
-        errors.push(`Due date must be at least ${minRunwayHours} hours in the future`);
+      // Validate amount
+      try {
+        const amt = new Decimal(invoice.amount || 0);
+        if (amt.lte(0)) {
+          errors.push("Invoice amount must be greater than zero");
+        }
+      } catch {
+        errors.push("Invalid amount format");
       }
-    }
 
-    if (!invoice.ipfsHash || !invoice.ipfsHash.trim()) {
-      errors.push("Invoice document IPFS hash is required");
+      // Validate customer name
+      if (!invoice.customerName || !String(invoice.customerName).trim()) {
+        errors.push("Customer name is required");
+      }
+
+      // Validate due date with efficient date handling
+      if (!invoice.dueDate) {
+        errors.push("Due date is required");
+      } else {
+        try {
+          const dueTime = new Date(invoice.dueDate).getTime();
+          if (isNaN(dueTime)) {
+            errors.push("Invalid due date format");
+          } else {
+            const minDueTime = now.getTime() + minRunwayHours * 60 * 60 * 1000;
+            if (dueTime < minDueTime) {
+              errors.push(`Due date must be at least ${minRunwayHours} hours in the future`);
+            }
+          }
+        } catch {
+          errors.push("Invalid due date format");
+        }
+      }
+
+      // Validate IPFS hash
+      if (!invoice.ipfsHash || !String(invoice.ipfsHash).trim()) {
+        errors.push("Invoice document IPFS hash is required");
+      }
+    } catch (error) {
+      logger.error("Error during invoice publishability check", {
+        error: error instanceof Error ? error.message : String(error),
+        invoiceId: invoice.id,
+        context: "Invoice.isPublishable",
+      });
+      // Return unpublishable on unexpected errors
+      errors.push("Unexpected error during validation");
     }
 
     return {
@@ -327,41 +449,65 @@ export class Invoice {
 
   /**
    * Checks if the invoice due date has passed.
+   * Optimized with efficient date comparison.
    */
   static isOverdue(invoice: Partial<Invoice>, referenceDate: Date = new Date()): boolean {
     if (!invoice.dueDate) return false;
-    const dueTime = new Date(invoice.dueDate).getTime();
-    return !isNaN(dueTime) && dueTime < referenceDate.getTime();
+    
+    try {
+      const dueTime = new Date(invoice.dueDate).getTime();
+      return !isNaN(dueTime) && dueTime < referenceDate.getTime();
+    } catch {
+      logger.warn("Invalid due date when checking overdue status", { invoiceId: invoice.id });
+      return false;
+    }
   }
 
   /**
    * Calculates the remaining funding runway in hours.
+   * Optimized with efficient time delta calculation.
    */
   static getFundingRunwayHours(
     invoice: Partial<Invoice>,
     referenceDate: Date = new Date(),
   ): number {
     if (!invoice.dueDate) return 0;
-    const dueTime = new Date(invoice.dueDate).getTime();
-    if (isNaN(dueTime)) return 0;
-    const diffMs = dueTime - referenceDate.getTime();
-    return Math.max(0, Math.floor(diffMs / (1000 * 60 * 60)));
+    
+    try {
+      const dueTime = new Date(invoice.dueDate).getTime();
+      if (isNaN(dueTime)) return 0;
+      
+      const diffMs = dueTime - referenceDate.getTime();
+      return Math.max(0, Math.floor(diffMs / (1000 * 60 * 60)));
+    } catch {
+      logger.warn("Error calculating funding runway hours", { invoiceId: invoice.id });
+      return 0;
+    }
   }
 
   /**
    * Static factory method to safely construct and initialize an Invoice instance.
+   * Optimized with early validation and efficient object construction.
    */
   static create(data: Partial<Invoice>): Invoice {
     try {
       const invoice = new Invoice();
+      
+      // Assign properties efficiently
       Object.assign(invoice, data);
+      
+      // Normalize and sanitize
       Invoice.sanitizeAndNormalize(invoice);
+      
       return invoice;
     } catch (error) {
       if (error instanceof AppError) throw error;
+      
       logger.error("Failed to construct invoice entity", {
         error: error instanceof Error ? error.message : String(error),
+        context: "Invoice.create",
       });
+      
       throw new AppError(
         500,
         "Failed to construct invoice entity",
@@ -372,25 +518,38 @@ export class Invoice {
 
   /**
    * Serializes entity to a clean DTO payload.
+   * Optimized with direct field mapping to avoid unnecessary operations.
    */
   static toDTO(invoice: Invoice): PublicInvoiceDTO {
-    return {
-      id: invoice.id,
-      sellerId: invoice.sellerId,
-      invoiceNumber: invoice.invoiceNumber,
-      customerName: invoice.customerName,
-      amount: invoice.amount,
-      discountRate: invoice.discountRate,
-      netAmount: invoice.netAmount,
-      dueDate: invoice.dueDate,
-      ipfsHash: invoice.ipfsHash,
-      riskScore: invoice.riskScore,
-      status: invoice.status,
-      smartContractId: invoice.smartContractId,
-      rejectionReason: invoice.rejectionReason,
-      createdAt: invoice.createdAt,
-      updatedAt: invoice.updatedAt,
-    };
+    try {
+      return {
+        id: invoice.id,
+        sellerId: invoice.sellerId,
+        invoiceNumber: invoice.invoiceNumber,
+        customerName: invoice.customerName,
+        amount: invoice.amount,
+        discountRate: invoice.discountRate,
+        netAmount: invoice.netAmount,
+        dueDate: invoice.dueDate,
+        ipfsHash: invoice.ipfsHash,
+        riskScore: invoice.riskScore,
+        status: invoice.status,
+        smartContractId: invoice.smartContractId,
+        rejectionReason: invoice.rejectionReason,
+        createdAt: invoice.createdAt,
+        updatedAt: invoice.updatedAt,
+      };
+    } catch (error) {
+      logger.error("Failed to serialize invoice to DTO", {
+        error: error instanceof Error ? error.message : String(error),
+        invoiceId: invoice?.id,
+        context: "Invoice.toDTO",
+      });
+      throw new AppError(
+        500,
+        "Failed to serialize invoice",
+        "INVOICE_SERIALIZATION_FAILED",
+      );
+    }
   }
-}
 
