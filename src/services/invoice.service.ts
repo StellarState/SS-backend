@@ -595,18 +595,18 @@ export class InvoiceService {
     const publishable: Array<{ invoice: Invoice; sellerWallet: string }> = [];
     const rejections: BatchPublishRejection[] = [];
 
-    // Parallel fetch: avoids N sequential round-trips under heavy load (was ~N*~50ms)
+    // Batch fetch: single query with In(uniqueIds) avoids N round-trips
     let fetched: Array<{ invoiceId: string; invoice: Invoice | null }>;
     try {
-      fetched = await Promise.all(
-        uniqueIds.map(async (invoiceId) => ({
-          invoiceId,
-          invoice: await this.invoiceRepository.findOne({
-            where: { id: invoiceId },
-            relations: ["seller"],
-          }),
-        })),
-      );
+      const invoices = await this.invoiceRepository.find({
+        where: { id: In(uniqueIds) },
+        relations: ["seller"],
+      });
+      const byId = new Map(invoices.map((inv) => [inv.id, inv]));
+      fetched = uniqueIds.map((invoiceId) => ({
+        invoiceId,
+        invoice: byId.get(invoiceId) ?? null,
+      }));
     } catch (error) {
       logger.error("Failed to fetch batch invoices", { error, sellerId });
       throw new ServiceError("batch_fetch_failed", "Failed to fetch invoices for batch publish", 500);
