@@ -144,6 +144,34 @@ export class Invoice {
     }
   }
 
+  isExpired(): boolean {
+    return new Date(this.dueDate).getTime() < Date.now();
+  }
+
+  isPublishable(): boolean {
+    return (
+      (this.status === InvoiceStatus.DRAFT || this.status === InvoiceStatus.PENDING) &&
+      Boolean(this.ipfsHash) &&
+      !this.isExpired()
+    );
+  }
+
+  isFundable(): boolean {
+    return this.status === InvoiceStatus.PUBLISHED && !this.isExpired();
+  }
+
+  isSettlable(): boolean {
+    return this.status === InvoiceStatus.FUNDED;
+  }
+
+  canBeCancelled(): boolean {
+    return this.status === InvoiceStatus.DRAFT || this.status === InvoiceStatus.PENDING || this.status === InvoiceStatus.PUBLISHED;
+  }
+
+  canBeRejected(): boolean {
+    return this.status === InvoiceStatus.PENDING || this.status === InvoiceStatus.DRAFT;
+  }
+
   static async processBatch(invoices: Invoice[]): Promise<Invoice[]> {
     try {
       logger.info("Processing batch of invoices", { count: invoices.length });
@@ -157,6 +185,42 @@ export class Invoice {
         throw error;
       }
       throw new AppError(500, "Processing invoice batch failed", "INVOICE_BATCH_PROCESSING_FAILED", error);
+    }
+  }
+
+  static async batchUpdateStatus(
+    invoices: Invoice[],
+    targetStatus: InvoiceStatus,
+    reason?: string
+  ): Promise<Invoice[]> {
+    try {
+      logger.info("Performing batch status update for invoices", {
+        count: invoices.length,
+        targetStatus,
+      });
+
+      for (const invoice of invoices) {
+        if (targetStatus === InvoiceStatus.REJECTED) {
+          if (!invoice.canBeRejected()) {
+            throw new AppError(400, `Invoice ${invoice.id} cannot be rejected from status ${invoice.status}`, "INVALID_STATUS_TRANSITION");
+          }
+          if (reason) {
+            invoice.rejectionReason = reason;
+          }
+        }
+        invoice.status = targetStatus;
+      }
+
+      return invoices;
+    } catch (error) {
+      logger.error("Failed to perform batch status update", {
+        targetStatus,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      if (error instanceof AppError) {
+        throw error;
+      }
+      throw new AppError(500, "Batch status update failed", "BATCH_STATUS_UPDATE_FAILED", error);
     }
   }
 }
