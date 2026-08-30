@@ -13,6 +13,7 @@ import type { Invoice } from "./Invoice.model";
 
 
 @Entity("transactions")
+@Index("idx_transactions_status_type_timestamp", ["status", "type", "timestamp"])
 export class Transaction {
   @PrimaryGeneratedColumn("uuid")
   id!: string;
@@ -42,6 +43,7 @@ export class Transaction {
   amount!: string;
 
   @Column({ name: "stellar_tx_hash", type: "varchar", length: 64, nullable: true })
+  @Index("idx_transactions_stellar_tx_hash")
   stellarTxHash!: string | null;
 
   @Column({ name: "stellar_operation_index", type: "integer", nullable: true })

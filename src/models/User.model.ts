@@ -11,6 +11,7 @@ import {
 import { UserType, KYCStatus } from "../types/enums";
 
 @Entity("users")
+@Index("idx_users_user_type_kyc_status", ["userType", "kycStatus"])
 export class User {
   @PrimaryGeneratedColumn("uuid")
   id!: string;
@@ -42,7 +43,7 @@ export class User {
   kycStatus!: KYCStatus;
 
   @Column({ name: "is_kyc_verified", type: "boolean", default: false })
-  isKycVerified?: boolean;
+  isKycVerified!: boolean;
 
   @CreateDateColumn({ name: "created_at" })
   createdAt!: Date;
