@@ -49,6 +49,9 @@ describe("InvoiceEscrowContractService", () => {
       expect(
         () => new InvoiceEscrowContractService({ contractId: "" }),
       ).toThrow("contractId is required.");
+      expect(
+        () => new InvoiceEscrowContractService({ contractId: "   " }),
+      ).toThrow("contractId is required.");
     });
   });
 
@@ -88,6 +91,32 @@ describe("InvoiceEscrowContractService", () => {
 
       // Argument 4: paymentTokenAddress (Address)
       expect(Address.fromScVal(args[4]).toString()).toBe(TEST_TOKEN);
+    });
+
+    it("validates required inputs for buildCreateEscrowTx", () => {
+      expect(() =>
+        service.buildCreateEscrowTx("", TEST_SELLER, TEST_AMOUNT_STROOPS, TEST_DUE_DATE, TEST_TOKEN),
+      ).toThrow("invoiceId is required.");
+
+      expect(() =>
+        service.buildCreateEscrowTx(TEST_INVOICE_ID, "", TEST_AMOUNT_STROOPS, TEST_DUE_DATE, TEST_TOKEN),
+      ).toThrow("sellerAddress is required.");
+
+      expect(() =>
+        service.buildCreateEscrowTx(TEST_INVOICE_ID, TEST_SELLER, 0n, TEST_DUE_DATE, TEST_TOKEN),
+      ).toThrow("amountStroops must be positive.");
+
+      expect(() =>
+        service.buildCreateEscrowTx(TEST_INVOICE_ID, TEST_SELLER, -100n, TEST_DUE_DATE, TEST_TOKEN),
+      ).toThrow("amountStroops must be positive.");
+
+      expect(() =>
+        service.buildCreateEscrowTx(TEST_INVOICE_ID, TEST_SELLER, TEST_AMOUNT_STROOPS, 0, TEST_TOKEN),
+      ).toThrow("dueDateTimestamp must be a positive number.");
+
+      expect(() =>
+        service.buildCreateEscrowTx(TEST_INVOICE_ID, TEST_SELLER, TEST_AMOUNT_STROOPS, TEST_DUE_DATE, ""),
+      ).toThrow("paymentTokenAddress is required.");
     });
   });
 
@@ -163,6 +192,18 @@ describe("InvoiceEscrowContractService", () => {
       expect(Address.fromScVal(args[1]).toString()).toBe(TEST_SELLER);
       expect(BigInt(scValToNative(args[2]))).toBe(TEST_AMOUNT_STROOPS);
     });
+
+    it("validates required inputs for buildFundEscrowTx", () => {
+      expect(() => service.buildFundEscrowTx("", TEST_SELLER, TEST_AMOUNT_STROOPS)).toThrow(
+        "invoiceId is required.",
+      );
+      expect(() => service.buildFundEscrowTx(TEST_INVOICE_ID, "", TEST_AMOUNT_STROOPS)).toThrow(
+        "investorAddress is required.",
+      );
+      expect(() => service.buildFundEscrowTx(TEST_INVOICE_ID, TEST_SELLER, 0n)).toThrow(
+        "amountStroops must be positive.",
+      );
+    });
   });
 
   describe("buildRecordPaymentTx", () => {
@@ -179,6 +220,18 @@ describe("InvoiceEscrowContractService", () => {
       expect(args).toHaveLength(3);
       expect(scValToNative(args[0])).toBe(TEST_INVOICE_ID);
     });
+
+    it("validates required inputs for buildRecordPaymentTx", () => {
+      expect(() => service.buildRecordPaymentTx("", TEST_SELLER, TEST_AMOUNT_STROOPS)).toThrow(
+        "invoiceId is required.",
+      );
+      expect(() => service.buildRecordPaymentTx(TEST_INVOICE_ID, "", TEST_AMOUNT_STROOPS)).toThrow(
+        "payerAddress is required.",
+      );
+      expect(() => service.buildRecordPaymentTx(TEST_INVOICE_ID, TEST_SELLER, -5n)).toThrow(
+        "amountStroops must be positive.",
+      );
+    });
   });
 
   describe("buildSettleEscrowTx", () => {
@@ -194,6 +247,10 @@ describe("InvoiceEscrowContractService", () => {
       const args = invokeContractArgs.args();
       expect(args).toHaveLength(1);
       expect(scValToNative(args[0])).toBe(TEST_INVOICE_ID);
+    });
+
+    it("validates required inputs for buildSettleEscrowTx", () => {
+      expect(() => service.buildSettleEscrowTx("")).toThrow("invoiceId is required.");
     });
   });
 
@@ -279,6 +336,80 @@ describe("InvoiceEscrowContractService", () => {
         "Soroban sendTransaction call failed.",
         expect.objectContaining({ sorobanContractId: ESCROW_CONTRACT_ID }),
       );
+    });
+  });
+
+  describe("waitForTransactionConfirmation", () => {
+    it("polls and returns SUCCESS on successful on-chain confirmation", async () => {
+      const mockServer = {
+        getTransaction: jest.fn().mockResolvedValue({
+          status: "SUCCESS",
+          ledger: "12345",
+        }),
+      } as any;
+
+      const rpcService = new InvoiceEscrowContractService({
+        contractId: ESCROW_CONTRACT_ID,
+        server: mockServer,
+        logger: mockLogger,
+        confirmationPollMs: 1,
+        confirmationAttempts: 3,
+      });
+
+      const result = await rpcService.waitForTransactionConfirmation("hash-123");
+      expect(result.status).toBe("SUCCESS");
+      expect(result.ledger).toBe(12345);
+      expect(mockLogger.info).toHaveBeenCalledWith(
+        "Soroban transaction confirmed on-chain.",
+        expect.objectContaining({ txHash: "hash-123", ledger: 12345 }),
+      );
+    });
+
+    it("returns FAILED when transaction reverts on-chain", async () => {
+      const mockServer = {
+        getTransaction: jest.fn().mockResolvedValue({
+          status: "FAILED",
+        }),
+      } as any;
+
+      const rpcService = new InvoiceEscrowContractService({
+        contractId: ESCROW_CONTRACT_ID,
+        server: mockServer,
+        logger: mockLogger,
+        confirmationPollMs: 1,
+        confirmationAttempts: 3,
+      });
+
+      const result = await rpcService.waitForTransactionConfirmation("hash-failed");
+      expect(result.status).toBe("FAILED");
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        "Soroban transaction reverted on-chain.",
+        expect.objectContaining({ txHash: "hash-failed" }),
+      );
+    });
+
+    it("throws ServiceError 504 on confirmation timeout", async () => {
+      const mockServer = {
+        getTransaction: jest.fn().mockResolvedValue({
+          status: "NOT_FOUND",
+        }),
+      } as any;
+
+      const rpcService = new InvoiceEscrowContractService({
+        contractId: ESCROW_CONTRACT_ID,
+        server: mockServer,
+        logger: mockLogger,
+        confirmationPollMs: 1,
+        confirmationAttempts: 2,
+      });
+
+      await expect(rpcService.waitForTransactionConfirmation("hash-timeout")).rejects.toBeInstanceOf(
+        ServiceError,
+      );
+      await expect(rpcService.waitForTransactionConfirmation("hash-timeout")).rejects.toMatchObject({
+        code: "transaction_confirmation_timeout",
+        statusCode: 504,
+      });
     });
   });
 });
