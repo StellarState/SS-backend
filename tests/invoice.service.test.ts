@@ -46,25 +46,37 @@ describe("InvoiceService", () => {
     });
   });
 
+  /** Valid `createInvoice` input; override any field per case. */
+  const buildCreateInput = (overrides: Record<string, unknown> = {}) => ({
+    sellerId: "seller-456",
+    invoiceNumber: "INV-001",
+    customerName: "Test Customer",
+    amount: "1000.00",
+    discountRate: "5.00",
+    dueDate: new Date("2024-12-31"),
+    ...overrides,
+  });
+
+  /**
+   * Wire the repository so `create`/`save` echo the entity the service builds,
+   * letting a test assert on the values the service actually computed (e.g.
+   * netAmount) rather than on a hand-stubbed return value.
+   */
+  const wireCreatePassthrough = () => {
+    mockInvoiceRepository.findOneBy.mockResolvedValue(null);
+    mockInvoiceRepository.create.mockImplementation((data: Partial<Invoice>) => ({
+      ...mockInvoice,
+      ...data,
+    }));
+    mockInvoiceRepository.save.mockImplementation(async (invoice: Invoice) => invoice);
+  };
+
   // ============ CREATE INVOICE TESTS ============
   describe("createInvoice", () => {
     it("should successfully create an invoice", async () => {
-      mockInvoiceRepository.findOneBy.mockResolvedValue(null);
-      const createdInvoice = {
-        ...mockInvoice,
-        netAmount: "950.0000",
-      };
-      mockInvoiceRepository.create.mockReturnValue(createdInvoice);
-      mockInvoiceRepository.save.mockResolvedValue(createdInvoice);
+      wireCreatePassthrough();
 
-      const result = await invoiceService.createInvoice({
-        sellerId: "seller-456",
-        invoiceNumber: "INV-001",
-        customerName: "Test Customer",
-        amount: "1000.00",
-        discountRate: "5.00",
-        dueDate: new Date("2024-12-31"),
-      });
+      const result = await invoiceService.createInvoice(buildCreateInput());
 
       expect(result.id).toBe("invoice-123");
       expect(result.status).toBe(InvoiceStatus.DRAFT);
@@ -74,85 +86,46 @@ describe("InvoiceService", () => {
       });
     });
 
-    it("should calculate net amount correctly", async () => {
-      mockInvoiceRepository.findOneBy.mockResolvedValue(null);
-      mockInvoiceRepository.create.mockReturnValue({
-        ...mockInvoice,
-        amount: "1000.00",
-        discountRate: "10.00",
-      });
-      mockInvoiceRepository.save.mockResolvedValue({
-        ...mockInvoice,
-        amount: "1000.00",
-        discountRate: "10.00",
-        netAmount: "900.0000",
-      });
+    // netAmount = amount - amount * discountRate / 100, rounded to 4 dp.
+    // The 29.99 @ 0.5% row guards a real regression: naive `parseFloat`
+    // arithmetic produced "29.8400" instead of "29.8401" because 29.99 and
+    // 0.5 aren't exactly representable as IEEE-754 doubles.
+    it.each([
+      { amount: "1000.00", discountRate: "10.00", expected: "900.0000", note: "round percentages" },
+      { amount: "1000.00", discountRate: "5.00", expected: "950.0000", note: "default case" },
+      { amount: "29.99", discountRate: "0.5", expected: "29.8401", note: "IEEE-754 rounding trap" },
+      { amount: "10000.0000", discountRate: "0.00", expected: "10000.0000", note: "zero discount" },
+    ])(
+      "computes netAmount = $expected for $amount @ $discountRate% ($note)",
+      async ({ amount, discountRate, expected }) => {
+        wireCreatePassthrough();
 
-      const result = await invoiceService.createInvoice({
-        sellerId: "seller-456",
-        invoiceNumber: "INV-001",
-        customerName: "Test Customer",
-        amount: "1000.00",
-        discountRate: "10.00",
-        dueDate: new Date("2024-12-31"),
-      });
+        const result = await invoiceService.createInvoice(
+          buildCreateInput({ amount, discountRate }),
+        );
 
-      expect(result.netAmount).toBe("900.0000");
-    });
-
-    it("should calculate net amount precisely for values where floating-point arithmetic rounds wrong", async () => {
-      mockInvoiceRepository.findOneBy.mockResolvedValue(null);
-      mockInvoiceRepository.create.mockImplementation((data: Partial<Invoice>) => ({
-        ...mockInvoice,
-        ...data,
-      }));
-      mockInvoiceRepository.save.mockImplementation(async (invoice: Invoice) => invoice);
-
-      // 29.99 - 29.99 * 0.5 / 100: naive `parseFloat` arithmetic here used to
-      // produce "29.8400" instead of the correct "29.8401" because 29.99 and
-      // 0.5 aren't exactly representable as IEEE-754 doubles.
-      const result = await invoiceService.createInvoice({
-        sellerId: "seller-456",
-        invoiceNumber: "INV-002",
-        customerName: "Test Customer",
-        amount: "29.99",
-        discountRate: "0.5",
-        dueDate: new Date("2024-12-31"),
-      });
-
-      expect(mockInvoiceRepository.create).toHaveBeenCalledWith(
-        expect.objectContaining({ netAmount: "29.8401" })
-      );
-      expect(result.netAmount).toBe("29.8401");
-    });
+        expect(mockInvoiceRepository.create).toHaveBeenCalledWith(
+          expect.objectContaining({ netAmount: expected }),
+        );
+        expect(result.netAmount).toBe(expected);
+      },
+    );
 
     it("should reject duplicate invoice number", async () => {
       mockInvoiceRepository.findOneBy.mockResolvedValue(mockInvoice);
 
       await expect(
-        invoiceService.createInvoice({
-          sellerId: "seller-456",
-          invoiceNumber: "INV-001",
-          customerName: "Test Customer",
-          amount: "1000.00",
-          discountRate: "5.00",
-          dueDate: new Date("2024-12-31"),
-        })
+        invoiceService.createInvoice(buildCreateInput()),
       ).rejects.toThrow(ServiceError);
 
       await expect(
-        invoiceService.createInvoice({
-          sellerId: "seller-456",
-          invoiceNumber: "INV-001",
-          customerName: "Test Customer",
-          amount: "1000.00",
-          discountRate: "5.00",
-          dueDate: new Date("2024-12-31"),
-        })
+        invoiceService.createInvoice(buildCreateInput()),
       ).rejects.toMatchObject({
         code: "invoice_number_exists",
         statusCode: 409,
       });
+
+      expect(mockInvoiceRepository.save).not.toHaveBeenCalled();
     });
   });
 

@@ -82,6 +82,49 @@ function toNum(val: unknown): number {
   return Number(val);
 }
 
+/**
+ * Drive the Stellar challenge-response handshake for a keypair and return the
+ * issued bearer token plus the created user id.
+ *
+ * Extracted so seller and investor onboarding share one hardened code path
+ * instead of duplicating the challenge/sign/verify sequence. Every network
+ * hop is asserted inline so a regression fails here with a precise message
+ * rather than cascading into unrelated later steps.
+ */
+async function authenticateViaChallenge(
+  httpApp: ReturnType<typeof createApp>,
+  keypair: Keypair
+): Promise<{ token: string; userId: string }> {
+  const challengeRes = await request(httpApp)
+    .post("/api/v1/auth/challenge")
+    .send({ publicKey: keypair.publicKey() })
+    .expect(201);
+
+  expect(challengeRes.body.challenge).toBeDefined();
+  expect(challengeRes.body.challenge.publicKey).toBe(keypair.publicKey());
+  const { nonce, message } = challengeRes.body.challenge;
+  expect(nonce).toBeDefined();
+  expect(message).toBeDefined();
+
+  const signature = keypair.sign(Buffer.from(message, "utf8")).toString("hex");
+
+  const verifyRes = await request(httpApp)
+    .post("/api/v1/auth/verify")
+    .send({ publicKey: keypair.publicKey(), nonce, signature })
+    .expect(200);
+
+  expect(verifyRes.body.token).toBeDefined();
+  expect(verifyRes.body.tokenType).toBe("Bearer");
+  expect(verifyRes.body.user?.stellarAddress).toBe(keypair.publicKey());
+
+  return { token: verifyRes.body.token, userId: verifyRes.body.user.id };
+}
+
+// The full journey spans two authentications, several writes and a settlement.
+// Give it generous headroom so a slow CI runner does not produce a sporadic
+// timeout failure that looks like a product regression.
+jest.setTimeout(30_000);
+
 describe("E2E: Complete Invoice Financing Flow", () => {
   let dataSource: DataSource;
   let app: ReturnType<typeof createApp>;
@@ -168,47 +211,48 @@ describe("E2E: Complete Invoice Financing Flow", () => {
       },
     };
 
-    // Initialize test database (SQLite in-memory)
-    patchEntityMetadataForSQLite();
+    // Initialize test database (SQLite in-memory). Wrap the whole bring-up so a
+    // failure in schema sync or service wiring surfaces with a clear cause
+    // instead of every downstream test throwing an opaque "app is undefined".
+    try {
+      patchEntityMetadataForSQLite();
 
-    dataSource = new DataSource({
-      type: "sqlite",
-      database: ":memory:",
-      synchronize: true,
-      logging: false,
-      entities: [
-        User,
-        Invoice,
-        Investment,
-        AuthChallenge,
-        Transaction,
-        KYCVerification,
-        Notification,
-      ],
-    });
+      dataSource = new DataSource({
+        type: "sqlite",
+        database: ":memory:",
+        synchronize: true,
+        logging: false,
+        entities: [User, Invoice, Investment, AuthChallenge, Transaction, KYCVerification, Notification],
+      });
 
-    await dataSource.initialize();
+      await dataSource.initialize();
 
-    // Create services with mocked IPFS
-    const authService = createAuthService(dataSource, config);
-    const invoiceService = createInvoiceService(dataSource, mockIPFSService);
-    const investmentService = createInvestmentService(dataSource);
-    const settlementService = createSettlementService(dataSource);
-    const marketplaceService = createMarketplaceService(dataSource);
-    const notificationService = createNotificationService(dataSource);
+      // Create services with mocked IPFS
+      const authService = createAuthService(dataSource, config);
+      const invoiceService = createInvoiceService(dataSource, mockIPFSService);
+      const investmentService = createInvestmentService(dataSource);
+      const settlementService = createSettlementService(dataSource);
+      const marketplaceService = createMarketplaceService(dataSource);
+      const notificationService = createNotificationService(dataSource);
 
-    // Create the full app
-    app = createApp({
-      authService,
-      notificationService,
-      invoiceService,
-      investmentService,
-      settlementService,
-      marketplaceService,
-      config,
-      logger,
-      metricsEnabled: false,
-    });
+      // Create the full app
+      app = createApp({
+        authService,
+        notificationService,
+        invoiceService,
+        investmentService,
+        settlementService,
+        marketplaceService,
+        config,
+        logger,
+        metricsEnabled: false,
+      });
+    } catch (error) {
+      logger.error("E2E test harness failed to initialize", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
   });
 
   afterAll(async () => {
@@ -222,62 +266,21 @@ describe("E2E: Complete Invoice Financing Flow", () => {
   // ============================================================
   describe("Step 1: Authentication", () => {
     it("should authenticate seller via Stellar challenge-response", async () => {
-      // Request challenge
-      const challengeRes = await request(app)
-        .post("/api/v1/auth/challenge")
-        .send({ publicKey: sellerKeypair.publicKey() })
-        .expect(201);
+      const { token, userId } = await authenticateViaChallenge(app, sellerKeypair);
+      sellerToken = token;
+      sellerId = userId;
 
-      expect(challengeRes.body.challenge).toBeDefined();
-      expect(challengeRes.body.challenge.publicKey).toBe(sellerKeypair.publicKey());
-      expect(challengeRes.body.challenge.nonce).toBeDefined();
-      expect(challengeRes.body.challenge.message).toBeDefined();
-
-      const { nonce, message } = challengeRes.body.challenge;
-
-      // Sign the challenge message
-      const signature = sellerKeypair.sign(Buffer.from(message, "utf8")).toString("hex");
-
-      // Verify challenge and get token
-      const verifyRes = await request(app)
-        .post("/api/v1/auth/verify")
-        .send({
-          publicKey: sellerKeypair.publicKey(),
-          nonce,
-          signature,
-        })
-        .expect(200);
-
-      expect(verifyRes.body.token).toBeDefined();
-      expect(verifyRes.body.tokenType).toBe("Bearer");
-      expect(verifyRes.body.user).toBeDefined();
-      expect(verifyRes.body.user.stellarAddress).toBe(sellerKeypair.publicKey());
-
-      sellerToken = verifyRes.body.token;
-      sellerId = verifyRes.body.user.id;
+      expect(sellerToken).toEqual(expect.any(String));
+      expect(sellerId).toEqual(expect.any(String));
     });
 
     it("should authenticate investor via Stellar challenge-response", async () => {
-      const challengeRes = await request(app)
-        .post("/api/v1/auth/challenge")
-        .send({ publicKey: investorKeypair.publicKey() })
-        .expect(201);
+      const { token, userId } = await authenticateViaChallenge(app, investorKeypair);
+      investorToken = token;
+      investorId = userId;
 
-      const { nonce, message } = challengeRes.body.challenge;
-
-      const signature = investorKeypair.sign(Buffer.from(message, "utf8")).toString("hex");
-
-      const verifyRes = await request(app)
-        .post("/api/v1/auth/verify")
-        .send({
-          publicKey: investorKeypair.publicKey(),
-          nonce,
-          signature,
-        })
-        .expect(200);
-
-      investorToken = verifyRes.body.token;
-      investorId = verifyRes.body.user.id;
+      expect(investorToken).toEqual(expect.any(String));
+      expect(investorId).toEqual(expect.any(String));
     });
 
     it("should set KYC status to APPROVED for investor (required for investments)", async () => {

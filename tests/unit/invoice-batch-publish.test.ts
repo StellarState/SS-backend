@@ -102,6 +102,18 @@ describe("InvoiceService.publishInvoicesBatch", () => {
       }
     });
 
+    it("fetches the batch in a single query instead of one per invoice", async () => {
+      stubInvoices([draftInvoice("a"), draftInvoice("b"), draftInvoice("c")]);
+
+      await service.publishInvoicesBatch({
+        invoiceIds: ["a", "b", "c"],
+        sellerId: SELLER_ID,
+      });
+
+      expect(repository.findManyByIds).toHaveBeenCalledTimes(1);
+      expect(repository.findOne).not.toHaveBeenCalled();
+    });
+
     it("deduplicates repeated ids so an invoice is published once", async () => {
       stubInvoices([draftInvoice("a")]);
 

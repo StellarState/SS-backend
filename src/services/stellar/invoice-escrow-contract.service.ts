@@ -9,6 +9,7 @@ import {
 } from "stellar-sdk";
 import type { AppLogger } from "../../observability/logger";
 import { logger as globalLogger } from "../../observability/logger";
+import { ServiceError } from "../../utils/service-error";
 import type {
   CreateEscrowParams,
   CreateEscrowResult,
@@ -23,6 +24,28 @@ export type CreateEscrowInput = CreateEscrowParams;
 export type { CreateEscrowResult, FundEscrowParams, RecordPaymentParams, SettleEscrowParams };
 
 const DEFAULT_RPC_TIMEOUT_MS = 15_000;
+const DEFAULT_CONFIRMATION_POLL_MS = 1000;
+const DEFAULT_CONFIRMATION_ATTEMPTS = 20;
+
+/**
+ * RPC failures reach the HTTP layer as ServiceError so the error middleware can
+ * map them to a gateway status; a bespoke error class would fall through to a
+ * generic 500. The timeout guard is layered on top of that same contract.
+ */
+const RPC_OPERATIONS = {
+  simulation: {
+    failureCode: "soroban_simulation_failed",
+    logMessage: "Soroban simulateTransaction call failed.",
+    failureMessage: "Failed to simulate the transaction against the Soroban RPC endpoint.",
+  },
+  submission: {
+    failureCode: "soroban_submission_failed",
+    logMessage: "Soroban sendTransaction call failed.",
+    failureMessage: "Failed to submit the transaction to the Soroban RPC endpoint.",
+  },
+} as const;
+
+type RpcOperation = keyof typeof RPC_OPERATIONS;
 const MAX_I128 = (1n << 127n) - 1n;
 
 export class InvoiceEscrowContractError extends Error {
@@ -44,6 +67,8 @@ export interface InvoiceEscrowContractServiceDependencies {
   server?: SorobanRpc.Server;
   logger?: AppLogger;
   rpcTimeoutMs?: number;
+  confirmationPollMs?: number;
+  confirmationAttempts?: number;
 }
 
 export class InvoiceEscrowContractService {
@@ -54,25 +79,29 @@ export class InvoiceEscrowContractService {
   private readonly platformSecretKey?: string;
   private readonly logger: AppLogger;
   private readonly rpcTimeoutMs: number;
+  private readonly confirmationPollMs: number;
+  private readonly confirmationAttempts: number;
 
   constructor(
     dependenciesOrContractId: string | InvoiceEscrowContractServiceDependencies,
     logger?: AppLogger
   ) {
     if (typeof dependenciesOrContractId === "string") {
-      if (!dependenciesOrContractId) {
+      if (!dependenciesOrContractId || !dependenciesOrContractId.trim()) {
         throw new Error("contractId is required.");
       }
-      this.contractId = dependenciesOrContractId;
-      this.contract = new Contract(dependenciesOrContractId);
+      this.contractId = dependenciesOrContractId.trim();
+      this.contract = new Contract(this.contractId);
       this.logger = logger ?? globalLogger;
       this.rpcTimeoutMs = DEFAULT_RPC_TIMEOUT_MS;
+      this.confirmationPollMs = DEFAULT_CONFIRMATION_POLL_MS;
+      this.confirmationAttempts = DEFAULT_CONFIRMATION_ATTEMPTS;
     } else {
-      if (!dependenciesOrContractId.contractId) {
+      if (!dependenciesOrContractId.contractId || !dependenciesOrContractId.contractId.trim()) {
         throw new Error("contractId is required.");
       }
-      this.contractId = dependenciesOrContractId.contractId;
-      this.contract = new Contract(dependenciesOrContractId.contractId);
+      this.contractId = dependenciesOrContractId.contractId.trim();
+      this.contract = new Contract(this.contractId);
       this.networkPassphrase = dependenciesOrContractId.networkPassphrase;
       this.platformSecretKey = dependenciesOrContractId.platformSecretKey;
       if (dependenciesOrContractId.server) {
@@ -88,6 +117,10 @@ export class InvoiceEscrowContractService {
         throw new Error("rpcTimeoutMs must be a positive integer.");
       }
       this.rpcTimeoutMs = rpcTimeoutMs;
+      this.confirmationPollMs =
+        dependenciesOrContractId.confirmationPollMs ?? DEFAULT_CONFIRMATION_POLL_MS;
+      this.confirmationAttempts =
+        dependenciesOrContractId.confirmationAttempts ?? DEFAULT_CONFIRMATION_ATTEMPTS;
     }
   }
 
@@ -158,7 +191,8 @@ export class InvoiceEscrowContractService {
     }
   }
 
-  private async executeRpc<T>(operation: string, work: () => Promise<T>): Promise<T> {
+  private async executeRpc<T>(operation: RpcOperation, work: () => Promise<T>): Promise<T> {
+    const { failureCode, logMessage, failureMessage } = RPC_OPERATIONS[operation];
     let timeout: NodeJS.Timeout | undefined;
     try {
       return await Promise.race([
@@ -166,26 +200,23 @@ export class InvoiceEscrowContractService {
         new Promise<T>((_resolve, reject) => {
           timeout = setTimeout(() => {
             reject(
-              new InvoiceEscrowContractError(
-                "rpc_timeout",
-                `Soroban RPC ${operation} timed out after ${this.rpcTimeoutMs}ms.`
+              new ServiceError(
+                "soroban_rpc_timeout",
+                `Soroban RPC ${operation} timed out after ${this.rpcTimeoutMs}ms.`,
+                504
               )
             );
           }, this.rpcTimeoutMs);
         }),
       ]);
     } catch (error) {
-      this.logger.error("Soroban RPC request failed.", {
+      this.logger.error(logMessage, {
         operation,
         sorobanContractId: this.contractId,
         error: error instanceof Error ? error.message : "Unknown error",
       });
-      if (error instanceof InvoiceEscrowContractError) throw error;
-      throw new InvoiceEscrowContractError(
-        "rpc_request_failed",
-        `Soroban RPC ${operation} failed.`,
-        error
-      );
+      if (error instanceof ServiceError) throw error;
+      throw new ServiceError(failureCode, failureMessage, 502);
     } finally {
       if (timeout) clearTimeout(timeout);
     }
@@ -317,6 +348,63 @@ export class InvoiceEscrowContractService {
       txHash: response.hash,
       errorResult: response.errorResult,
     };
+  }
+
+  /**
+   * Polls for transaction confirmation until it reaches SUCCESS, FAILED, or times out.
+   */
+  public async waitForTransactionConfirmation(
+    txHash: string,
+  ): Promise<{ status: "SUCCESS" | "FAILED" | "NOT_FOUND"; ledger: number | null }> {
+    if (!this.rpcServer) {
+      throw new Error("Soroban RPC server is not configured for transaction confirmation polling.");
+    }
+    if (!txHash || !txHash.trim()) {
+      throw new Error("txHash is required.");
+    }
+
+    for (let attempt = 0; attempt < this.confirmationAttempts; attempt++) {
+      try {
+        const result = await this.rpcServer.getTransaction(txHash);
+        if (result.status === "SUCCESS") {
+          this.logger.info("Soroban transaction confirmed on-chain.", {
+            txHash,
+            sorobanContractId: this.contractId,
+            ledger: "ledger" in result ? Number(result.ledger) : null,
+          });
+          return {
+            status: "SUCCESS",
+            ledger: "ledger" in result ? Number(result.ledger) : null,
+          };
+        }
+        if (result.status === "FAILED") {
+          this.logger.error("Soroban transaction reverted on-chain.", {
+            txHash,
+            sorobanContractId: this.contractId,
+          });
+          return { status: "FAILED", ledger: null };
+        }
+      } catch (error) {
+        this.logger.warn("Transient error while checking transaction status", {
+          txHash,
+          attempt: attempt + 1,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, this.confirmationPollMs));
+    }
+
+    this.logger.error("Timed out waiting for transaction confirmation.", {
+      txHash,
+      sorobanContractId: this.contractId,
+      attempts: this.confirmationAttempts,
+    });
+    throw new ServiceError(
+      "transaction_confirmation_timeout",
+      "Timed out waiting for transaction confirmation on-chain.",
+      504,
+    );
   }
 
   /**

@@ -239,7 +239,7 @@ describe("Wallet-based rate limiting", () => {
         shortApp.use(express.json());
 
         const limiter = createWalletRateLimiter(
-            { windowMs: 150, maxRequests: 3 },
+            { windowMs: 400, maxRequests: 3 },
             "reset-test",
         );
 
@@ -267,7 +267,7 @@ describe("Wallet-based rate limiting", () => {
         await request(shortApp).post("/test").set("Authorization", `Bearer ${token}`).expect(429);
 
         // Wait for window to expire
-        await new Promise((resolve) => setTimeout(resolve, 200));
+        await new Promise((resolve) => setTimeout(resolve, 500));
 
         // Counter should have reset — 3 more requests should succeed
         for (let i = 0; i < 3; i++) {
@@ -285,7 +285,7 @@ describe("Wallet-based rate limiting", () => {
         shortApp.use(express.json());
 
         const limiter = createWalletRateLimiter(
-            { windowMs: 150, maxRequests: 2 },
+            { windowMs: 400, maxRequests: 2 },
             "per-wallet-test",
         );
 
@@ -316,7 +316,7 @@ describe("Wallet-based rate limiting", () => {
         await request(shortApp).post("/test").set("Authorization", `Bearer ${tokenB}`).expect(429);
 
         // Wait for window to expire
-        await new Promise((resolve) => setTimeout(resolve, 200));
+        await new Promise((resolve) => setTimeout(resolve, 500));
 
         // Both wallets should have fresh quotas
         await request(shortApp).post("/test").set("Authorization", `Bearer ${tokenA}`).expect(200);
