@@ -5,7 +5,8 @@ import {
 } from "@/services/stellar/contract-guard.service";
 
 const RPC_URL = "https://soroban-testnet.example/rpc";
-const CONTRACT_ID = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4";
+const CONTRACT_ID = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM";
+const OTHER_CONTRACT_ID = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC";
 
 /**
  * Stand-in for a base64 ledger entry. The real decoder is XDR; these tests
@@ -74,8 +75,9 @@ describe("ContractGuardService", () => {
     });
 
     it("produces a different key for a different contract", () => {
-      const other = "CBQHNAXSI55GX2GN6D67GK7BHVPSLJUGZQEU7WJ5LKR5PNUCGLIMAO4K";
-      expect(buildPausedLedgerKey(CONTRACT_ID)).not.toEqual(buildPausedLedgerKey(other));
+      expect(buildPausedLedgerKey(CONTRACT_ID)).not.toEqual(
+        buildPausedLedgerKey(OTHER_CONTRACT_ID)
+      );
     });
   });
 
@@ -146,12 +148,11 @@ describe("ContractGuardService", () => {
     });
 
     it("caches per contract rather than globally", async () => {
-      const other = "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526";
       const fetchFn = jest.fn().mockResolvedValue(entriesResponse(false));
       const service = createService(fetchFn);
 
       await service.checkContractPauseState(CONTRACT_ID);
-      await service.checkContractPauseState(other);
+      await service.checkContractPauseState(OTHER_CONTRACT_ID);
 
       expect(fetchFn).toHaveBeenCalledTimes(2);
     });

@@ -21,12 +21,43 @@ import type {
 } from "../../types/soroban.types";
 
 export type CreateEscrowInput = CreateEscrowParams;
-export type {
-  CreateEscrowResult,
-  FundEscrowParams,
-  RecordPaymentParams,
-  SettleEscrowParams,
-};
+export type { CreateEscrowResult, FundEscrowParams, RecordPaymentParams, SettleEscrowParams };
+
+const DEFAULT_RPC_TIMEOUT_MS = 15_000;
+const DEFAULT_CONFIRMATION_POLL_MS = 1000;
+const DEFAULT_CONFIRMATION_ATTEMPTS = 20;
+
+/**
+ * RPC failures reach the HTTP layer as ServiceError so the error middleware can
+ * map them to a gateway status; a bespoke error class would fall through to a
+ * generic 500. The timeout guard is layered on top of that same contract.
+ */
+const RPC_OPERATIONS = {
+  simulation: {
+    failureCode: "soroban_simulation_failed",
+    logMessage: "Soroban simulateTransaction call failed.",
+    failureMessage: "Failed to simulate the transaction against the Soroban RPC endpoint.",
+  },
+  submission: {
+    failureCode: "soroban_submission_failed",
+    logMessage: "Soroban sendTransaction call failed.",
+    failureMessage: "Failed to submit the transaction to the Soroban RPC endpoint.",
+  },
+} as const;
+
+type RpcOperation = keyof typeof RPC_OPERATIONS;
+const MAX_I128 = (1n << 127n) - 1n;
+
+export class InvoiceEscrowContractError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly cause?: unknown
+  ) {
+    super(message);
+    this.name = "InvoiceEscrowContractError";
+  }
+}
 
 export interface InvoiceEscrowContractServiceDependencies {
   contractId: string;
@@ -35,6 +66,7 @@ export interface InvoiceEscrowContractServiceDependencies {
   platformSecretKey?: string;
   server?: SorobanRpc.Server;
   logger?: AppLogger;
+  rpcTimeoutMs?: number;
   confirmationPollMs?: number;
   confirmationAttempts?: number;
 }
@@ -46,12 +78,13 @@ export class InvoiceEscrowContractService {
   private readonly networkPassphrase?: string;
   private readonly platformSecretKey?: string;
   private readonly logger: AppLogger;
+  private readonly rpcTimeoutMs: number;
   private readonly confirmationPollMs: number;
   private readonly confirmationAttempts: number;
 
   constructor(
     dependenciesOrContractId: string | InvoiceEscrowContractServiceDependencies,
-    logger?: AppLogger,
+    logger?: AppLogger
   ) {
     if (typeof dependenciesOrContractId === "string") {
       if (!dependenciesOrContractId || !dependenciesOrContractId.trim()) {
@@ -60,8 +93,9 @@ export class InvoiceEscrowContractService {
       this.contractId = dependenciesOrContractId.trim();
       this.contract = new Contract(this.contractId);
       this.logger = logger ?? globalLogger;
-      this.confirmationPollMs = 1000;
-      this.confirmationAttempts = 20;
+      this.rpcTimeoutMs = DEFAULT_RPC_TIMEOUT_MS;
+      this.confirmationPollMs = DEFAULT_CONFIRMATION_POLL_MS;
+      this.confirmationAttempts = DEFAULT_CONFIRMATION_ATTEMPTS;
     } else {
       if (!dependenciesOrContractId.contractId || !dependenciesOrContractId.contractId.trim()) {
         throw new Error("contractId is required.");
@@ -78,23 +112,113 @@ export class InvoiceEscrowContractService {
         });
       }
       this.logger = dependenciesOrContractId.logger ?? logger ?? globalLogger;
-      this.confirmationPollMs = dependenciesOrContractId.confirmationPollMs ?? 1000;
-      this.confirmationAttempts = dependenciesOrContractId.confirmationAttempts ?? 20;
+      const rpcTimeoutMs = dependenciesOrContractId.rpcTimeoutMs ?? DEFAULT_RPC_TIMEOUT_MS;
+      if (!Number.isSafeInteger(rpcTimeoutMs) || rpcTimeoutMs <= 0) {
+        throw new Error("rpcTimeoutMs must be a positive integer.");
+      }
+      this.rpcTimeoutMs = rpcTimeoutMs;
+      this.confirmationPollMs =
+        dependenciesOrContractId.confirmationPollMs ?? DEFAULT_CONFIRMATION_POLL_MS;
+      this.confirmationAttempts =
+        dependenciesOrContractId.confirmationAttempts ?? DEFAULT_CONFIRMATION_ATTEMPTS;
     }
   }
 
-  private parseStroopAmount(amount: bigint | number | string, fieldName = "amountStroops"): bigint {
+  private normalizeInvoiceId(invoiceId: string): string {
+    const normalized = invoiceId?.trim();
+    if (!normalized) {
+      throw new InvoiceEscrowContractError("invalid_invoice_id", "invoiceId is required.");
+    }
+    if (normalized.length > 64) {
+      throw new InvoiceEscrowContractError(
+        "invalid_invoice_id",
+        "invoiceId must not exceed 64 characters."
+      );
+    }
+    return normalized;
+  }
+
+  private normalizeAmount(amount: bigint | number | string): bigint {
+    let normalized: bigint;
     try {
-      const parsed = typeof amount === "bigint" ? amount : BigInt(amount);
-      if (parsed <= 0n) {
-        throw new Error(`${fieldName} must be positive.`);
+      if (typeof amount === "number" && (!Number.isSafeInteger(amount) || amount <= 0)) {
+        throw new Error("unsafe numeric amount");
       }
-      return parsed;
+      if (typeof amount === "string" && !/^\d+$/.test(amount.trim())) {
+        throw new Error("invalid amount string");
+      }
+      normalized = typeof amount === "bigint" ? amount : BigInt(amount);
     } catch (error) {
-      if (error instanceof Error && error.message.includes("must be positive")) {
-        throw error;
-      }
-      throw new Error(`Invalid ${fieldName}: ${String(amount)}`);
+      throw new InvoiceEscrowContractError(
+        "invalid_amount",
+        "amountStroops must be a positive integer.",
+        error
+      );
+    }
+
+    if (normalized <= 0n || normalized > MAX_I128) {
+      throw new InvoiceEscrowContractError(
+        "invalid_amount",
+        "amountStroops must be a positive i128 integer."
+      );
+    }
+    return normalized;
+  }
+
+  private normalizeDueDate(dueDateTimestamp: number): number {
+    if (!Number.isSafeInteger(dueDateTimestamp) || dueDateTimestamp <= 0) {
+      throw new InvoiceEscrowContractError(
+        "invalid_due_date",
+        "dueDateTimestamp must be a positive integer."
+      );
+    }
+    return dueDateTimestamp;
+  }
+
+  private toAddressScVal(value: string, field: string): xdr.ScVal {
+    const normalized = value?.trim();
+    if (!normalized) {
+      throw new InvoiceEscrowContractError("invalid_address", `${field} is required.`);
+    }
+    try {
+      return new Address(normalized).toScVal();
+    } catch (error) {
+      throw new InvoiceEscrowContractError(
+        "invalid_address",
+        `${field} must be a valid Stellar address.`,
+        error
+      );
+    }
+  }
+
+  private async executeRpc<T>(operation: RpcOperation, work: () => Promise<T>): Promise<T> {
+    const { failureCode, logMessage, failureMessage } = RPC_OPERATIONS[operation];
+    let timeout: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        work(),
+        new Promise<T>((_resolve, reject) => {
+          timeout = setTimeout(() => {
+            reject(
+              new ServiceError(
+                "soroban_rpc_timeout",
+                `Soroban RPC ${operation} timed out after ${this.rpcTimeoutMs}ms.`,
+                504
+              )
+            );
+          }, this.rpcTimeoutMs);
+        }),
+      ]);
+    } catch (error) {
+      this.logger.error(logMessage, {
+        operation,
+        sorobanContractId: this.contractId,
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
+      if (error instanceof ServiceError) throw error;
+      throw new ServiceError(failureCode, failureMessage, 502);
+    } finally {
+      if (timeout) clearTimeout(timeout);
     }
   }
 
@@ -106,30 +230,19 @@ export class InvoiceEscrowContractService {
     sellerAddress: string,
     amountStroops: bigint | number | string,
     dueDateTimestamp: number,
-    paymentTokenAddress: string,
+    paymentTokenAddress: string
   ): xdr.Operation {
-    if (!invoiceId || typeof invoiceId !== "string" || !invoiceId.trim()) {
-      throw new Error("invoiceId is required.");
-    }
-    if (!sellerAddress || typeof sellerAddress !== "string" || !sellerAddress.trim()) {
-      throw new Error("sellerAddress is required.");
-    }
-    if (!Number.isFinite(dueDateTimestamp) || dueDateTimestamp <= 0) {
-      throw new Error("dueDateTimestamp must be a positive number.");
-    }
-    if (!paymentTokenAddress || typeof paymentTokenAddress !== "string" || !paymentTokenAddress.trim()) {
-      throw new Error("paymentTokenAddress is required.");
-    }
-
-    const amountBigInt = this.parseStroopAmount(amountStroops, "amountStroops");
+    const normalizedInvoiceId = this.normalizeInvoiceId(invoiceId);
+    const amountBigInt = this.normalizeAmount(amountStroops);
+    const dueDate = this.normalizeDueDate(dueDateTimestamp);
 
     return this.contract.call(
       "create_escrow",
-      nativeToScVal(invoiceId.trim(), { type: "symbol" }),
-      new Address(sellerAddress.trim()).toScVal(),
+      nativeToScVal(normalizedInvoiceId, { type: "symbol" }),
+      this.toAddressScVal(sellerAddress, "sellerAddress"),
       nativeToScVal(amountBigInt, { type: "i128" }),
-      nativeToScVal(dueDateTimestamp, { type: "u64" }),
-      new Address(paymentTokenAddress.trim()).toScVal(),
+      nativeToScVal(dueDate, { type: "u64" }),
+      this.toAddressScVal(paymentTokenAddress, "paymentTokenAddress")
     );
   }
 
@@ -139,22 +252,16 @@ export class InvoiceEscrowContractService {
   public buildFundEscrowTx(
     invoiceId: string,
     investorAddress: string,
-    amountStroops: bigint | number | string,
+    amountStroops: bigint | number | string
   ): xdr.Operation {
-    if (!invoiceId || typeof invoiceId !== "string" || !invoiceId.trim()) {
-      throw new Error("invoiceId is required.");
-    }
-    if (!investorAddress || typeof investorAddress !== "string" || !investorAddress.trim()) {
-      throw new Error("investorAddress is required.");
-    }
-
-    const amountBigInt = this.parseStroopAmount(amountStroops, "amountStroops");
+    const normalizedInvoiceId = this.normalizeInvoiceId(invoiceId);
+    const amountBigInt = this.normalizeAmount(amountStroops);
 
     return this.contract.call(
       "fund_escrow",
-      nativeToScVal(invoiceId.trim(), { type: "symbol" }),
-      new Address(investorAddress.trim()).toScVal(),
-      nativeToScVal(amountBigInt, { type: "i128" }),
+      nativeToScVal(normalizedInvoiceId, { type: "symbol" }),
+      this.toAddressScVal(investorAddress, "investorAddress"),
+      nativeToScVal(amountBigInt, { type: "i128" })
     );
   }
 
@@ -164,22 +271,16 @@ export class InvoiceEscrowContractService {
   public buildRecordPaymentTx(
     invoiceId: string,
     payerAddress: string,
-    amountStroops: bigint | number | string,
+    amountStroops: bigint | number | string
   ): xdr.Operation {
-    if (!invoiceId || typeof invoiceId !== "string" || !invoiceId.trim()) {
-      throw new Error("invoiceId is required.");
-    }
-    if (!payerAddress || typeof payerAddress !== "string" || !payerAddress.trim()) {
-      throw new Error("payerAddress is required.");
-    }
-
-    const amountBigInt = this.parseStroopAmount(amountStroops, "amountStroops");
+    const normalizedInvoiceId = this.normalizeInvoiceId(invoiceId);
+    const amountBigInt = this.normalizeAmount(amountStroops);
 
     return this.contract.call(
       "record_payment",
-      nativeToScVal(invoiceId.trim(), { type: "symbol" }),
-      new Address(payerAddress.trim()).toScVal(),
-      nativeToScVal(amountBigInt, { type: "i128" }),
+      nativeToScVal(normalizedInvoiceId, { type: "symbol" }),
+      this.toAddressScVal(payerAddress, "payerAddress"),
+      nativeToScVal(amountBigInt, { type: "i128" })
     );
   }
 
@@ -187,13 +288,9 @@ export class InvoiceEscrowContractService {
    * Build the Soroban contract invocation operation for settling an escrow.
    */
   public buildSettleEscrowTx(invoiceId: string): xdr.Operation {
-    if (!invoiceId || typeof invoiceId !== "string" || !invoiceId.trim()) {
-      throw new Error("invoiceId is required.");
-    }
-
     return this.contract.call(
       "settle_escrow",
-      nativeToScVal(invoiceId.trim(), { type: "symbol" }),
+      nativeToScVal(this.normalizeInvoiceId(invoiceId), { type: "symbol" })
     );
   }
 
@@ -201,27 +298,15 @@ export class InvoiceEscrowContractService {
    * Simulates a transaction against the Soroban RPC endpoint to verify resource limits and auth footprint.
    */
   public async simulateTransaction(
-    transaction: Transaction | FeeBumpTransaction,
+    transaction: Transaction | FeeBumpTransaction
   ): Promise<SimulateTransactionResult> {
     if (!this.rpcServer) {
       throw new Error("Soroban RPC server is not configured for simulation.");
     }
 
-    let simResponse: Awaited<ReturnType<SorobanRpc.Server["simulateTransaction"]>>;
-    try {
-      simResponse = await this.rpcServer.simulateTransaction(transaction);
-    } catch (error) {
-      this.logger.error("Soroban simulateTransaction call failed.", {
-        sorobanContractId: this.contractId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      throw new ServiceError(
-        "soroban_simulation_failed",
-        "Failed to simulate the transaction against the Soroban RPC endpoint.",
-        502,
-      );
-    }
-
+    const simResponse = await this.executeRpc("simulation", () =>
+      this.rpcServer!.simulateTransaction(transaction)
+    );
     const successResponse = simResponse as unknown as {
       minResourceFee?: string;
       cost?: { cpuInsns?: string; memBytes?: string };
@@ -249,27 +334,15 @@ export class InvoiceEscrowContractService {
    * Submits a transaction to the Stellar network via Soroban RPC sendTransaction.
    */
   public async submitTransaction(
-    transaction: Transaction | FeeBumpTransaction,
+    transaction: Transaction | FeeBumpTransaction
   ): Promise<SendTransactionResult> {
     if (!this.rpcServer) {
       throw new Error("Soroban RPC server is not configured for submission.");
     }
 
-    let response: Awaited<ReturnType<SorobanRpc.Server["sendTransaction"]>>;
-    try {
-      response = await this.rpcServer.sendTransaction(transaction);
-    } catch (error) {
-      this.logger.error("Soroban sendTransaction call failed.", {
-        sorobanContractId: this.contractId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      throw new ServiceError(
-        "soroban_submission_failed",
-        "Failed to submit the transaction to the Soroban RPC endpoint.",
-        502,
-      );
-    }
-
+    const response = await this.executeRpc("submission", () =>
+      this.rpcServer!.sendTransaction(transaction)
+    );
     return {
       status: response.status,
       txHash: response.hash,
@@ -339,35 +412,49 @@ export class InvoiceEscrowContractService {
    * Ensures that only sanitized metadata (invoiceId, sorobanContractId, sellerAddress, amountStroops)
    * is logged without leaking any secret keys, signing seeds, or auth tokens.
    */
-  public async createEscrowOnChain(
-    input: CreateEscrowInput,
-  ): Promise<CreateEscrowResult> {
-    const amountBigInt = this.parseStroopAmount(input.amountStroops, "amountStroops");
+  public async createEscrowOnChain(input: CreateEscrowInput): Promise<CreateEscrowResult> {
+    const invoiceId = this.normalizeInvoiceId(input.invoiceId);
+    const sellerAddress = input.sellerAddress?.trim();
 
-    const operation = this.buildCreateEscrowTx(
-      input.invoiceId,
-      input.sellerAddress,
-      amountBigInt,
-      input.dueDateTimestamp,
-      input.paymentTokenAddress,
-    );
+    try {
+      const amountBigInt = this.normalizeAmount(input.amountStroops);
+      const operation = this.buildCreateEscrowTx(
+        invoiceId,
+        sellerAddress,
+        amountBigInt,
+        input.dueDateTimestamp,
+        input.paymentTokenAddress
+      );
 
-    const amountStroopsStr = amountBigInt.toString();
+      const amountStroopsStr = amountBigInt.toString();
 
-    // Log structured event on successful escrow creation
-    this.logger.info("Soroban escrow created successfully on-chain.", {
-      invoiceId: input.invoiceId,
-      sorobanContractId: this.contractId,
-      sellerAddress: input.sellerAddress,
-      amountStroops: amountStroopsStr,
-    });
+      // Log structured event on successful escrow creation
+      this.logger.info("Soroban escrow created successfully on-chain.", {
+        invoiceId,
+        sorobanContractId: this.contractId,
+        sellerAddress,
+        amountStroops: amountStroopsStr,
+      });
 
-    return {
-      contractId: this.contractId,
-      invoiceId: input.invoiceId,
-      sellerAddress: input.sellerAddress,
-      amountStroops: amountStroopsStr,
-      operation,
-    };
+      return {
+        contractId: this.contractId,
+        invoiceId,
+        sellerAddress,
+        amountStroops: amountStroopsStr,
+        operation,
+      };
+    } catch (error) {
+      this.logger.error("Failed to create Soroban escrow operation.", {
+        invoiceId,
+        sorobanContractId: this.contractId,
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
+      if (error instanceof InvoiceEscrowContractError) throw error;
+      throw new InvoiceEscrowContractError(
+        "create_escrow_failed",
+        "Failed to create Soroban escrow operation.",
+        error
+      );
+    }
   }
 }

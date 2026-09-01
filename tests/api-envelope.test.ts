@@ -76,16 +76,13 @@ describe("Response envelope", () => {
       },
     });
 
-    // Add a route that throws an error before the error middleware is applied
-    // We use the router pattern to ensure the route is matched before notFoundMiddleware
-    const router = request.agent(app);
-    
     // Simulate an internal error by accessing a route that will throw
     // Since we can't add routes after app creation, we'll test via the auth routes
-    // which will throw an error from the stub service
+    // which will throw an error from the stub service. The public key must pass
+    // route validation so the request reaches that service.
     const response = await request(app)
       .post("/api/v1/auth/challenge")
-      .send({ publicKey: "test" })
+      .send({ publicKey: "GBZXN7PIRZGNMHGA7MUUUF4GWPY5AYPV6LY4UV2GL6VJGIQRXFDNMADI" })
       .expect(500);
 
     expect(response.body).toMatchObject({

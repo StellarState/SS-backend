@@ -375,9 +375,7 @@ describe("E2E: Complete Invoice Financing Flow", () => {
       expect(invoice).toBeDefined();
       expect(invoice?.status).toBe(InvoiceStatus.PUBLISHED);
       expect(invoice?.sellerId).toBe(sellerId);
-      expect(invoice?.ipfsHash).toBe(
-        "QmMockHash1234567890123456789012345678901234567890"
-      );
+      expect(invoice?.ipfsHash).toBe("QmMockHash1234567890123456789012345678901234567890");
     });
   });
 
@@ -395,9 +393,7 @@ describe("E2E: Complete Invoice Financing Flow", () => {
       expect(Array.isArray(marketplaceRes.body.data)).toBe(true);
       expect(marketplaceRes.body.data.length).toBeGreaterThan(0);
 
-      const listedInvoice = marketplaceRes.body.data.find(
-        (inv: any) => inv.id === invoiceId
-      );
+      const listedInvoice = marketplaceRes.body.data.find((inv: any) => inv.id === invoiceId);
       expect(listedInvoice).toBeDefined();
       expect(listedInvoice.invoiceNumber).toBe("INV-E2E-001");
       expect(toNum(listedInvoice.amount)).toBeCloseTo(10000, 2);

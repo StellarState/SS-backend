@@ -29,6 +29,8 @@ export async function initializeDataSource(): Promise<void> {
     }
   } catch (error) {
     logger.error("Failed to initialize DataSource", { error });
-    throw new Error(`DataSource initialization failed: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(
+      `DataSource initialization failed: ${error instanceof Error ? error.message : String(error)}`
+    );
   }
 }
