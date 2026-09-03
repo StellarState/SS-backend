@@ -424,6 +424,35 @@ export function createInvoiceController(invoiceService: InvoiceService) {
       }
     },
 
+    async getInvoiceAnalytics(
+      req: Request & { params: { id: string } },
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> {
+      try {
+        const authReq = req as AuthenticatedRequest;
+        if (!authReq.user) {
+          throw new HttpError(401, "Authentication required");
+        }
+
+        const { id } = req.params;
+
+        const result = await invoiceService.getInvoiceAnalytics(id, authReq.user.id);
+
+        res.status(200).json({
+          success: true,
+          data: result,
+        });
+      } catch (error) {
+        if (error instanceof ServiceError) {
+          next(new HttpError(error.statusCode, error.message));
+          return;
+        }
+
+        next(error);
+      }
+    },
+
     async calculateTerms(
       req: Request,
       res: Response,
