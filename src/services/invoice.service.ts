@@ -882,6 +882,48 @@ export class InvoiceService {
   }
 
   /**
+   * Get analytics data for an invoice (views, click-throughs, investor interest).
+   * Only the owning seller can access this endpoint.
+   */
+  async getInvoiceAnalytics(invoiceId: string, sellerId: string): Promise<{
+    invoiceId: string;
+    views: number;
+    clickThroughs: number;
+    investorInterest: number;
+  }> {
+    const invoice = await this.invoiceRepository.findOne({
+      where: { id: invoiceId },
+    });
+
+    if (!invoice) {
+      throw new ServiceError("invoice_not_found", "Invoice not found", 404);
+    }
+
+    if (invoice.sellerId !== sellerId) {
+      throw new ServiceError(
+        "forbidden",
+        "You do not have access to this invoice's analytics",
+        403,
+      );
+    }
+
+    let investorInterest = 0;
+    if (this.dataSource) {
+      const investmentRepository = this.dataSource.getRepository(Investment);
+      investorInterest = await investmentRepository.count({
+        where: { invoiceId },
+      });
+    }
+
+    return {
+      invoiceId: invoice.id,
+      views: 0,
+      clickThroughs: 0,
+      investorInterest,
+    };
+  }
+
+  /**
    * Convert Invoice model to DTO
    */
   private toDTO(invoice: Invoice): InvoiceDTO {

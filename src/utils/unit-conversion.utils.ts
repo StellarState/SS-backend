@@ -1,29 +1,9 @@
 import Decimal from "decimal.js";
 
-const STROOP_DECIMALS = 7;
 const STROOPS_PER_XLM = 10_000_000;
 const STROOP_DIVISOR = new Decimal(STROOPS_PER_XLM);
 
-/**
- * Converts an amount in stroops (1 XLM = 10,000,000 stroops) to a human-readable
- * XLM/USDC decimal string, using Decimal.js for precise arithmetic.
- *
- * @param stroops - Amount in stroops (as bigint or string representation of a bigint)
- * @returns A decimal string with 7 decimal places of stroop precision
- *
- * @example
- * stroopsToXlm(10_000_000n)   // "1.0000000"
- * stroopsToXlm(1n)            // "0.0000001"
- * stroopsToXlm(0n)            // "0.0000000"
- * stroopsToXlm("10000000")    // "1.0000000"
- */
-export function stroopsToXlm(stroops: bigint | string): string {
-  const dec = new Decimal(stroops.toString());
-  if (dec.isNaN()) {
-    throw new TypeError(`Invalid stroops amount: ${stroops}`);
-  }
-  return dec.dividedBy(STROOP_DIVISOR).toFixed(STROOP_DECIMALS);
-}
+export { stroopsToXlm } from "../lib/stellar-format";
 
 /**
  * Converts a human-readable XLM/USDC decimal amount to stroops (1 XLM = 10,000,000 stroops),

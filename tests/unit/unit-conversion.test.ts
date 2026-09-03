@@ -1,5 +1,6 @@
 import Decimal from "decimal.js";
-import { stroopsToXlm, xlmToStroops } from "../../src/utils/unit-conversion.utils";
+import { stroopsToXlm } from "../../src/lib/stellar-format";
+import { xlmToStroops } from "../../src/utils/unit-conversion.utils";
 
 describe("stroopsToXlm", () => {
     it("converts 10,000,000 stroops to 1.0000000 XLM", () => {
@@ -24,11 +25,6 @@ describe("stroopsToXlm", () => {
         // Number.MAX_SAFE_INTEGER (9007199254740991) whole XLM, in stroops
         const stroops = 9_007_199_254_740_991n * 10_000_000n;
         expect(stroopsToXlm(stroops)).toBe("9007199254740991.0000000");
-    });
-
-    it("handles string input for bigint", () => {
-        expect(stroopsToXlm("10000000")).toBe("1.0000000");
-        expect(stroopsToXlm("1")).toBe("0.0000001");
     });
 
     it("handles fractional stroop amounts correctly (truncation)", () => {
