@@ -184,7 +184,7 @@ describe("validateInvoiceForPublish deadline reporting", () => {
     });
     const codes = validateInvoiceForPublish(invoice, NOW).map((e) => e.code);
     expect(codes).toEqual(
-      expect.arrayContaining(["FACE_VALUE_TOO_LOW", "DUE_DATE_IN_PAST", "MISSING_DOCUMENT"]),
+      expect.arrayContaining(["FACE_VALUE_TOO_LOW", "DUE_DATE_IN_PAST", "MISSING_DOCUMENT"])
     );
   });
 });

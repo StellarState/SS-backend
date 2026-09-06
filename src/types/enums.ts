@@ -57,4 +57,5 @@ export enum NotificationType {
   PAYMENT = "payment",
   KYC = "kyc",
   SYSTEM = "system",
+  INVOICE_REJECTED = "invoice_rejected",
 }

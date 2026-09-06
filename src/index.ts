@@ -5,6 +5,7 @@ import { createApp } from "./app";
 import dataSource from "./config/database";
 import { getConfig } from "./config/env";
 import { logger } from "./observability/logger";
+import { MetricsRegistry } from "./observability/metrics";
 
 import { createAuthService } from "./services/auth.service";
 import { createNotificationService } from "./services/notification.service";
@@ -24,18 +25,25 @@ export async function bootstrap(): Promise<{ server: Server }> {
     await dataSource.initialize();
   }
 
-  const authService = createAuthService(dataSource, config, logger);
+  const metricsRegistry = new MetricsRegistry();
+
+  const authService = createAuthService(dataSource, config, logger, metricsRegistry);
   const notificationService = createNotificationService(dataSource);
   const ipfsService = createIPFSService(config.ipfs, logger);
   const invoiceService = createInvoiceService(dataSource, ipfsService, notificationService);
   const investmentService = createInvestmentService(dataSource);
   const sorobanConfig = getSorobanConfig();
-  const distributor = sorobanConfig.paymentDistributorContractId && sorobanConfig.platformSecretKey
-    ? new PaymentDistributorContractService({ ...sorobanConfig, contractId: sorobanConfig.paymentDistributorContractId }, logger)
-    : undefined;
-  const distributorConfig = distributor && sorobanConfig.platformFeeRecipient
-    ? { feeRecipient: sorobanConfig.platformFeeRecipient, feeBps: sorobanConfig.platformFeeBps }
-    : undefined;
+  const distributor =
+    sorobanConfig.paymentDistributorContractId && sorobanConfig.platformSecretKey
+      ? new PaymentDistributorContractService(
+          { ...sorobanConfig, contractId: sorobanConfig.paymentDistributorContractId },
+          logger
+        )
+      : undefined;
+  const distributorConfig =
+    distributor && sorobanConfig.platformFeeRecipient
+      ? { feeRecipient: sorobanConfig.platformFeeRecipient, feeBps: sorobanConfig.platformFeeBps }
+      : undefined;
   const settlementService = createSettlementService(dataSource, distributor, distributorConfig);
   const marketplaceService = createMarketplaceService(dataSource);
   const kycService = new KycService(dataSource, config.kyc.webhookSecret ?? "", logger);

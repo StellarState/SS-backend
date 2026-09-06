@@ -2,11 +2,9 @@ import winston from "winston";
 
 const STELLAR_SECRET_KEY_PATTERN = /S[A-Z0-9]{55}/g;
 
-const STELLAR_SECRET_KEY_REDACTED =
-  "S*******************************************************";
+const STELLAR_SECRET_KEY_REDACTED = "S*******************************************************";
 
-const JWT_PATTERN =
-  /eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+/g;
+const JWT_PATTERN = /eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+/g;
 
 const BEARER_PATTERN = /Bearer\s+[A-Za-z0-9_\-.~+/]+=*/g;
 

@@ -6,10 +6,7 @@ import type { AuthenticatedRequest } from "../types/auth";
 export function createAuthController(authService: AuthService) {
   return {
     // Request challenge for signing
-    challenge: async (
-      req: AuthenticatedRequest,
-      res: Response
-    ): Promise<void> => {
+    challenge: async (req: AuthenticatedRequest, res: Response): Promise<void> => {
       const challenge = await authService.createChallenge(req.body.publicKey);
       res.status(201).json({ challenge });
     },
@@ -20,7 +17,8 @@ export function createAuthController(authService: AuthService) {
       res: Response
     ): Promise<void> => {
       const forwarded = req.headers["x-forwarded-for"];
-      const ipAddress = (Array.isArray(forwarded) ? forwarded[0] : forwarded?.split(",")[0]?.trim()) ?? req.ip;
+      const ipAddress =
+        (Array.isArray(forwarded) ? forwarded[0] : forwarded?.split(",")[0]?.trim()) ?? req.ip;
       const session = await authService.verifyChallenge({ ...req.body, ipAddress });
       res.status(200).json(session);
     },

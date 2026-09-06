@@ -26,7 +26,7 @@ interface RejectInvoiceParams {
 export async function rejectInvoice(
   req: Request<RejectInvoiceParams, unknown, RejectInvoiceBody>,
   res: Response,
-  invoiceService: InvoiceService,
+  invoiceService: InvoiceService
 ) {
   try {
     const adminKey = req.headers["x-admin-key"];

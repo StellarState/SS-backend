@@ -68,7 +68,6 @@ export interface AppConfig {
   };
 }
 
-
 // ---------------- DEFAULTS ----------------
 
 const DEFAULT_PORT = 3000;
@@ -96,7 +95,6 @@ const DEFAULT_IPFS_ALLOWED_MIME_TYPES = [
 
 const DEFAULT_IPFS_UPLOAD_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
 const DEFAULT_IPFS_UPLOAD_RATE_LIMIT_MAX_UPLOADS = 10;
-
 
 // ---------------- HELPERS ----------------
 
@@ -130,7 +128,10 @@ function parseBoolean(value: string | undefined, fallback: boolean, name: string
 
 function parseCsv(value?: string): string[] {
   if (!value) return [];
-  return value.split(",").map(v => v.trim()).filter(Boolean);
+  return value
+    .split(",")
+    .map((v) => v.trim())
+    .filter(Boolean);
 }
 
 function parseTrustProxy(value?: string): boolean | number | string {
@@ -165,7 +166,6 @@ function requireString(value: string | undefined, name: string): string {
   if (!value) throw new Error(`${name} is required.`);
   return value;
 }
-
 
 // ---------------- MAIN CONFIG ----------------
 
@@ -216,11 +216,7 @@ export function getConfig(): AppConfig {
           60000,
           "RATE_LIMIT_WINDOW_MS"
         ),
-        max: parsePositiveInteger(
-          process.env.RATE_LIMIT_MAX,
-          100,
-          "RATE_LIMIT_MAX"
-        ),
+        max: parsePositiveInteger(process.env.RATE_LIMIT_MAX, 100, "RATE_LIMIT_MAX"),
       },
     },
 

@@ -18,7 +18,12 @@ export interface AdminRouterDependencies {
 export function createAdminRouter({
   dataSource,
   allowedCidrs,
-  invoiceService,
+  // Not wired up yet: `./reject-invoice.ts` (POST /invoices/:id/reject)
+  // exists but isn't mounted here, and itself calls an
+  // `InvoiceService.rejectInvoice` that doesn't exist yet either. Out of
+  // scope for this change; kept as a documented no-op rather than silently
+  // dropped so the next person wiring it up has a marker to find.
+  invoiceService: _invoiceService,
 }: AdminRouterDependencies): Router {
   const router = Router();
   const ipWhitelist = ipWhitelistMiddleware(allowedCidrs);

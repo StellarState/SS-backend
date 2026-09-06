@@ -37,9 +37,7 @@ class WinstonAppLogger implements AppLogger {
 
 function createBaseLogger(): winston.Logger {
   return winston.createLogger({
-    level:
-      process.env.LOG_LEVEL ??
-      (process.env.NODE_ENV === "test" ? "silent" : "info"),
+    level: process.env.LOG_LEVEL ?? (process.env.NODE_ENV === "test" ? "silent" : "info"),
     defaultMeta: {
       service: "stellarsettle-api",
     },
@@ -47,7 +45,7 @@ function createBaseLogger(): winston.Logger {
       redactionFormat(),
       winston.format.timestamp(),
       winston.format.errors({ stack: true }),
-      winston.format.json(),
+      winston.format.json()
     ),
     transports: [new winston.transports.Console()],
   });

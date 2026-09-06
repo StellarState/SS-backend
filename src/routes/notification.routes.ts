@@ -6,7 +6,7 @@ import type { NotificationService } from "../services/notification.service";
 
 export function createNotificationRouter(
   notificationService: NotificationService,
-  authService: AuthService,
+  authService: AuthService
 ): Router {
   const router = Router();
   const controller = createNotificationController(notificationService);

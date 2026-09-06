@@ -84,35 +84,35 @@ export class InvestmentService {
     let failedCount = 0;
 
     for (const investment of investments) {
-     const amount = new Decimal(investment.investmentAmount);
-     totalInvested = totalInvested.plus(amount);
+      const amount = new Decimal(investment.investmentAmount);
+      totalInvested = totalInvested.plus(amount);
 
       if (ACTIVE_INVESTMENT_STATUSES.includes(investment.status)) {
-       activeCount += 1;
-       activeTotal = activeTotal.plus(amount);
-     }
+        activeCount += 1;
+        activeTotal = activeTotal.plus(amount);
+      }
 
-     if (SETTLED_INVESTMENT_STATUSES.includes(investment.status)) {
-       settledCount += 1;
-       if (investment.actualReturn !== null) {
-         totalReturns = totalReturns.plus(new Decimal(investment.actualReturn));
-       }
-     }
+      if (SETTLED_INVESTMENT_STATUSES.includes(investment.status)) {
+        settledCount += 1;
+        if (investment.actualReturn !== null) {
+          totalReturns = totalReturns.plus(new Decimal(investment.actualReturn));
+        }
+      }
 
-     if (FAILED_INVESTMENT_STATUSES.includes(investment.status)) {
-       failedCount += 1;
-     }
+      if (FAILED_INVESTMENT_STATUSES.includes(investment.status)) {
+        failedCount += 1;
+      }
     }
 
     return {
-     totalInvested: totalInvested.toFixed(4),
-     totalReturns: totalReturns.toFixed(4),
-     activeInvestments: activeCount,
-     activeCount,
-     activeTotal: activeTotal.toFixed(4),
-     settledCount,
-     settledReturns: totalReturns.toFixed(4),
-     failedCount,
+      totalInvested: totalInvested.toFixed(4),
+      totalReturns: totalReturns.toFixed(4),
+      activeInvestments: activeCount,
+      activeCount,
+      activeTotal: activeTotal.toFixed(4),
+      settledCount,
+      settledReturns: totalReturns.toFixed(4),
+      failedCount,
     };
   }
 
@@ -193,9 +193,10 @@ export class InvestmentService {
 
       // Settled returns
       if (SETTLED_INVESTMENT_STATUSES.includes(investment.status)) {
-        const actualReturn = investment.actualReturn !== null && investment.actualReturn !== undefined
-          ? new Decimal(investment.actualReturn)
-          : expectedReturn;
+        const actualReturn =
+          investment.actualReturn !== null && investment.actualReturn !== undefined
+            ? new Decimal(investment.actualReturn)
+            : expectedReturn;
         const profit = actualReturn.minus(amount);
         if (profit.gt(0)) {
           totalProfitEarned = totalProfitEarned.plus(profit);
@@ -222,9 +223,10 @@ export class InvestmentService {
 
       monthEntry.invested = monthEntry.invested.plus(amount);
       if (investment.status === InvestmentStatus.SETTLED) {
-        const actualReturn = investment.actualReturn !== null && investment.actualReturn !== undefined
-          ? new Decimal(investment.actualReturn)
-          : expectedReturn;
+        const actualReturn =
+          investment.actualReturn !== null && investment.actualReturn !== undefined
+            ? new Decimal(investment.actualReturn)
+            : expectedReturn;
         monthEntry.returned = monthEntry.returned.plus(actualReturn);
         const profit = actualReturn.minus(amount);
         if (profit.gt(0)) {
@@ -246,9 +248,7 @@ export class InvestmentService {
       ? weightedYieldSum.dividedBy(totalDeployedCapital).toFixed(2)
       : "0.00";
 
-    const projectedTotalReturn = pendingPayouts.gt(0)
-      ? pendingPayouts
-      : totalDeployedCapital;
+    const projectedTotalReturn = pendingPayouts.gt(0) ? pendingPayouts : totalDeployedCapital;
 
     const monthlyPerformance: MonthlyYieldMetric[] = Array.from(monthlyMap.entries()).map(
       ([month, data]) => ({
@@ -258,7 +258,7 @@ export class InvestmentService {
         profit: data.profit.toFixed(4),
         averageYieldPercent:
           data.count > 0 ? data.yieldSum.dividedBy(data.count).toFixed(2) : "0.00",
-      }),
+      })
     );
 
     return {
@@ -310,7 +310,7 @@ export class InvestmentService {
       if (invoice.status !== InvoiceStatus.PUBLISHED) {
         throw new ServiceError(
           "INVALID_INVOICE_STATUS",
-          `Cannot invest in an invoice with status ${invoice.status}`,
+          `Cannot invest in an invoice with status ${invoice.status}`
         );
       }
 
@@ -319,7 +319,7 @@ export class InvestmentService {
         throw new ServiceError(
           "invoice_expired",
           "Invoice has passed its due date and is no longer accepting investments",
-          422,
+          422
         );
       }
 
@@ -339,7 +339,7 @@ export class InvestmentService {
 
       const totalInvested = activeInvestments.reduce(
         (sum, inv) => sum.plus(new Decimal(inv.investmentAmount)),
-        new Decimal(0),
+        new Decimal(0)
       );
 
       const netAmount = new Decimal(invoice.netAmount);
@@ -348,7 +348,7 @@ export class InvestmentService {
       if (amount.gt(remainingCapacity)) {
         throw new ServiceError(
           "INSUFFICIENT_CAPACITY",
-          `Investment amount ${amount.toString()} exceeds remaining capacity ${remainingCapacity.toString()}`,
+          `Investment amount ${amount.toString()} exceeds remaining capacity ${remainingCapacity.toString()}`
         );
       }
 

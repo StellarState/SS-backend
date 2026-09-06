@@ -114,17 +114,18 @@ export class EventIndexerService {
     const contractIdStr = rawEvent.contractId
       ? typeof rawRecord.contractId === "string"
         ? (rawRecord.contractId as string)
-        : typeof (rawEvent.contractId as unknown as { contractId?: () => string }).contractId === "function"
-        ? (rawEvent.contractId as unknown as { contractId: () => string }).contractId()
-        : String(rawEvent.contractId)
+        : typeof (rawEvent.contractId as unknown as { contractId?: () => string }).contractId ===
+            "function"
+          ? (rawEvent.contractId as unknown as { contractId: () => string }).contractId()
+          : String(rawEvent.contractId)
       : "";
 
     const txHash =
       typeof rawRecord.txHash === "string"
         ? rawRecord.txHash
         : typeof rawRecord.pagingToken === "string"
-        ? rawRecord.pagingToken
-        : rawEvent.id;
+          ? rawRecord.pagingToken
+          : rawEvent.id;
 
     return {
       id: rawEvent.id,
@@ -142,11 +143,8 @@ export class EventIndexerService {
   /**
    * Polls contract events from Soroban RPC matching configured contract IDs.
    */
-  public async pollContractEvents(
-    options: PollEventsOptions = {},
-  ): Promise<DecodedSorobanEvent[]> {
-    const startLedger =
-      options.startLedger ?? (await this.getLastIndexedLedger()) + 1;
+  public async pollContractEvents(options: PollEventsOptions = {}): Promise<DecodedSorobanEvent[]> {
+    const startLedger = options.startLedger ?? (await this.getLastIndexedLedger()) + 1;
 
     try {
       const filters = [
@@ -219,7 +217,7 @@ export class EventIndexerService {
         if (this.eventLogRepository) {
           await this.eventLogRepository.update(
             { txHash: event.txHash, topic: event.topic },
-            { processed: true },
+            { processed: true }
           );
         }
 

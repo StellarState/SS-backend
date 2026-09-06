@@ -11,17 +11,23 @@ export function createKycController(service: KycService) {
     },
     webhook: async (req: Request, res: Response) => {
       if (!Buffer.isBuffer(req.body)) {
-        return res.status(400).json({ error: { code: "RAW_BODY_REQUIRED", message: "Raw webhook body required" } });
+        return res
+          .status(400)
+          .json({ error: { code: "RAW_BODY_REQUIRED", message: "Raw webhook body required" } });
       }
       const rawBody = req.body;
       if (!service.verifyWebhookSignature(rawBody, req.header("x-provider-signature"))) {
-        return res.status(401).json({ error: { code: "INVALID_WEBHOOK_SIGNATURE", message: "Invalid webhook signature" } });
+        return res.status(401).json({
+          error: { code: "INVALID_WEBHOOK_SIGNATURE", message: "Invalid webhook signature" },
+        });
       }
       let payload: unknown;
       try {
         payload = JSON.parse(rawBody.toString("utf8"));
       } catch {
-        return res.status(400).json({ error: { code: "INVALID_WEBHOOK_PAYLOAD", message: "Invalid JSON payload" } });
+        return res
+          .status(400)
+          .json({ error: { code: "INVALID_WEBHOOK_PAYLOAD", message: "Invalid JSON payload" } });
       }
       await service.processWebhook(payload as Parameters<KycService["processWebhook"]>[0]);
       return res.status(204).send();

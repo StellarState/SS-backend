@@ -35,9 +35,7 @@ export class SettlementController {
       });
     } catch (err: unknown) {
       const statusCode =
-        (err as { statusCode?: number }).statusCode ||
-        (err as { status?: number }).status ||
-        400;
+        (err as { statusCode?: number }).statusCode || (err as { status?: number }).status || 400;
       return res.status(statusCode).json({
         error: {
           code: (err as { code?: string }).code || "INTERNAL_ERROR",

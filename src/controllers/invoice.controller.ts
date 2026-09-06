@@ -63,22 +63,15 @@ export function createInvoiceController(invoiceService: InvoiceService) {
     async createInvoice(
       req: CreateInvoiceRequest,
       res: Response,
-      next: NextFunction,
+      next: NextFunction
     ): Promise<void> {
       try {
         if (!req.user) {
           throw new HttpError(401, "Authentication required");
         }
 
-        const {
-          invoiceNumber,
-          customerName,
-          amount,
-          discountRate,
-          dueDate,
-          ipfsHash,
-          riskScore,
-        } = req.body;
+        const { invoiceNumber, customerName, amount, discountRate, dueDate, ipfsHash, riskScore } =
+          req.body;
 
         const result = await invoiceService.createInvoice({
           sellerId: req.user.id,
@@ -105,11 +98,7 @@ export function createInvoiceController(invoiceService: InvoiceService) {
       }
     },
 
-    async getInvoices(
-      req: GetInvoicesRequest,
-      res: Response,
-      next: NextFunction,
-    ): Promise<void> {
+    async getInvoices(req: GetInvoicesRequest, res: Response, next: NextFunction): Promise<void> {
       try {
         if (!req.user) {
           throw new HttpError(401, "Authentication required");
@@ -154,7 +143,7 @@ export function createInvoiceController(invoiceService: InvoiceService) {
     async getInvoice(
       req: Request & { params: { id: string } },
       res: Response,
-      next: NextFunction,
+      next: NextFunction
     ): Promise<void> {
       try {
         const authReq = req as AuthenticatedRequest;
@@ -165,10 +154,7 @@ export function createInvoiceController(invoiceService: InvoiceService) {
         const { id } = req.params;
 
         try {
-          const result = await invoiceService.getInvoiceById(
-            id,
-            authReq.user.id,
-          );
+          const result = await invoiceService.getInvoiceById(id, authReq.user.id);
 
           if (!result) {
             throw new HttpError(404, "Invoice not found");
@@ -198,7 +184,7 @@ export function createInvoiceController(invoiceService: InvoiceService) {
     async updateInvoice(
       req: UpdateInvoiceRequest,
       res: Response,
-      next: NextFunction,
+      next: NextFunction
     ): Promise<void> {
       try {
         if (!req.user) {
@@ -206,8 +192,7 @@ export function createInvoiceController(invoiceService: InvoiceService) {
         }
 
         const { id } = req.params;
-        const { customerName, amount, discountRate, dueDate, riskScore } =
-          req.body;
+        const { customerName, amount, discountRate, dueDate, riskScore } = req.body;
 
         const result = await invoiceService.updateInvoice({
           sellerId: req.user.id,
@@ -241,7 +226,7 @@ export function createInvoiceController(invoiceService: InvoiceService) {
     async deleteInvoice(
       req: Request & { params: { id: string } },
       res: Response,
-      next: NextFunction,
+      next: NextFunction
     ): Promise<void> {
       try {
         const authReq = req as AuthenticatedRequest;
@@ -272,7 +257,7 @@ export function createInvoiceController(invoiceService: InvoiceService) {
     async publishInvoice(
       req: PublishInvoiceRequest,
       res: Response,
-      next: NextFunction,
+      next: NextFunction
     ): Promise<void> {
       try {
         if (!req.user) {
@@ -308,7 +293,7 @@ export function createInvoiceController(invoiceService: InvoiceService) {
     async batchPublishInvoices(
       req: BatchPublishInvoicesRequest,
       res: Response,
-      next: NextFunction,
+      next: NextFunction
     ): Promise<void> {
       try {
         if (!req.user) {
@@ -340,7 +325,7 @@ export function createInvoiceController(invoiceService: InvoiceService) {
     async uploadDocument(
       req: UploadDocumentRequest,
       res: Response,
-      next: NextFunction,
+      next: NextFunction
     ): Promise<void> {
       try {
         if (!req.user) {
@@ -379,7 +364,7 @@ export function createInvoiceController(invoiceService: InvoiceService) {
     async getInvoiceTokenHolders(
       req: Request & { params: { id: string } },
       res: Response,
-      next: NextFunction,
+      next: NextFunction
     ): Promise<void> {
       try {
         const { id } = req.params;
@@ -403,7 +388,7 @@ export function createInvoiceController(invoiceService: InvoiceService) {
     async getInvoiceEscrowStatus(
       req: Request & { params: { id: string } },
       res: Response,
-      next: NextFunction,
+      next: NextFunction
     ): Promise<void> {
       try {
         const { id } = req.params;
@@ -424,11 +409,7 @@ export function createInvoiceController(invoiceService: InvoiceService) {
       }
     },
 
-    async calculateTerms(
-      req: Request,
-      res: Response,
-      next: NextFunction,
-    ): Promise<void> {
+    async calculateTerms(req: Request, res: Response, next: NextFunction): Promise<void> {
       try {
         const { faceValue, dueDate, discountBps, platformFeeBps, referenceDate } = req.body;
 
@@ -446,9 +427,7 @@ export function createInvoiceController(invoiceService: InvoiceService) {
         });
       } catch (error) {
         const message =
-          error instanceof Error
-            ? error.message
-            : "Failed to calculate invoice terms";
+          error instanceof Error ? error.message : "Failed to calculate invoice terms";
         next(new HttpError(400, message));
       }
     },

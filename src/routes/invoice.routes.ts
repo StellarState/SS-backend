@@ -23,7 +23,9 @@ const createInvoiceSchema = Joi.object({
   amount: Joi.string()
     .required()
     .pattern(/^\d+(\.\d{1,4})?$/)
-    .messages({ "string.pattern.base": "amount must be a decimal number with max 4 decimal places" }),
+    .messages({
+      "string.pattern.base": "amount must be a decimal number with max 4 decimal places",
+    }),
   discountRate: Joi.string()
     .required()
     .pattern(/^\d+(\.\d{1,2})?$/)
@@ -34,7 +36,9 @@ const createInvoiceSchema = Joi.object({
       }
       return value;
     })
-    .messages({ "any.invalid": "discountRate must be a percentage (0-100) with max 2 decimal places" }),
+    .messages({
+      "any.invalid": "discountRate must be a percentage (0-100) with max 2 decimal places",
+    }),
   dueDate: Joi.date().iso().required(),
   ipfsHash: Joi.string().optional().trim().max(128),
   riskScore: Joi.string()
@@ -47,7 +51,9 @@ const createInvoiceSchema = Joi.object({
       }
       return value;
     })
-    .messages({ "any.invalid": "riskScore must be a percentage (0-100) with max 2 decimal places" }),
+    .messages({
+      "any.invalid": "riskScore must be a percentage (0-100) with max 2 decimal places",
+    }),
 });
 
 const updateInvoiceSchema = Joi.object({
@@ -55,12 +61,16 @@ const updateInvoiceSchema = Joi.object({
   amount: Joi.string()
     .optional()
     .pattern(/^\d+(\.\d{1,4})?$/)
-    .messages({ "string.pattern.base": "amount must be a decimal number with max 4 decimal places" }),
+    .messages({
+      "string.pattern.base": "amount must be a decimal number with max 4 decimal places",
+    }),
   discountRate: Joi.string()
     .optional()
     .pattern(/^\d+(\.\d{1,2})?$/)
     .max(100)
-    .messages({ "string.pattern.base": "discountRate must be a percentage (0-100) with max 2 decimal places" }),
+    .messages({
+      "string.pattern.base": "discountRate must be a percentage (0-100) with max 2 decimal places",
+    }),
   dueDate: Joi.date().iso().optional(),
   riskScore: Joi.string()
     .optional()
@@ -89,12 +99,12 @@ const getInvoicesQuerySchema = Joi.object({
 
 const calculateTermsSchema = Joi.object({
   faceValue: Joi.alternatives()
-    .try(
-      Joi.string().pattern(/^\d+(\.\d{1,4})?$/),
-      Joi.number().positive(),
-    )
+    .try(Joi.string().pattern(/^\d+(\.\d{1,4})?$/), Joi.number().positive())
     .required()
-    .messages({ "alternatives.match": "faceValue must be a positive number or decimal string with max 4 decimal places" }),
+    .messages({
+      "alternatives.match":
+        "faceValue must be a positive number or decimal string with max 4 decimal places",
+    }),
   dueDate: Joi.date().iso().required(),
   discountBps: Joi.number().integer().min(0).max(10000).required(),
   platformFeeBps: Joi.number().integer().min(0).max(10000).optional().default(0),
@@ -112,9 +122,7 @@ function validateBody(schema: Joi.Schema) {
     });
 
     if (error) {
-      return next(
-        new HttpError(400, `Invalid request: ${error.message}`)
-      );
+      return next(new HttpError(400, `Invalid request: ${error.message}`));
     }
 
     req.body = value;
@@ -130,24 +138,19 @@ function validateQuery(schema: Joi.Schema) {
     });
 
     if (error) {
-      return next(
-        new HttpError(400, `Invalid query parameters: ${error.message}`)
-      );
+      return next(new HttpError(400, `Invalid query parameters: ${error.message}`));
     }
 
     // Replace req.query with validated value
     // In Express, req.query is a getter/setter by default, but we can override it
     // if we use the default query parser.
-    Object.keys(req.query).forEach(key => delete req.query[key]);
+    Object.keys(req.query).forEach((key) => delete req.query[key]);
     Object.assign(req.query, value);
     next();
   };
 }
 
-export function createInvoiceRouter({
-  invoiceService,
-  config,
-}: InvoiceRouterDependencies): Router {
+export function createInvoiceRouter({ invoiceService, config }: InvoiceRouterDependencies): Router {
   const router = Router();
   const controller = createInvoiceController(invoiceService);
 
@@ -185,18 +188,13 @@ export function createInvoiceRouter({
   // Per-wallet rate limit: max 5 invoice publishes per 60 seconds
   const publishRateLimiter = createWalletRateLimiter(
     { windowMs: 60_000, maxRequests: 5 },
-    "invoice-publish",
+    "invoice-publish"
   );
 
   // ============ INVOICE CRUD ENDPOINTS ============
 
   // GET /api/v1/invoices - List invoices for authenticated seller
-  router.get(
-    "/",
-    authenticateJWT,
-    validateQuery(getInvoicesQuerySchema),
-    controller.getInvoices,
-  );
+  router.get("/", authenticateJWT, validateQuery(getInvoicesQuerySchema), controller.getInvoices);
 
   // POST /api/v1/invoices - Create new invoice
   router.post(
@@ -204,7 +202,7 @@ export function createInvoiceRouter({
     authenticateJWT,
     kycGating,
     validateBody(createInvoiceSchema),
-    controller.createInvoice,
+    controller.createInvoice
   );
 
   // POST /api/v1/invoices/batch-publish - Publish several drafts atomically.
@@ -216,7 +214,7 @@ export function createInvoiceRouter({
     kycGating,
     publishRateLimiter,
     validateBody(batchPublishSchema),
-    controller.batchPublishInvoices,
+    controller.batchPublishInvoices
   );
 
   // GET /api/v1/invoices/:id - Get single invoice
@@ -228,7 +226,7 @@ export function createInvoiceRouter({
     authenticateJWT,
     kycGating,
     validateBody(updateInvoiceSchema),
-    controller.updateInvoice,
+    controller.updateInvoice
   );
 
   // DELETE /api/v1/invoices/:id - Delete invoice
@@ -240,7 +238,7 @@ export function createInvoiceRouter({
     authenticateJWT,
     kycGating,
     publishRateLimiter,
-    controller.publishInvoice,
+    controller.publishInvoice
   );
 
   // POST /api/v1/invoices/:id/document - Upload document
@@ -250,29 +248,17 @@ export function createInvoiceRouter({
     authenticateJWT,
     kycGating,
     upload.single("document"),
-    controller.uploadDocument,
+    controller.uploadDocument
   );
 
   // GET /api/v1/invoices/:id/tokens - Get invoice token holders
-  router.get(
-    "/:id/tokens",
-    authenticateJWT,
-    controller.getInvoiceTokenHolders,
-  );
+  router.get("/:id/tokens", authenticateJWT, controller.getInvoiceTokenHolders);
 
   // GET /api/v1/invoices/:id/escrow - Get invoice escrow status
-  router.get(
-    "/:id/escrow",
-    authenticateJWT,
-    controller.getInvoiceEscrowStatus,
-  );
+  router.get("/:id/escrow", authenticateJWT, controller.getInvoiceEscrowStatus);
 
   // POST /api/v1/invoices/calculate-terms - Calculate invoice discounting terms, fees, and APR
-  router.post(
-    "/calculate-terms",
-    validateBody(calculateTermsSchema),
-    controller.calculateTerms,
-  );
+  router.post("/calculate-terms", validateBody(calculateTermsSchema), controller.calculateTerms);
 
   return router;
 }

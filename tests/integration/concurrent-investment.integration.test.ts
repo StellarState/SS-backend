@@ -31,22 +31,22 @@ function createSerializedFakeDataSource(invoice: Invoice) {
     },
     find: async (
       entity: unknown,
-      options: { where: Record<string, unknown> | Record<string, unknown>[] },
+      options: { where: Record<string, unknown> | Record<string, unknown>[] }
     ) => {
       if (entity === Investment) {
         const clauses = Array.isArray(options.where) ? options.where : [options.where];
         return [...investments.values()].filter((inv) =>
           clauses.some((clause) =>
             Object.entries(clause).every(
-              ([k, v]) => (inv as unknown as Record<string, unknown>)[k] === v,
-            ),
-          ),
+              ([k, v]) => (inv as unknown as Record<string, unknown>)[k] === v
+            )
+          )
         );
       }
       return [];
     },
     create: (_entity: unknown, data: Partial<Investment>) =>
-      ({ id: crypto.randomUUID(), status: InvestmentStatus.PENDING, ...data } as Investment),
+      ({ id: crypto.randomUUID(), status: InvestmentStatus.PENDING, ...data }) as Investment,
     save: async (entity: unknown, data: Investment | Invoice) => {
       if (entity === Investment) investments.set((data as Investment).id, data as Investment);
       else if (entity === Invoice) invoices.set((data as Invoice).id, data as Invoice);
@@ -153,7 +153,7 @@ describe("Concurrent investment: total committed amount must not exceed invoice 
     // Total committed = 700 (seeded) + 200 (one success) = 900; well under 1000
     const totalCommitted = [...investments.values()].reduce(
       (sum, inv) => sum.plus(new Decimal(inv.investmentAmount)),
-      new Decimal(0),
+      new Decimal(0)
     );
     expect(totalCommitted.toFixed(4)).toBe("900.0000");
   });
@@ -221,7 +221,7 @@ describe("Concurrent investment: total committed amount must not exceed invoice 
 
     const totalCommitted = [...investments.values()].reduce(
       (sum, inv) => sum.plus(new Decimal(inv.investmentAmount)),
-      new Decimal(0),
+      new Decimal(0)
     );
     expect(totalCommitted.toFixed(4)).toBe("500.0000");
 
@@ -251,8 +251,8 @@ describe("Concurrent investment: total committed amount must not exceed invoice 
           investorId: investor.id,
           investmentAmount: "400.0000",
           investorWallet: investor.wallet,
-        }),
-      ),
+        })
+      )
     );
 
     const fulfilled = results.filter((r) => r.status === "fulfilled");
@@ -269,7 +269,7 @@ describe("Concurrent investment: total committed amount must not exceed invoice 
     expect(investments.size).toBe(2);
     const totalCommitted = [...investments.values()].reduce(
       (sum, inv) => sum.plus(new Decimal(inv.investmentAmount)),
-      new Decimal(0),
+      new Decimal(0)
     );
     expect(totalCommitted.toFixed(4)).toBe("800.0000");
     expect(totalCommitted.lte(new Decimal("1000.0000"))).toBe(true);

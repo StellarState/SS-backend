@@ -24,10 +24,13 @@ export class KycService {
   constructor(
     private readonly dataSource: DataSource,
     private readonly webhookSecret: string,
-    private readonly appLogger: AppLogger = logger,
+    private readonly appLogger: AppLogger = logger
   ) {}
 
-  async submitKycVerification(userId: string, providerData: KycProviderData = {}): Promise<KYCVerification> {
+  async submitKycVerification(
+    userId: string,
+    providerData: KycProviderData = {}
+  ): Promise<KYCVerification> {
     return this.dataSource.transaction(async (manager) => {
       const user = await manager.getRepository(User).findOneBy({ id: userId });
       if (!user) throw new HttpError(404, "User not found.");
@@ -37,10 +40,16 @@ export class KycService {
         userId,
         verificationType: providerData.verificationType ?? KYCVerificationType.IDENTITY,
         status: KYCStatus.PENDING,
-        documents: providerData.documents ?? (providerData.providerReference ? { providerReference: providerData.providerReference } : null),
+        documents:
+          providerData.documents ??
+          (providerData.providerReference
+            ? { providerReference: providerData.providerReference }
+            : null),
       });
       const saved = await repository.save(verification);
-      await manager.getRepository(User).update(userId, { kycStatus: KYCStatus.PENDING, isKycVerified: false });
+      await manager
+        .getRepository(User)
+        .update(userId, { kycStatus: KYCStatus.PENDING, isKycVerified: false });
       return saved;
     });
   }
@@ -51,7 +60,10 @@ export class KycService {
     const expected = crypto.createHmac("sha256", this.webhookSecret).update(rawBody).digest("hex");
     const suppliedBuffer = Buffer.from(supplied, "hex");
     const expectedBuffer = Buffer.from(expected, "hex");
-    return suppliedBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(suppliedBuffer, expectedBuffer);
+    return (
+      suppliedBuffer.length === expectedBuffer.length &&
+      crypto.timingSafeEqual(suppliedBuffer, expectedBuffer)
+    );
   }
 
   async processWebhook(payload: KycWebhookPayload): Promise<void> {

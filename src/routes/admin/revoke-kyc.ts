@@ -20,7 +20,11 @@ interface RevokeKYCBody {
  * them able to re-submit. Only an approved user can be revoked — revoking
  * anything else would be a no-op that still wrote an audit entry.
  */
-export async function revokeKYC(req: Request<unknown, unknown, RevokeKYCBody>, res: Response, dataSource: DataSource) {
+export async function revokeKYC(
+  req: Request<unknown, unknown, RevokeKYCBody>,
+  res: Response,
+  dataSource: DataSource
+) {
   try {
     const adminKey = req.headers["x-admin-key"];
     if (adminKey !== process.env.ADMIN_API_KEY) {

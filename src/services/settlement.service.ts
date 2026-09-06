@@ -92,9 +92,13 @@ export class SettlementService {
               .getOne();
           }
 
-          if (!invoice) {
-            throw new ServiceError("INVOICE_NOT_FOUND", "Invoice not found", 404);
-          }
+      // 2. Validate invoice status
+      if (invoice.status !== InvoiceStatus.FUNDED) {
+        throw new ServiceError(
+          "INVALID_INVOICE_STATUS",
+          `INVALID_INVOICE_STATUS: Cannot settle an invoice with status ${invoice.status}`
+        );
+      }
 
           // 2. Validate invoice status
           if (invoice.status !== InvoiceStatus.FUNDED) {
@@ -104,145 +108,83 @@ export class SettlementService {
             );
           }
 
-          // 3. Find confirmed investments backing this invoice
-          const investments = await transactionalEntityManager.find(Investment, {
-            where: { invoiceId: invoice.id, status: InvestmentStatus.CONFIRMED },
-            relations: { investor: true },
-          });
+      if (investments.length === 0) {
+        throw new ServiceError(
+          "NO_CONFIRMED_INVESTMENTS",
+          "Invoice has no confirmed investments to settle"
+        );
+      }
 
-          if (investments.length === 0) {
-            throw new ServiceError(
-              "NO_CONFIRMED_INVESTMENTS",
-              "Invoice has no confirmed investments to settle"
-            );
-          }
-
-          // 4. Distribute proceeds pro-rata to each investor's share of the total funded amount
-          const totalFunded = investments.reduce(
-            (sum, investment) => sum.plus(new Decimal(investment.investmentAmount)),
-            new Decimal(0)
-          );
-          const totalFundedScaled = decimalStringToScaledBigInt(totalFunded.toFixed(4));
-          const proceedsScaled = decimalStringToScaledBigInt(proceeds.toFixed(4));
-          const feeScaled = this.distributorConfig
-            ? (proceedsScaled * BigInt(this.distributorConfig.feeBps)) / 10_000n
-            : 0n;
-          const distributableScaled = proceedsScaled - feeScaled;
-          const settlements: InvestorSettlement[] = [];
-          let distributionTransactionHash: string | undefined;
-
-          if (this.paymentDistributor) {
-            if (!this.distributorConfig) {
-              throw new ServiceError(
-                "DISTRIBUTOR_CONFIGURATION_MISSING",
-                "Payment distributor fee configuration is required"
-              );
-            }
-            const distribution = await this.paymentDistributor.distributePayouts({
-              invoiceId: invoice.id,
-              totalAmountStroops: proceedsScaled * DECIMAL_SCALE_TO_STROOP_FACTOR,
-              feeRecipient: this.distributorConfig.feeRecipient,
-              feeBps: this.distributorConfig.feeBps,
-              recipients: investments.map((investment) => ({
-                address: investment.investor?.stellarAddress ?? investment.investorId,
-                amountStroops:
-                  computeInvestorReturn(
-                    decimalStringToScaledBigInt(investment.investmentAmount),
-                    totalFundedScaled,
-                    distributableScaled
-                  ) * DECIMAL_SCALE_TO_STROOP_FACTOR,
-              })),
-            });
-            distributionTransactionHash = distribution.transactionHash;
-            await transactionalEntityManager.save(
-              Transaction,
-              transactionalEntityManager.create(Transaction, {
-                userId: invoice.sellerId,
-                invoiceId: invoice.id,
-                investmentId: null,
-                type: TransactionType.PAYMENT,
-                amount: proceeds.toFixed(4),
-                stellarTxHash: distribution.transactionHash,
-                stellarOperationIndex: 0,
-                status: TransactionStatus.COMPLETED,
-              })
-            );
-          }
-
-          for (const investment of investments) {
-            const investmentAmountScaled = decimalStringToScaledBigInt(investment.investmentAmount);
-            const actualReturnScaled = computeInvestorReturn(
-              investmentAmountScaled,
-              totalFundedScaled,
-              distributableScaled
-            );
-
-            investment.actualReturn = scaledBigIntToDecimalString(actualReturnScaled);
-            investment.status = InvestmentStatus.SETTLED;
-            await transactionalEntityManager.save(Investment, investment);
-
-            settlements.push({
-              investmentId: investment.id,
-              investorId: investment.investorId,
-              investmentAmount: investment.investmentAmount,
-              actualReturn: investment.actualReturn,
-            });
-          }
-
-          // 5. Transition invoice to SETTLED
-          const previousStatus = invoice.status;
-          invoice.status = InvoiceStatus.SETTLED;
-          await transactionalEntityManager.save(Invoice, invoice);
-
-          logInvoiceTransition(logger, {
-            invoiceId: invoice.id,
-            fromState: previousStatus,
-            toState: InvoiceStatus.SETTLED,
-            actorWallet,
-            reason: "admin_settled",
-          });
-
-          // Emit completion logs (keeps existing completion log for tests)
-          const durationMs = Date.now() - startedAt;
-          logSettlementSuccess(logger, {
-            invoiceId: invoice.id,
-            totalProceedsStroops: proceedsScaled * DECIMAL_SCALE_TO_STROOP_FACTOR,
-            investorCount: settlements.length,
-            durationMs,
-            distributionTxHash: distributionTransactionHash ?? null,
-          });
-
-          return {
-            invoiceId: invoice.id,
-            status: InvoiceStatus.SETTLED as const,
-            proceeds: proceeds.toFixed(4),
-            settlements,
-            distributionTransactionHash,
-          };
-        }
+      // 4. Distribute proceeds pro-rata to each investor's share of the total funded amount
+      const totalFunded = investments.reduce(
+        (sum, investment) => sum.plus(new Decimal(investment.investmentAmount)),
+        new Decimal(0)
       );
-    } catch (err) {
-      const durationMs = Date.now() - startedAt;
+      const totalFundedScaled = decimalStringToScaledBigInt(totalFunded.toFixed(4));
+      const proceedsScaled = decimalStringToScaledBigInt(proceeds.toFixed(4));
+      const feeScaled = this.distributorConfig
+        ? (proceedsScaled * BigInt(this.distributorConfig.feeBps)) / 10_000n
+        : 0n;
+      const distributableScaled = proceedsScaled - feeScaled;
+      const settlements: InvestorSettlement[] = [];
+      let distributionTransactionHash: string | undefined;
 
-      // Determine retryability: Soroban-mapped ServiceErrors use codes starting with 'soroban_'
-      let retryable = false;
-      let category = "unknown";
-      if (err instanceof ServiceError) {
-        category = err.code;
-        if (category.startsWith("soroban_")) {
-          // Treat some soroban codes as retryable
-          const retryableCodes = new Set([
-            "soroban_timeout",
-            "soroban_rate_limited",
-            "soroban_capacity_exceeded",
-            "soroban_try_again_later",
-          ]);
-          retryable = retryableCodes.has(category);
-        } else {
-          retryable = false;
+      if (this.paymentDistributor) {
+        if (!this.distributorConfig) {
+          throw new ServiceError(
+            "DISTRIBUTOR_CONFIGURATION_MISSING",
+            "Payment distributor fee configuration is required"
+          );
         }
-      } else {
-        retryable = true; // unknown errors likely transient
+        const distribution = await this.paymentDistributor.distributePayouts({
+          invoiceId: invoice.id,
+          totalAmountStroops: proceedsScaled * DECIMAL_SCALE_TO_STROOP_FACTOR,
+          feeRecipient: this.distributorConfig.feeRecipient,
+          feeBps: this.distributorConfig.feeBps,
+          recipients: investments.map((investment) => ({
+            address: investment.investor?.stellarAddress ?? investment.investorId,
+            amountStroops:
+              computeInvestorReturn(
+                decimalStringToScaledBigInt(investment.investmentAmount),
+                totalFundedScaled,
+                distributableScaled
+              ) * DECIMAL_SCALE_TO_STROOP_FACTOR,
+          })),
+        });
+        distributionTransactionHash = distribution.transactionHash;
+        await transactionalEntityManager.save(
+          Transaction,
+          transactionalEntityManager.create(Transaction, {
+            userId: invoice.sellerId,
+            invoiceId: invoice.id,
+            investmentId: null,
+            type: TransactionType.PAYMENT,
+            amount: proceeds.toFixed(4),
+            stellarTxHash: distribution.transactionHash,
+            stellarOperationIndex: 0,
+            status: TransactionStatus.COMPLETED,
+          })
+        );
+      }
+
+      for (const investment of investments) {
+        const investmentAmountScaled = decimalStringToScaledBigInt(investment.investmentAmount);
+        const actualReturnScaled = computeInvestorReturn(
+          investmentAmountScaled,
+          totalFundedScaled,
+          distributableScaled
+        );
+
+        investment.actualReturn = scaledBigIntToDecimalString(actualReturnScaled);
+        investment.status = InvestmentStatus.SETTLED;
+        await transactionalEntityManager.save(Investment, investment);
+
+        settlements.push({
+          investmentId: investment.id,
+          investorId: investment.investorId,
+          investmentAmount: investment.investmentAmount,
+          actualReturn: investment.actualReturn,
+        });
       }
 
       logSettlementFailure(logger, {

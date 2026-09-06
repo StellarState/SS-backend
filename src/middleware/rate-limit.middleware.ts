@@ -1,4 +1,5 @@
 import rateLimit from "express-rate-limit";
+import type { Request as ExpressRequest } from "express";
 import type { AppLogger } from "../observability/logger";
 import { HttpError } from "../utils/http-error";
 
@@ -7,6 +8,7 @@ export interface RateLimitOptions {
   max: number;
   message?: string;
   code?: string;
+  keyGenerator?: (req: ExpressRequest) => string;
 }
 
 const DEFAULT_GLOBAL_LIMIT: RateLimitOptions = {
@@ -16,20 +18,28 @@ const DEFAULT_GLOBAL_LIMIT: RateLimitOptions = {
   code: "RATE_LIMIT_EXCEEDED",
 };
 
-const DEFAULT_AUTH_LIMIT: RateLimitOptions = {
-  windowMs: 15 * 60 * 1000,
-  max: 10,
-  message: "Too many authentication attempts, please try again later.",
-  code: "AUTH_RATE_LIMIT_EXCEEDED",
+const DEFAULT_CHALLENGE_LIMIT: RateLimitOptions = {
+  windowMs: 60 * 1000,
+  max: 5,
+  message: "Too many challenge requests, please try again later.",
+  code: "CHALLENGE_RATE_LIMIT_EXCEEDED",
+};
+
+const DEFAULT_VERIFY_LIMIT: RateLimitOptions = {
+  windowMs: 60 * 1000,
+  max: 20,
+  message: "Too many verification attempts, please try again later.",
+  code: "VERIFY_RATE_LIMIT_EXCEEDED",
 };
 
 export function createRateLimitMiddleware(
   logger: AppLogger,
-  options: RateLimitOptions = DEFAULT_GLOBAL_LIMIT,
+  options: RateLimitOptions = DEFAULT_GLOBAL_LIMIT
 ) {
   const limiter = rateLimit({
     windowMs: options.windowMs,
     max: options.max,
+    keyGenerator: options.keyGenerator,
     message: {
       success: false,
       error: {
@@ -50,7 +60,7 @@ export function createRateLimitMiddleware(
 
       const error = new HttpError(
         429,
-        nextOptions?.message ?? "Too many requests, please try again later.",
+        nextOptions?.message ?? "Too many requests, please try again later."
       );
 
       next(error);
@@ -60,8 +70,16 @@ export function createRateLimitMiddleware(
   return limiter;
 }
 
+export function createChallengeRateLimitMiddleware(logger: AppLogger) {
+  return createRateLimitMiddleware(logger, DEFAULT_CHALLENGE_LIMIT);
+}
+
+export function createVerifyRateLimitMiddleware(logger: AppLogger) {
+  return createRateLimitMiddleware(logger, DEFAULT_VERIFY_LIMIT);
+}
+
 export function createAuthRateLimitMiddleware(logger: AppLogger) {
-  return createRateLimitMiddleware(logger, DEFAULT_AUTH_LIMIT);
+  return createRateLimitMiddleware(logger, DEFAULT_VERIFY_LIMIT);
 }
 
 export function applyRateLimiters(
@@ -70,7 +88,7 @@ export function applyRateLimiters(
   config?: {
     global?: Partial<RateLimitOptions>;
     auth?: Partial<RateLimitOptions>;
-  },
+  }
 ) {
   const globalOptions: RateLimitOptions = {
     ...DEFAULT_GLOBAL_LIMIT,

@@ -6,10 +6,7 @@ import type { AuthenticatedRequest } from "../types/auth";
 
 import { AppError, HttpError } from "../utils/http-error";
 import { UserType, KYCStatus } from "../types/enums";
-import {
-  buildAuthFailureDetails,
-  classifyJwtError,
-} from "../lib/auth-failure";
+import { buildAuthFailureDetails, classifyJwtError } from "../lib/auth-failure";
 
 interface AuthTokenPayload {
   sub: string;
@@ -18,11 +15,7 @@ interface AuthTokenPayload {
 }
 
 export function createAuthMiddleware(authService: AuthService) {
-  return async (
-    req: AuthenticatedRequest,
-    _res: Response,
-    next: NextFunction
-  ): Promise<void> => {
+  return async (req: AuthenticatedRequest, _res: Response, next: NextFunction): Promise<void> => {
     const authHeader = req.headers.authorization;
 
     if (!authHeader?.startsWith("Bearer ")) {
@@ -30,8 +23,8 @@ export function createAuthMiddleware(authService: AuthService) {
         new HttpError(
           401,
           "Authorization token is required.",
-          buildAuthFailureDetails(undefined, "missing_token"),
-        ),
+          buildAuthFailureDetails(undefined, "missing_token")
+        )
       );
       return;
     }
@@ -51,18 +44,14 @@ export function createAuthMiddleware(authService: AuthService) {
         new HttpError(
           401,
           "Invalid or expired token.",
-          buildAuthFailureDetails(token, classifyJwtError(error)),
-        ),
+          buildAuthFailureDetails(token, classifyJwtError(error))
+        )
       );
     }
   };
 }
 
-export function authenticateJWT(
-  req: Request,
-  _res: Response,
-  next: NextFunction
-): void {
+export function authenticateJWT(req: Request, _res: Response, next: NextFunction): void {
   const authHeader = req.headers.authorization;
 
   if (!authHeader?.startsWith("Bearer ")) {
@@ -70,8 +59,8 @@ export function authenticateJWT(
       new HttpError(
         401,
         "Authorization token is required.",
-        buildAuthFailureDetails(undefined, "missing_token"),
-      ),
+        buildAuthFailureDetails(undefined, "missing_token")
+      )
     );
     return;
   }
@@ -101,8 +90,8 @@ export function authenticateJWT(
       new HttpError(
         401,
         "Invalid or expired token.",
-        buildAuthFailureDetails(token, classifyJwtError(error)),
-      ),
+        buildAuthFailureDetails(token, classifyJwtError(error))
+      )
     );
   }
 }
@@ -129,11 +118,7 @@ export function requireKYC(skipVerification = false) {
   };
 }
 
-export function checkKycVerified(
-  req: Request,
-  _res: Response,
-  next: NextFunction,
-): void {
+export function checkKycVerified(req: Request, _res: Response, next: NextFunction): void {
   const user = (req as AuthenticatedRequest).user;
   if (!user) {
     next(new HttpError(401, "Authentication required"));

@@ -1,7 +1,7 @@
 import { Router, type RequestHandler } from "express";
 import { InvestmentController } from "../controllers/investment.controller";
 import { InvestmentService } from "../services/investment.service";
-import { checkKycVerified, createAuthMiddleware } from "../middleware/auth.middleware";
+import { createAuthMiddleware } from "../middleware/auth.middleware";
 import { createWalletRateLimiter } from "../middleware/rate-limit-wallet.middleware";
 import { checkContractNotPaused } from "../middleware/contract-pause-guard.middleware";
 import type { AuthService } from "../services/auth.service";
@@ -17,7 +17,7 @@ export interface InvestmentRouterDependencies {
 // Per-wallet rate limit: max 10 investment submissions per 60 seconds
 const investmentRateLimiter = createWalletRateLimiter(
   { windowMs: 60_000, maxRequests: 10 },
-  "investment-create",
+  "investment-create"
 );
 
 export function createInvestmentRouter({
@@ -37,7 +37,13 @@ export function createInvestmentRouter({
     : [];
 
   // POST /api/v1/investments - Create a new investment commitment
-  router.post("/", authMiddleware, ...pauseGuard, investmentRateLimiter, controller.createInvestment);
+  router.post(
+    "/",
+    authMiddleware,
+    ...pauseGuard,
+    investmentRateLimiter,
+    controller.createInvestment
+  );
 
   // GET /api/v1/investments/dashboard - Investor portfolio aggregate
   router.get("/dashboard", authMiddleware, controller.getDashboard);

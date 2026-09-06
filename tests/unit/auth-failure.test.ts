@@ -1,8 +1,5 @@
 import jwt from "jsonwebtoken";
-import {
-  buildAuthFailureDetails,
-  truncateWalletAddress,
-} from "../../src/lib/auth-failure";
+import { buildAuthFailureDetails, truncateWalletAddress } from "../../src/lib/auth-failure";
 
 describe("auth failure helpers", () => {
   it("truncates wallet addresses consistently", () => {
@@ -12,11 +9,9 @@ describe("auth failure helpers", () => {
   });
 
   it("extracts a truncated address from a parseable token", () => {
-    const token = jwt.sign(
-      { sub: "GABCDEFGHIJKLMNO1234567890" },
-      "test-secret",
-      { expiresIn: "1h" },
-    );
+    const token = jwt.sign({ sub: "GABCDEFGHIJKLMNO1234567890" }, "test-secret", {
+      expiresIn: "1h",
+    });
 
     expect(buildAuthFailureDetails(token, "invalid_signature")).toEqual({
       authFailure: {

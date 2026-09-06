@@ -10,7 +10,11 @@ interface ApproveKYCBody {
   reviewerId: string;
 }
 
-export async function approveKYC(req: Request<unknown, unknown, ApproveKYCBody>, res: Response, dataSource: DataSource) {
+export async function approveKYC(
+  req: Request<unknown, unknown, ApproveKYCBody>,
+  res: Response,
+  dataSource: DataSource
+) {
   try {
     const adminKey = req.headers["x-admin-key"];
     if (adminKey !== process.env.ADMIN_API_KEY) {

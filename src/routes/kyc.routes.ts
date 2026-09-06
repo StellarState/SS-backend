@@ -7,7 +7,11 @@ import type { AuthService } from "../services/auth.service";
 export function createKycWebhookRouter(service: KycService): Router {
   const router = Router();
   const controller = createKycController(service);
-  router.post("/webhook", express.raw({ type: "application/json", limit: "256kb" }), controller.webhook);
+  router.post(
+    "/webhook",
+    express.raw({ type: "application/json", limit: "256kb" }),
+    controller.webhook
+  );
   return router;
 }
 

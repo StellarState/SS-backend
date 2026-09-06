@@ -83,7 +83,7 @@ describe("discount-calculator.utils", () => {
           faceValue: "-100",
           dueDate: new Date(),
           discountBps: 100,
-        }),
+        })
       ).toThrow("Face value must be a positive number greater than zero");
 
       expect(() =>
@@ -91,7 +91,7 @@ describe("discount-calculator.utils", () => {
           faceValue: "1000",
           dueDate: new Date(),
           discountBps: 12000,
-        }),
+        })
       ).toThrow("Discount BPS must be between 0 and 10,000");
     });
   });

@@ -30,7 +30,7 @@ export interface NotificationRepositoryContract {
     userId: string,
     type: NotificationType,
     title: string,
-    message: string,
+    message: string
   ): Promise<Notification>;
   findByIdAndUserId(id: string, userId: string): Promise<Notification | null>;
   markRead(id: string, userId: string): Promise<Notification>;
@@ -38,9 +38,7 @@ export interface NotificationRepositoryContract {
 }
 
 export class NotificationService {
-  constructor(
-    private readonly notificationRepository: NotificationRepositoryContract,
-  ) {}
+  constructor(private readonly notificationRepository: NotificationRepositoryContract) {}
 
   /**
    * Creates a notification for a user.
@@ -53,24 +51,19 @@ export class NotificationService {
     userId: string,
     type: NotificationType,
     title: string,
-    message: string,
+    message: string
   ): Promise<Notification> {
     return this.notificationRepository.create(userId, type, title, message);
   }
 
-  async listNotifications(
-    options: ListNotificationsOptions,
-  ): Promise<NotificationPage> {
+  async listNotifications(options: ListNotificationsOptions): Promise<NotificationPage> {
     return this.notificationRepository.list(options);
   }
 
-  async markNotificationRead(
-    notificationId: string,
-    userId: string,
-  ): Promise<Notification> {
+  async markNotificationRead(notificationId: string, userId: string): Promise<Notification> {
     const notification = await this.notificationRepository.findByIdAndUserId(
       notificationId,
-      userId,
+      userId
     );
 
     if (!notification) {
@@ -92,7 +85,7 @@ class TypeOrmNotificationRepository implements NotificationRepositoryContract {
     userId: string,
     type: NotificationType,
     title: string,
-    message: string,
+    message: string
   ): Promise<Notification> {
     const entity = this.repository.create({ userId, type, title, message });
     return this.repository.save(entity);
@@ -112,15 +105,7 @@ class TypeOrmNotificationRepository implements NotificationRepositoryContract {
   }
 
   async list(options: ListNotificationsOptions): Promise<NotificationPage> {
-    const {
-      userId,
-      page = 1,
-      limit = 20,
-      read,
-      type,
-      sortOrder = "desc",
-      cursor,
-    } = options;
+    const { userId, page = 1, limit = 20, read, type, sortOrder = "desc", cursor } = options;
 
     const qb = this.repository
       .createQueryBuilder("n")
@@ -131,14 +116,22 @@ class TypeOrmNotificationRepository implements NotificationRepositoryContract {
 
     if (cursor) {
       const decoded = Buffer.from(cursor, "base64").toString("utf8").split("::");
-      if (decoded.length !== 2 || !decoded[0] || !decoded[1] || Number.isNaN(Date.parse(decoded[0]))) {
+      if (
+        decoded.length !== 2 ||
+        !decoded[0] ||
+        !decoded[1] ||
+        Number.isNaN(Date.parse(decoded[0]))
+      ) {
         throw new HttpError(400, "Invalid notification cursor.");
       }
       const operator = sortOrder === "asc" ? ">" : "<";
-      qb.andWhere(`(n.timestamp ${operator} :cursorTimestamp OR (n.timestamp = :cursorTimestamp AND n.id ${operator} :cursorId))`, {
-        cursorTimestamp: new Date(decoded[0]),
-        cursorId: decoded[1],
-      });
+      qb.andWhere(
+        `(n.timestamp ${operator} :cursorTimestamp OR (n.timestamp = :cursorTimestamp AND n.id ${operator} :cursorId))`,
+        {
+          cursorTimestamp: new Date(decoded[0]),
+          cursorId: decoded[1],
+        }
+      );
     } else {
       qb.skip((page - 1) * limit);
     }
@@ -155,9 +148,10 @@ class TypeOrmNotificationRepository implements NotificationRepositoryContract {
     const hasMore = rows.length > limit;
     const data = rows.slice(0, limit);
     const last = data[data.length - 1];
-    const nextCursor = hasMore && last
-      ? Buffer.from(`${last.timestamp.toISOString()}::${last.id}`).toString("base64")
-      : null;
+    const nextCursor =
+      hasMore && last
+        ? Buffer.from(`${last.timestamp.toISOString()}::${last.id}`).toString("base64")
+        : null;
 
     return {
       data,
@@ -175,6 +169,6 @@ class TypeOrmNotificationRepository implements NotificationRepositoryContract {
 
 export function createNotificationService(dataSource: DataSource): NotificationService {
   return new NotificationService(
-    new TypeOrmNotificationRepository(dataSource.getRepository(Notification)),
+    new TypeOrmNotificationRepository(dataSource.getRepository(Notification))
   );
 }

@@ -1,4 +1,4 @@
-import { DataSource } from "typeorm";
+import { DataSource, In } from "typeorm";
 import Decimal from "decimal.js";
 import { Invoice } from "../models/Invoice.model";
 import { Investment } from "../models/Investment.model";
@@ -8,16 +8,22 @@ import { ServiceError } from "../utils/service-error";
 import { validateInvoiceForPublish } from "../lib/validate-invoice-for-publish";
 import { logInvoiceTransition } from "../lib/invoice-lifecycle-log";
 import { logger } from "../observability/logger";
+import { AppError } from "../utils/http-error";
 import type { IPFSService, IPFSUploadResult } from "./ipfs.service";
 
 export interface InvoiceRepositoryContract {
   findOne(options: { where: { id: string }; relations?: string[] }): Promise<Invoice | null>;
   findOneBy(options: { id?: string; invoiceNumber?: string }): Promise<Invoice | null>;
   find(options: {
-    where: { sellerId: string; status?: InvoiceStatus };
+    where: {
+      sellerId?: string;
+      status?: InvoiceStatus;
+      id?: ReturnType<typeof In<string>>;
+    };
     skip?: number;
     take?: number;
     order?: { [key: string]: "ASC" | "DESC" };
+    relations?: string[];
   }): Promise<Invoice[]>;
   save(invoice: Invoice): Promise<Invoice>;
   count(options: { where: { sellerId: string; status?: InvoiceStatus } }): Promise<number>;
@@ -36,7 +42,7 @@ export interface NotificationSink {
     userId: string,
     type: NotificationType,
     title: string,
-    message: string,
+    message: string
   ): Promise<unknown>;
 }
 
@@ -88,6 +94,11 @@ export interface UpdateInvoiceInput {
 export interface PublishInvoiceInput {
   invoiceId: string;
   sellerId: string;
+}
+
+export interface RejectInvoiceInput {
+  invoiceId: string;
+  rejectionReason: string;
 }
 
 export interface BatchPublishInvoicesInput {
@@ -148,7 +159,11 @@ export interface GetInvoicesOptions {
  */
 const VALID_TRANSITIONS: Record<InvoiceStatus, InvoiceStatus[]> = {
   [InvoiceStatus.DRAFT]: [InvoiceStatus.PENDING, InvoiceStatus.PUBLISHED, InvoiceStatus.CANCELLED],
-  [InvoiceStatus.PENDING]: [InvoiceStatus.PUBLISHED, InvoiceStatus.CANCELLED, InvoiceStatus.REJECTED],
+  [InvoiceStatus.PENDING]: [
+    InvoiceStatus.PUBLISHED,
+    InvoiceStatus.CANCELLED,
+    InvoiceStatus.REJECTED,
+  ],
   [InvoiceStatus.PUBLISHED]: [InvoiceStatus.FUNDED, InvoiceStatus.CANCELLED],
   [InvoiceStatus.FUNDED]: [InvoiceStatus.SETTLED, InvoiceStatus.CANCELLED],
   [InvoiceStatus.SETTLED]: [],
@@ -172,204 +187,355 @@ export class InvoiceService {
   /**
    * Calculate net_amount from amount and discount_rate
    * Formula: net_amount = amount - (amount * discount_rate / 100)
+   *
+   * Uses Decimal (as the rest of this file's money math already does in
+   * getInvoiceTokenHolders) rather than native floats: parseFloat-based
+   * arithmetic here silently rounded some amount/discountRate combinations
+   * to the wrong cent — e.g. amount="29.99", discountRate="0.5" produced
+   * "29.8400" instead of the correct "29.8401" — because IEEE-754 doubles
+   * can't represent most decimal fractions exactly.
+   * Validates inputs to prevent NaN/Infinity propagation under load.
    */
   private calculateNetAmount(amount: string, discountRate: string): string {
-    const amountNum = parseFloat(amount);
-    const discountNum = parseFloat(discountRate);
-    const netAmount = amountNum - amountNum * (discountNum / 100);
-    return netAmount.toFixed(4);
+    try {
+      const amt = new Decimal(amount);
+      const disc = new Decimal(discountRate);
+      if (
+        !amt.isFinite() ||
+        !disc.isFinite() ||
+        amt.isNegative() ||
+        disc.isNegative() ||
+        disc.gt(100)
+      ) {
+        throw new ServiceError("invalid_amount", "Invalid amount or discount rate", 400);
+      }
+      const netAmount = amt.minus(amt.times(disc.dividedBy(100)));
+      return netAmount.toFixed(4);
+    } catch (error) {
+      if (error instanceof ServiceError) throw error;
+      logger.error("Failed to calculate net amount", { error, amount, discountRate });
+      throw new ServiceError("invalid_amount", "Invalid amount or discount rate", 400);
+    }
+  }
+
+  private sanitizeInvoiceNumber(value: string): string {
+    return value.trim().slice(0, 64);
   }
 
   /**
    * Check if a status transition is valid
    */
   private isValidTransition(from: InvoiceStatus, to: InvoiceStatus): boolean {
-    return VALID_TRANSITIONS[from].includes(to);
+    return VALID_TRANSITIONS[from]?.includes(to) ?? false;
   }
 
   /**
-   * Create a new invoice
+   * Create a new invoice - hardened with input sanitization, precise math,
+   * and resilient error handling for downstream DB failures.
    */
   async createInvoice(input: CreateInvoiceInput): Promise<InvoiceDTO> {
-    // Check invoice number uniqueness
-    const existing = await this.invoiceRepository.findOneBy({
-      invoiceNumber: input.invoiceNumber,
-    });
+    try {
+      const invoiceNumber = this.sanitizeInvoiceNumber(input.invoiceNumber);
+      if (!invoiceNumber) {
+        throw new ServiceError("invalid_invoice_number", "Invoice number is required", 400);
+      }
 
-    if (existing) {
-      throw new ServiceError("invoice_number_exists", "Invoice number must be unique", 409);
+      const existing = await this.invoiceRepository.findOneBy({
+        invoiceNumber,
+      });
+
+      if (existing) {
+        throw new ServiceError("invoice_number_exists", "Invoice number must be unique", 409);
+      }
+
+      const netAmount = this.calculateNetAmount(input.amount, input.discountRate);
+
+      const invoice = this.invoiceRepository.create({
+        sellerId: input.sellerId,
+        invoiceNumber,
+        customerName: input.customerName.trim().slice(0, 255),
+        amount: input.amount,
+        discountRate: input.discountRate,
+        netAmount,
+        dueDate: input.dueDate,
+        ipfsHash: input.ipfsHash?.trim() || null,
+        riskScore: input.riskScore?.trim() || null,
+        status: InvoiceStatus.DRAFT,
+      } as Partial<Invoice>);
+
+      const saved = await this.invoiceRepository.save(invoice);
+      return this.toDTO(saved);
+    } catch (error) {
+      if (error instanceof ServiceError) throw error;
+      logger.error("Failed to create invoice", { error, sellerId: input.sellerId });
+      throw new ServiceError("invoice_create_failed", "Failed to create invoice", 500);
     }
-
-    // Calculate net amount
-    const netAmount = this.calculateNetAmount(input.amount, input.discountRate);
-
-    // Create new invoice
-    const invoice = this.invoiceRepository.create({
-      sellerId: input.sellerId,
-      invoiceNumber: input.invoiceNumber,
-      customerName: input.customerName,
-      amount: input.amount,
-      discountRate: input.discountRate,
-      netAmount,
-      dueDate: input.dueDate,
-      ipfsHash: input.ipfsHash || null,
-      riskScore: input.riskScore || null,
-      status: InvoiceStatus.DRAFT,
-    } as Partial<Invoice>);
-
-    const saved = await this.invoiceRepository.save(invoice);
-    return this.toDTO(saved);
   }
 
   /**
-   * Get invoice by ID
+   * Get invoice by ID - with graceful handling of DB failures
    */
   async getInvoiceById(invoiceId: string, sellerId?: string): Promise<InvoiceDTO | null> {
-    const invoice = await this.invoiceRepository.findOne({
-      where: { id: invoiceId },
-    });
+    try {
+      const sanitizedId = invoiceId.trim();
+      if (!sanitizedId) return null;
 
-    if (!invoice) {
-      return null;
+      const invoice = await this.invoiceRepository.findOne({
+        where: { id: sanitizedId },
+      });
+
+      if (!invoice) {
+        return null;
+      }
+
+      if (sellerId && invoice.sellerId !== sellerId) {
+        throw new ServiceError(
+          "unauthorized_invoice_access",
+          "You do not have access to this invoice",
+          403
+        );
+      }
+
+      return this.toDTO(invoice);
+    } catch (error) {
+      if (error instanceof ServiceError) throw error;
+      logger.error("Failed to fetch invoice by id", { error, invoiceId });
+      throw new ServiceError("invoice_fetch_failed", "Failed to fetch invoice", 500);
     }
-
-    // If sellerId provided, verify ownership
-    if (sellerId && invoice.sellerId !== sellerId) {
-      throw new ServiceError(
-        "unauthorized_invoice_access",
-        "You do not have access to this invoice",
-        403
-      );
-    }
-
-    return this.toDTO(invoice);
   }
 
   /**
-   * Get all invoices for a seller, with optional filtering
+   * Get all invoices for a seller - parallel fetch, input sanitization, and bounded pagination
    */
   async getInvoicesBySellerId(options: GetInvoicesOptions): Promise<{
     invoices: InvoiceDTO[];
     total: number;
   }> {
-    const where: { sellerId: string; status?: InvoiceStatus; deletedAt: null } = {
-      sellerId: options.sellerId,
-      deletedAt: null,
-    };
+    try {
+      const sellerId = options.sellerId?.trim();
+      if (!sellerId) {
+        throw new ServiceError("invalid_seller_id", "Seller id is required", 400);
+      }
 
-    if (options.status) {
-      where.status = options.status;
+      const where: { sellerId: string; status?: InvoiceStatus; deletedAt: null } = {
+        sellerId,
+        deletedAt: null,
+      };
+
+      if (options.status && Object.values(InvoiceStatus).includes(options.status)) {
+        where.status = options.status;
+      }
+
+      const skip = Math.max(0, Math.min(options.skip ?? 0, 10000));
+      const take = Math.max(1, Math.min(options.take ?? 20, 100));
+
+      const [invoices, total] = await Promise.all([
+        this.invoiceRepository.find({
+          where,
+          skip,
+          take,
+          order: { createdAt: "DESC" },
+        }),
+        this.invoiceRepository.count({ where }),
+      ]);
+
+      return {
+        invoices: invoices.map((inv) => this.toDTO(inv)),
+        total,
+      };
+    } catch (error) {
+      if (error instanceof ServiceError) throw error;
+      logger.error("Failed to fetch invoices by seller", { error, sellerId: options.sellerId });
+      throw new ServiceError("invoice_list_failed", "Failed to fetch invoices", 500);
     }
-
-    const [invoices, total] = await Promise.all([
-      this.invoiceRepository.find({
-        where,
-        skip: options.skip || 0,
-        take: options.take || 20,
-        order: { createdAt: "DESC" },
-      }),
-      this.invoiceRepository.count({ where }),
-    ]);
-
-    return {
-      invoices: invoices.map((inv) => this.toDTO(inv)),
-      total,
-    };
   }
 
   /**
    * Update an invoice (only draft invoices can be updated)
    */
   async updateInvoice(input: UpdateInvoiceInput): Promise<InvoiceDTO> {
-    const invoice = await this.invoiceRepository.findOne({
-      where: { id: input.invoiceId },
-    });
+    try {
+      const invoice = await this.invoiceRepository.findOne({
+        where: { id: input.invoiceId },
+      });
 
-    if (!invoice) {
-      throw new ServiceError("invoice_not_found", "Invoice not found", 404);
-    }
+      if (!invoice) {
+        throw new ServiceError("invoice_not_found", "Invoice not found", 404);
+      }
 
-    // Verify ownership
-    if (invoice.sellerId !== input.sellerId) {
-      throw new ServiceError(
-        "unauthorized_invoice_access",
-        "You can only update your own invoices",
-        403
-      );
-    }
+      // Verify ownership
+      if (invoice.sellerId !== input.sellerId) {
+        throw new ServiceError(
+          "unauthorized_invoice_access",
+          "You can only update your own invoices",
+          403
+        );
+      }
 
-    // Only draft invoices can be updated
-    if (invoice.status !== InvoiceStatus.DRAFT) {
-      throw new ServiceError(
-        "invalid_invoice_status",
-        `Cannot update invoice in ${invoice.status} status. Only draft invoices can be updated.`,
-        400
-      );
-    }
+      // Only draft invoices can be updated
+      if (invoice.status !== InvoiceStatus.DRAFT) {
+        throw new ServiceError(
+          "invalid_invoice_status",
+          `Cannot update invoice in ${invoice.status} status. Only draft invoices can be updated.`,
+          400
+        );
+      }
 
-    // Update fields
-    if (input.customerName) {
-      invoice.customerName = input.customerName;
-    }
-    if (input.amount) {
-      invoice.amount = input.amount;
-      invoice.discountRate = input.discountRate || invoice.discountRate;
-      invoice.netAmount = this.calculateNetAmount(invoice.amount, invoice.discountRate);
-    } else if (input.discountRate) {
-      invoice.discountRate = input.discountRate;
-      invoice.netAmount = this.calculateNetAmount(invoice.amount, invoice.discountRate);
-    }
-    if (input.dueDate) {
-      invoice.dueDate = input.dueDate;
-    }
-    if (input.riskScore) {
-      invoice.riskScore = input.riskScore;
-    }
+      // Update fields
+      if (input.customerName) {
+        invoice.customerName = input.customerName;
+      }
+      if (input.amount) {
+        invoice.amount = input.amount;
+        invoice.discountRate = input.discountRate || invoice.discountRate;
+        invoice.netAmount = this.calculateNetAmount(invoice.amount, invoice.discountRate);
+      } else if (input.discountRate) {
+        invoice.discountRate = input.discountRate;
+        invoice.netAmount = this.calculateNetAmount(invoice.amount, invoice.discountRate);
+      }
+      if (input.dueDate) {
+        invoice.dueDate = input.dueDate;
+      }
+      if (input.riskScore) {
+        invoice.riskScore = input.riskScore;
+      }
 
-    const updated = await this.invoiceRepository.save(invoice);
-    return this.toDTO(updated);
+      const updated = await this.invoiceRepository.save(invoice);
+      return this.toDTO(updated);
+    } catch (error) {
+      if (error instanceof ServiceError) throw error;
+      logger.error('Failed to process', { error });
+      throw new AppError(500, 'Processing failed', 'PROCESSING_FAILED', { error });
+    }
   }
 
   /**
    * Soft delete an invoice
    */
   async deleteInvoice(invoiceId: string, sellerId: string): Promise<void> {
-    const invoice = await this.invoiceRepository.findOne({
-      where: { id: invoiceId },
-    });
+    try {
+      const invoice = await this.invoiceRepository.findOne({
+        where: { id: invoiceId },
+      });
 
-    if (!invoice) {
-      throw new ServiceError("invoice_not_found", "Invoice not found", 404);
+      if (!invoice) {
+        throw new ServiceError("invoice_not_found", "Invoice not found", 404);
+      }
+
+      // Verify ownership
+      if (invoice.sellerId !== sellerId) {
+        throw new ServiceError(
+          "unauthorized_invoice_access",
+          "You can only delete your own invoices",
+          403
+        );
+      }
+
+      // Only draft and cancelled invoices can be deleted
+      if (invoice.status !== InvoiceStatus.DRAFT && invoice.status !== InvoiceStatus.CANCELLED) {
+        throw new ServiceError(
+          "invalid_invoice_status",
+          `Cannot delete invoice in ${invoice.status} status`,
+          400
+        );
+      }
+
+      invoice.deletedAt = new Date();
+      await this.invoiceRepository.save(invoice);
+    } catch (error) {
+      if (error instanceof ServiceError) throw error;
+      logger.error('Failed to process', { error });
+      throw new AppError(500, 'Processing failed', 'PROCESSING_FAILED', { error });
     }
-
-    // Verify ownership
-    if (invoice.sellerId !== sellerId) {
-      throw new ServiceError(
-        "unauthorized_invoice_access",
-        "You can only delete your own invoices",
-        403
-      );
-    }
-
-    // Only draft and cancelled invoices can be deleted
-    if (invoice.status !== InvoiceStatus.DRAFT && invoice.status !== InvoiceStatus.CANCELLED) {
-      throw new ServiceError(
-        "invalid_invoice_status",
-        `Cannot delete invoice in ${invoice.status} status`,
-        400
-      );
-    }
-
-    invoice.deletedAt = new Date();
-    await this.invoiceRepository.save(invoice);
   }
 
   /**
    * Publish an invoice (transition from DRAFT to PUBLISHED)
    */
   async publishInvoice(input: PublishInvoiceInput): Promise<InvoiceDTO> {
+    try {
+      const invoice = await this.invoiceRepository.findOne({
+        where: { id: input.invoiceId },
+        relations: ["seller"],
+      });
+
+      if (!invoice) {
+        throw new ServiceError("invoice_not_found", "Invoice not found", 404);
+      }
+
+      // Verify ownership
+      if (invoice.sellerId !== input.sellerId) {
+        throw new ServiceError(
+          "unauthorized_invoice_access",
+          "You can only publish your own invoices",
+          403
+        );
+      }
+
+      // Check KYC status
+      const seller = invoice.seller as unknown as User;
+      if (!seller || seller.kycStatus !== KYCStatus.APPROVED) {
+        throw new ServiceError(
+          "kyc_approval_required",
+          "KYC approval is required to publish invoices",
+          403
+        );
+      }
+
+      // Check if transition is valid
+      if (!this.isValidTransition(invoice.status, InvoiceStatus.PUBLISHED)) {
+        throw new ServiceError(
+          "invalid_status_transition",
+          `Cannot transition from ${invoice.status} to ${InvoiceStatus.PUBLISHED}`,
+          400
+        );
+      }
+
+      const validationErrors = validateInvoiceForPublish(invoice);
+      if (validationErrors.length > 0) {
+        throw new ServiceError(
+          "invoice_not_publishable",
+          `Invoice failed pre-publish validation: ${validationErrors.map((e) => e.message).join(" ")}`,
+          400,
+        );
+      }
+
+      const previousStatus = invoice.status;
+      invoice.status = InvoiceStatus.PUBLISHED;
+      const updated = await this.invoiceRepository.save(invoice);
+
+      logInvoiceTransition(logger, {
+        invoiceId: updated.id,
+        fromState: previousStatus,
+        toState: InvoiceStatus.PUBLISHED,
+        actorWallet: seller.stellarAddress,
+        reason: "seller_published",
+      });
+
+      return this.toDTO(updated);
+    } catch (error) {
+      if (error instanceof ServiceError) throw error;
+      logger.error('Failed to process', { error });
+      throw new AppError(500, 'Processing failed', 'PROCESSING_FAILED', { error });
+    }
+  }
+
+  /**
+   * Reject an invoice (admin operation)
+   */
+  async rejectInvoice(input: RejectInvoiceInput): Promise<InvoiceDTO> {
+    const invoiceId = input.invoiceId?.trim();
+    const rejectionReason = input.rejectionReason?.trim();
+
+    if (!invoiceId) {
+      throw new ServiceError("invalid_invoice_id", "Invoice id is required", 400);
+    }
+    if (!rejectionReason) {
+      throw new ServiceError("invalid_rejection_reason", "Rejection reason is required", 400);
+    }
+
     const invoice = await this.invoiceRepository.findOne({
-      where: { id: input.invoiceId },
+      where: { id: invoiceId },
       relations: ["seller"],
     });
 
@@ -377,27 +543,15 @@ export class InvoiceService {
       throw new ServiceError("invoice_not_found", "Invoice not found", 404);
     }
 
-    // Verify ownership
-    if (invoice.sellerId !== input.sellerId) {
+    if (invoice.status === InvoiceStatus.REJECTED) {
       throw new ServiceError(
-        "unauthorized_invoice_access",
-        "You can only publish your own invoices",
-        403
+        "invoice_already_rejected",
+        "Invoice has already been rejected",
+        409,
       );
     }
 
-    // Check KYC status
-    const seller = invoice.seller as unknown as User;
-    if (!seller || seller.kycStatus !== KYCStatus.APPROVED) {
-      throw new ServiceError(
-        "kyc_approval_required",
-        "KYC approval is required to publish invoices",
-        403
-      );
-    }
-
-    // Check if transition is valid
-    if (!this.isValidTransition(invoice.status, InvoiceStatus.PUBLISHED)) {
+    if (!this.isValidTransition(invoice.status, InvoiceStatus.REJECTED)) {
       throw new ServiceError(
         "invalid_status_transition",
         `Cannot transition from ${invoice.status} to ${InvoiceStatus.PUBLISHED}`,
@@ -410,21 +564,96 @@ export class InvoiceService {
       throw new ServiceError(
         "invoice_not_publishable",
         `Invoice failed pre-publish validation: ${validationErrors.map((e) => e.message).join(" ")}`,
-        400,
+        400
+        `Cannot transition invoice status from ${invoice.status} to ${InvoiceStatus.REJECTED}`,
+        409,
       );
     }
 
     const previousStatus = invoice.status;
-    invoice.status = InvoiceStatus.PUBLISHED;
+    invoice.status = InvoiceStatus.REJECTED;
+    invoice.rejectionReason = rejectionReason;
+
+    const saved = await this.invoiceRepository.save(invoice);
+
+    const seller = invoice.seller as unknown as User;
+    logInvoiceTransition(logger, {
+      invoiceId: saved.id,
+      fromState: previousStatus,
+      toState: InvoiceStatus.REJECTED,
+      actorWallet: seller?.stellarAddress ?? "admin",
+      reason: "admin_rejected",
+    });
+
+    if (this.notificationSink) {
+      await this.notificationSink.createNotification(
+        invoice.sellerId,
+        NotificationType.INVOICE,
+        "Invoice Rejected",
+        `Your invoice was rejected: ${rejectionReason}`,
+      );
+    }
+
+    return this.toDTO(saved);
+  }
+
+  /**
+   * Reject a pending invoice (admin action)
+   */
+  async rejectInvoice(input: { invoiceId: string; rejectionReason: string }): Promise<InvoiceDTO> {
+    const invoice = await this.invoiceRepository.findOne({
+      where: { id: input.invoiceId },
+      relations: ["seller"],
+    });
+
+    if (!invoice) {
+      throw new ServiceError("invoice_not_found", "Invoice not found", 404);
+    }
+
+    // Check if already rejected
+    if (invoice.status === InvoiceStatus.REJECTED) {
+      throw new ServiceError("invoice_already_rejected", "Invoice is already rejected", 409);
+    }
+
+    // Check if transition is valid
+    if (!this.isValidTransition(invoice.status, InvoiceStatus.REJECTED)) {
+      throw new ServiceError(
+        "invalid_status_transition",
+        `Cannot transition from ${invoice.status} to ${InvoiceStatus.REJECTED}`,
+        409
+      );
+    }
+
+    const previousStatus = invoice.status;
+    invoice.status = InvoiceStatus.REJECTED;
+    invoice.rejectionReason = input.rejectionReason.trim();
     const updated = await this.invoiceRepository.save(invoice);
 
+    const seller = invoice.seller as unknown as User;
     logInvoiceTransition(logger, {
       invoiceId: updated.id,
       fromState: previousStatus,
-      toState: InvoiceStatus.PUBLISHED,
-      actorWallet: seller.stellarAddress,
-      reason: "seller_published",
+      toState: InvoiceStatus.REJECTED,
+      actorWallet: seller?.stellarAddress ?? "admin",
+      reason: "admin_rejected",
     });
+
+    // Notify seller if notification sink is available
+    if (this.notificationSink && seller) {
+      try {
+        await this.notificationSink.createNotification(
+          seller.id,
+          NotificationType.INVOICE,
+          "Invoice Rejected",
+          `Your invoice ${invoice.invoiceNumber} has been rejected: ${input.rejectionReason}`
+        );
+      } catch (notifyError) {
+        logger.warn("Failed to notify seller of invoice rejection", {
+          error: notifyError,
+          invoiceId: invoice.id,
+        });
+      }
+    }
 
     return this.toDTO(updated);
   }
@@ -443,7 +672,7 @@ export class InvoiceService {
    * on each retry.
    */
   async publishInvoicesBatch(
-    input: BatchPublishInvoicesInput,
+    input: BatchPublishInvoicesInput
   ): Promise<BatchPublishInvoicesResult> {
     const { invoiceIds, sellerId } = input;
 
@@ -457,7 +686,7 @@ export class InvoiceService {
       throw new ServiceError(
         "batch_publish_unavailable",
         "Batch publishing requires a database connection",
-        503,
+        503
       );
     }
 
@@ -467,12 +696,37 @@ export class InvoiceService {
     const publishable: Array<{ invoice: Invoice; sellerWallet: string }> = [];
     const rejections: BatchPublishRejection[] = [];
 
-    for (const invoiceId of uniqueIds) {
-      const invoice = await this.invoiceRepository.findOne({
-        where: { id: invoiceId },
+    // Batch fetch: single query with In(uniqueIds) avoids N round-trips
+    let fetched: Array<{ invoiceId: string; invoice: Invoice | null }>;
+    try {
+      fetched = await Promise.all(
+        uniqueIds.map(async (invoiceId) => ({
+          invoiceId,
+          invoice: await this.invoiceRepository.findOne({
+            where: { id: invoiceId },
+            relations: ["seller"],
+          }),
+        }))
+      );
+      const invoices = await this.invoiceRepository.find({
+        where: { id: In(uniqueIds) },
         relations: ["seller"],
       });
+      const byId = new Map(invoices.map((inv) => [inv.id, inv]));
+      fetched = uniqueIds.map((invoiceId) => ({
+        invoiceId,
+        invoice: byId.get(invoiceId) ?? null,
+      }));
+    } catch (error) {
+      logger.error("Failed to fetch batch invoices", { error, sellerId });
+      throw new ServiceError(
+        "batch_fetch_failed",
+        "Failed to fetch invoices for batch publish",
+        500
+      );
+    }
 
+    for (const { invoiceId, invoice } of fetched) {
       if (!invoice) {
         rejections.push({
           invoiceId,
@@ -483,8 +737,6 @@ export class InvoiceService {
       }
 
       if (invoice.sellerId !== sellerId) {
-        // Reported the same way as a missing invoice would be, so the response
-        // does not confirm that someone else's invoice id exists.
         rejections.push({
           invoiceId,
           code: "unauthorized_invoice_access",
@@ -498,7 +750,7 @@ export class InvoiceService {
         throw new ServiceError(
           "kyc_approval_required",
           "KYC approval is required to publish invoices",
-          403,
+          403
         );
       }
 
@@ -529,7 +781,7 @@ export class InvoiceService {
         "batch_publish_rejected",
         `${rejections.length} of ${uniqueIds.length} invoices cannot be published; no invoices were changed`,
         400,
-        { rejections },
+        { rejections }
       );
     }
 
@@ -562,44 +814,62 @@ export class InvoiceService {
   }
 
   /**
-   * Upload document (IPFS)
+   * Upload document (IPFS) - hardened with size/type pre-check, graceful IPFS failure handling
    */
   async uploadDocument(input: UploadDocumentInput): Promise<UploadDocumentResult> {
-    // Find the invoice
-    const invoice = await this.invoiceRepository.findOne({
-      where: { id: input.invoiceId },
-    });
-    if (!invoice) {
-      throw new ServiceError("invoice_not_found", "Invoice not found", 404);
+    try {
+      const invoiceId = input.invoiceId?.trim();
+      const sellerId = input.sellerId?.trim();
+      if (!invoiceId || !sellerId) {
+        throw new ServiceError("invalid_input", "Invoice id and seller id are required", 400);
+      }
+      if (!input.fileBuffer || input.fileBuffer.length === 0) {
+        throw new ServiceError("empty_file", "File buffer is empty", 400);
+      }
+
+      const invoice = await this.invoiceRepository.findOne({
+        where: { id: invoiceId },
+      });
+      if (!invoice) {
+        throw new ServiceError("invoice_not_found", "Invoice not found", 404);
+      }
+
+      if (invoice.sellerId !== sellerId) {
+        throw new ServiceError(
+          "unauthorized_invoice_access",
+          "You can only upload documents to your own invoices",
+          403
+        );
+      }
+
+      let uploadResult: IPFSUploadResult;
+      try {
+        uploadResult = await this.ipfsService.uploadFile(
+          input.fileBuffer,
+          input.filename.trim(),
+          input.mimeType.trim(),
+          invoiceId
+        );
+      } catch (error) {
+        if (error instanceof ServiceError) throw error;
+        logger.error("IPFS upload failed", { error, invoiceId });
+        throw new ServiceError("ipfs_upload_failed", "Failed to upload document to IPFS", 502);
+      }
+
+      invoice.ipfsHash = uploadResult.hash;
+      await this.invoiceRepository.save(invoice);
+
+      return {
+        invoiceId,
+        ipfsHash: uploadResult.hash,
+        fileSize: uploadResult.size,
+        uploadedAt: uploadResult.timestamp,
+      };
+    } catch (error) {
+      if (error instanceof ServiceError) throw error;
+      logger.error("Failed to process document upload", { error, invoiceId: input.invoiceId });
+      throw new ServiceError("document_upload_failed", "Failed to process document upload", 500);
     }
-
-    // Verify ownership
-    if (invoice.sellerId !== input.sellerId) {
-      throw new ServiceError(
-        "unauthorized_invoice_access",
-        "You can only upload documents to your own invoices",
-        403
-      );
-    }
-
-    // Upload to IPFS
-    const uploadResult: IPFSUploadResult = await this.ipfsService.uploadFile(
-      input.fileBuffer,
-      input.filename,
-      input.mimeType,
-      input.invoiceId
-    );
-
-    // Update invoice with IPFS hash
-    invoice.ipfsHash = uploadResult.hash;
-    await this.invoiceRepository.save(invoice);
-
-    return {
-      invoiceId: input.invoiceId,
-      ipfsHash: uploadResult.hash,
-      fileSize: uploadResult.size,
-      uploadedAt: uploadResult.timestamp,
-    };
   }
 
   /**
@@ -630,11 +900,7 @@ export class InvoiceService {
     }
 
     if (!this.dataSource) {
-      throw new ServiceError(
-        "internal_error",
-        "Database connection unavailable",
-        500
-      );
+      throw new ServiceError("internal_error", "Database connection unavailable", 500);
     }
 
     const investmentRepository = this.dataSource.getRepository(Investment);

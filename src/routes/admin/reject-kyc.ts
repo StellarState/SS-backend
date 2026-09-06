@@ -11,7 +11,11 @@ interface RejectKYCBody {
   rejectionReason: string;
 }
 
-export async function rejectKYC(req: Request<unknown, unknown, RejectKYCBody>, res: Response, dataSource: DataSource) {
+export async function rejectKYC(
+  req: Request<unknown, unknown, RejectKYCBody>,
+  res: Response,
+  dataSource: DataSource
+) {
   try {
     const adminKey = req.headers["x-admin-key"];
     if (adminKey !== process.env.ADMIN_API_KEY) {

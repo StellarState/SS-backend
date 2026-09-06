@@ -13,9 +13,7 @@ export interface AuthFailureDetails {
   failedAt: string;
 }
 
-export function truncateWalletAddress(
-  address: string | null | undefined,
-): string | null {
+export function truncateWalletAddress(address: string | null | undefined): string | null {
   if (!address) {
     return null;
   }
@@ -43,14 +41,12 @@ export function extractWalletFromUnverifiedToken(token?: string): string | null 
 
 export function buildAuthFailureDetails(
   token: string | undefined,
-  reason: AuthFailureReason,
+  reason: AuthFailureReason
 ): { authFailure: AuthFailureDetails } {
   return {
     authFailure: {
       reason,
-      truncatedAddress: truncateWalletAddress(
-        extractWalletFromUnverifiedToken(token),
-      ),
+      truncatedAddress: truncateWalletAddress(extractWalletFromUnverifiedToken(token)),
       failedAt: new Date().toISOString(),
     },
   };
