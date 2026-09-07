@@ -367,9 +367,14 @@ export function createInvoiceController(invoiceService: InvoiceService) {
       next: NextFunction
     ): Promise<void> {
       try {
+        const authReq = req as AuthenticatedRequest;
+        if (!authReq.user) {
+          throw new HttpError(401, "Authentication required");
+        }
+
         const { id } = req.params;
 
-        const result = await invoiceService.getInvoiceTokenHolders(id);
+        const result = await invoiceService.getInvoiceTokenHolders(id, authReq.user.id);
 
         res.status(200).json({
           success: true,

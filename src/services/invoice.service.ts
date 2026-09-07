@@ -875,12 +875,12 @@ export class InvoiceService {
   /**
    * Get all token holders for a published invoice with their token balances and percentage shares
    */
-  async getInvoiceTokenHolders(invoiceId: string): Promise<
+  async getInvoiceTokenHolders(invoiceId: string, sellerId: string): Promise<
     Array<{
-      walletAddress: string;
-      investmentAmount: string;
-      percentageShare: string;
-      status: InvestmentStatus;
+      wallet: string;
+      amount: string;
+      share_percent: string;
+      committed_at: Date;
     }>
   > {
     const invoice = await this.invoiceRepository.findOne({
@@ -889,6 +889,10 @@ export class InvoiceService {
 
     if (!invoice) {
       throw new ServiceError("invoice_not_found", "Invoice not found", 404);
+    }
+
+    if (invoice.sellerId !== sellerId) {
+      throw new ServiceError("unauthorized_invoice_access", "You can only view investors for your own invoices", 403);
     }
 
     if (invoice.status === InvoiceStatus.DRAFT) {
@@ -930,11 +934,14 @@ export class InvoiceService {
             .times(100)
             .toDecimalPlaces(2);
 
+      const address = investor.stellarAddress || "";
+      const truncatedWallet = address.length > 8 ? `${address.slice(0, 4)}...${address.slice(-4)}` : address;
+
       return {
-        walletAddress: investor.stellarAddress,
-        investmentAmount: investment.investmentAmount,
-        percentageShare: percentage.toString(),
-        status: investment.status,
+        wallet: truncatedWallet,
+        amount: investment.investmentAmount,
+        share_percent: percentage.toString(),
+        committed_at: investment.createdAt,
       };
     });
   }
