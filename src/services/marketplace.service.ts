@@ -1,6 +1,7 @@
 import { DataSource, Repository } from "typeorm";
 import { Invoice } from "../models/Invoice.model";
 import { InvoiceStatus } from "../types/enums";
+import { paginateQuery } from "../utils/query-pagination.utils";
 
 export interface MarketplaceFilters {
   status?: InvoiceStatus[];
@@ -40,11 +41,36 @@ export interface MarketplaceResponse {
   };
 }
 
+export interface CursorPaginationOptions {
+  /** Column to sort/page by. Must be one of the marketplace's supported sort
+   *  fields so the cursor and `ORDER BY` stay consistent. */
+  sortField: "due_date" | "discount_rate" | "amount" | "created_at";
+  order?: "ASC" | "DESC";
+  limit: number;
+  cursor?: string | null;
+}
+
+export interface MarketplaceCursorPage {
+  data: PublicInvoice[];
+  nextCursor: string | null;
+  hasMore: boolean;
+}
+
 export interface MarketplaceRepositoryContract {
   findPublishedInvoices(
     filters: MarketplaceFilters,
-    pagination: PaginationOptions,
+    pagination: PaginationOptions
   ): Promise<{ invoices: Invoice[]; total: number }>;
+  /**
+   * Optional so that existing fake repositories implementing this contract
+   * (in tests predating this method) continue to satisfy the interface
+   * without modification. Only `getPublishedInvoicesByCursor` requires it,
+   * and it throws a clear error if a given repository doesn't implement it.
+   */
+  findPublishedInvoicesByCursor?(
+    filters: MarketplaceFilters,
+    pagination: CursorPaginationOptions
+  ): Promise<{ invoices: Invoice[]; nextCursor: string | null; hasMore: boolean }>;
 }
 
 export interface MarketplaceServiceDependencies {
@@ -60,7 +86,7 @@ export class MarketplaceService {
 
   async getPublishedInvoices(
     filters: MarketplaceFilters = {},
-    pagination: PaginationOptions = { page: 1, limit: 20 },
+    pagination: PaginationOptions = { page: 1, limit: 20 }
   ): Promise<MarketplaceResponse> {
     // Set default filters
     const normalizedFilters: MarketplaceFilters = {
@@ -81,7 +107,7 @@ export class MarketplaceService {
 
     const { invoices, total } = await this.marketplaceRepository.findPublishedInvoices(
       normalizedFilters,
-      normalizedPagination,
+      normalizedPagination
     );
 
     const publicInvoices: PublicInvoice[] = invoices.map(this.toPublicInvoice);
@@ -94,6 +120,48 @@ export class MarketplaceService {
         limit: normalizedPagination.limit,
         totalPages: Math.ceil(total / normalizedPagination.limit),
       },
+    };
+  }
+
+  /**
+   * Cursor-paginated variant of `getPublishedInvoices`, for consumers that
+   * need stable keyset pagination (e.g. infinite-scroll clients) instead of
+   * offset/page-based pagination. Additive: does not replace or change the
+   * behaviour of the existing offset-based `getPublishedInvoices` method or
+   * its route, so existing callers/tests are unaffected.
+   */
+  async getPublishedInvoicesByCursor(
+    filters: MarketplaceFilters = {},
+    pagination: CursorPaginationOptions
+  ): Promise<MarketplaceCursorPage> {
+    const normalizedFilters: MarketplaceFilters = {
+      status: filters.status || [InvoiceStatus.PUBLISHED],
+      dueBefore: filters.dueBefore,
+      minAmount: filters.minAmount,
+      maxAmount: filters.maxAmount,
+      search: filters.search,
+    };
+
+    const limit = Math.min(100, Math.max(1, pagination.limit));
+
+    if (!this.marketplaceRepository.findPublishedInvoicesByCursor) {
+      throw new Error(
+        "getPublishedInvoicesByCursor: the configured MarketplaceRepositoryContract does not implement findPublishedInvoicesByCursor"
+      );
+    }
+
+    const { invoices, nextCursor, hasMore } =
+      await this.marketplaceRepository.findPublishedInvoicesByCursor(normalizedFilters, {
+        sortField: pagination.sortField,
+        order: pagination.order ?? "DESC",
+        limit,
+        cursor: pagination.cursor ?? null,
+      });
+
+    return {
+      data: invoices.map(this.toPublicInvoice),
+      nextCursor,
+      hasMore,
     };
   }
 
@@ -121,7 +189,7 @@ class TypeORMMarketplaceRepository implements MarketplaceRepositoryContract {
 
   async findPublishedInvoices(
     filters: MarketplaceFilters,
-    pagination: PaginationOptions,
+    pagination: PaginationOptions
   ): Promise<{ invoices: Invoice[]; total: number }> {
     const queryBuilder = this.repository
       .createQueryBuilder("invoice")
@@ -187,6 +255,76 @@ class TypeORMMarketplaceRepository implements MarketplaceRepositoryContract {
     };
 
     return sortMap[sort] || "invoice.due_date";
+  }
+
+  /**
+   * Same sort-field mapping as `getSortColumn`, but using the Invoice
+   * entity's camelCase property names (e.g. "invoice.dueDate") rather than
+   * raw snake_case DB column names. `paginateQuery` needs the entity
+   * property name because it reads the cursor value back off the returned
+   * entity object (`row[column]`), which is keyed by TypeORM property name,
+   * not the underlying SQL column.
+   */
+  private getCursorSortField(sort: string): string {
+    const sortMap: Record<string, string> = {
+      due_date: "invoice.dueDate",
+      discount_rate: "invoice.discountRate",
+      amount: "invoice.amount",
+      created_at: "invoice.createdAt",
+    };
+
+    return sortMap[sort] || "invoice.dueDate";
+  }
+
+  async findPublishedInvoicesByCursor(
+    filters: MarketplaceFilters,
+    pagination: CursorPaginationOptions
+  ): Promise<{ invoices: Invoice[]; nextCursor: string | null; hasMore: boolean }> {
+    const queryBuilder = this.repository
+      .createQueryBuilder("invoice")
+      .where("invoice.deleted_at IS NULL");
+
+    if (filters.status && filters.status.length > 0) {
+      queryBuilder.andWhere("invoice.status IN (:...statuses)", {
+        statuses: filters.status,
+      });
+    }
+
+    if (filters.dueBefore) {
+      queryBuilder.andWhere("invoice.due_date <= :dueBefore", {
+        dueBefore: filters.dueBefore,
+      });
+    }
+
+    if (filters.minAmount !== undefined) {
+      queryBuilder.andWhere("CAST(invoice.amount AS DECIMAL) >= :minAmount", {
+        minAmount: filters.minAmount,
+      });
+    }
+
+    if (filters.maxAmount !== undefined) {
+      queryBuilder.andWhere("CAST(invoice.amount AS DECIMAL) <= :maxAmount", {
+        maxAmount: filters.maxAmount,
+      });
+    }
+
+    if (filters.search) {
+      queryBuilder.andWhere("LOWER(invoice.customer_name) LIKE :search", {
+        search: `%${filters.search.toLowerCase()}%`,
+      });
+    }
+
+    const cursorField = this.getCursorSortField(pagination.sortField);
+
+    const { items, nextCursor, hasMore } = await paginateQuery<Invoice>({
+      queryBuilder,
+      cursorField,
+      order: pagination.order ?? "DESC",
+      limit: pagination.limit,
+      cursor: pagination.cursor ?? null,
+    });
+
+    return { invoices: items, nextCursor, hasMore };
   }
 }
 

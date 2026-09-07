@@ -11,12 +11,14 @@ import { logger, type AppLogger } from "./observability/logger";
 import { getMetricsContentType, MetricsRegistry } from "./observability/metrics";
 
 import { createAuthRouter } from "./routes/auth.routes";
+import { createKycRouter, createKycWebhookRouter } from "./routes/kyc.routes";
 import { createNotificationRouter } from "./routes/notification.routes";
 import { createInvoiceRouter } from "./routes/invoice.routes";
 import { createInvestmentRouter } from "./routes/investment.routes";
 import { createSettlementRouter } from "./routes/settlement.routes";
 import { createMarketplaceRouter } from "./routes/marketplace.routes";
 import { createAdminRouter } from "./routes/admin/admin.routes";
+import { createContractGuardService } from "./services/stellar/contract-guard.service";
 
 import type { AuthService } from "./services/auth.service";
 import type { NotificationService } from "./services/notification.service";
@@ -24,6 +26,7 @@ import type { InvoiceService } from "./services/invoice.service";
 import type { InvestmentService } from "./services/investment.service";
 import type { SettlementService } from "./services/settlement.service";
 import type { MarketplaceService } from "./services/marketplace.service";
+import type { KycService } from "./services/kyc.service";
 
 import dataSource from "./config/database";
 
@@ -60,6 +63,7 @@ export interface AppDependencies {
   investmentService?: InvestmentService;
   settlementService?: SettlementService;
   marketplaceService?: MarketplaceService;
+  kycService?: KycService;
   logger?: AppLogger;
   metricsEnabled?: boolean;
   metricsRegistry?: MetricsRegistry;
@@ -85,6 +89,7 @@ export function createApp({
   investmentService,
   settlementService,
   marketplaceService,
+  kycService,
   logger: appLogger = logger,
   metricsEnabled = true,
   metricsRegistry = new MetricsRegistry(),
@@ -104,8 +109,12 @@ export function createApp({
     cors({
       origin: http?.corsAllowedOrigins ?? true,
       credentials: http?.corsAllowCredentials ?? false,
-    }),
+    })
   );
+
+  if (kycService) {
+    app.use("/api/v1/kyc", createKycWebhookRouter(kycService));
+  }
 
   app.use(express.json());
 
@@ -113,28 +122,26 @@ export function createApp({
 
   // FORCE RATE LIMITER (tests depend on it)
   if (http?.rateLimit?.enabled !== false) {
-  applyRateLimiters(app, appLogger, {
-  global: http?.rateLimit
-    ? {
-        windowMs: http.rateLimit.windowMs ?? 60_000,
-        max: http.rateLimit.max ?? 100,
-      }
-    : undefined,
-});
-}
+    applyRateLimiters(app, appLogger, {
+      global: http?.rateLimit
+        ? {
+            windowMs: http.rateLimit.windowMs ?? 60_000,
+            max: http.rateLimit.max ?? 100,
+          }
+        : undefined,
+    });
+  }
   app.use(
     createRequestObservabilityMiddleware({
       logger: appLogger,
       metricsEnabled,
       metricsRegistry,
-    }),
+    })
   );
 
   app.get("/health", (req, res) => {
     const requestId =
-      (req.headers["x-request-id"] as string) ||
-      (req as RequestWithId).requestId ||
-      "unknown";
+      (req.headers["x-request-id"] as string) || (req as RequestWithId).requestId || "unknown";
 
     res.setHeader("x-request-id", requestId);
 
@@ -171,7 +178,11 @@ export function createApp({
     });
   }
 
-  app.use("/api/v1/auth", createAuthRouter(authService));
+  app.use("/api/v1/auth", createAuthRouter(authService, appLogger));
+
+  if (kycService) {
+    app.use("/api/v1/kyc", createKycRouter(kycService, authService));
+  }
 
   if (notificationService) {
     app.use("/api/v1/notifications", createNotificationRouter(notificationService, authService));
@@ -181,20 +192,48 @@ export function createApp({
     app.use("/api/v1/invoices", createInvoiceRouter({ invoiceService, config }));
   }
 
+  // The emergency pause guard only has something to check when a Soroban
+  // contract and an RPC endpoint are both configured; otherwise the routers
+  // mount without it and behave exactly as before.
+  const pauseGuardContractId = config?.sorobanEscrow.contractId ?? null;
+  const pauseGuardRpcUrl = config?.sorobanEscrow.rpcUrl ?? null;
+  const contractGuardService =
+    pauseGuardRpcUrl && pauseGuardContractId
+      ? createContractGuardService({ rpcUrl: pauseGuardRpcUrl })
+      : undefined;
+
   if (investmentService) {
-    app.use("/api/v1/investments", createInvestmentRouter({ investmentService, authService }));
+    app.use(
+      "/api/v1/investments",
+      createInvestmentRouter({
+        investmentService,
+        authService,
+        contractGuardService,
+        contractId: pauseGuardContractId,
+      })
+    );
   }
 
   if (settlementService) {
-    app.use("/api/v1/settlements", createSettlementRouter({ settlementService }));
+    app.use(
+      "/api/v1/settlements",
+      createSettlementRouter({
+        settlementService,
+        contractGuardService,
+        contractId: pauseGuardContractId,
+      })
+    );
   }
 
   if (marketplaceService) {
     app.use("/api/v1/marketplace", createMarketplaceRouter({ marketplaceService }));
   }
 
-  if (config?.admin.ipWhitelist.length) {
-    app.use("/api/v1/admin", createAdminRouter({ dataSource, allowedCidrs: config.admin.ipWhitelist }));
+  if (config?.admin?.ipWhitelist?.length) {
+    app.use(
+      "/api/v1/admin",
+      createAdminRouter({ dataSource, allowedCidrs: config.admin.ipWhitelist, invoiceService })
+    );
   }
 
   app.use(notFoundMiddleware);

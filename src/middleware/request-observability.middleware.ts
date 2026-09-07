@@ -49,7 +49,7 @@ function resolveRequestId(requestIdHeader: string | string[] | undefined): strin
 }
 
 export function createRequestObservabilityMiddleware(
-  dependencies: RequestObservabilityDependencies,
+  dependencies: RequestObservabilityDependencies
 ) {
   return (req: Request, res: Response, next: NextFunction): void => {
     const requestId = resolveRequestId(req.header("x-request-id"));

@@ -18,7 +18,26 @@ module.exports = {
   },
   verbose: true,
   moduleNameMapper: {
-    "^@/(.*)$": "<rootDir>/src/$1", // map @/ paths to src
+    "^@/(.*)$": "<rootDir>/src/$1",
   },
+  transform: {
+    "^.+\\.tsx?$": [
+      "ts-jest",
+      {
+        tsconfig: "tsconfig.json",
+      },
+    ],
+    "^.+\\.jsx?$": [
+      "ts-jest",
+      {
+        tsconfig: {
+          allowJs: true,
+        },
+      },
+    ],
+  },
+  transformIgnorePatterns: [
+    "node_modules/(?!.*(sanitize-html|htmlparser2|domhandler|domutils|domelementtype|dom-serializer|entities))",
+  ],
   setupFiles: ["tsconfig-paths/register"], // ensures TS path aliases work
 };

@@ -34,13 +34,14 @@ describe("InvestmentService", () => {
     investmentService = new InvestmentService(mockDataSource);
   });
 
-  const getMockInvoice = () => ({
-    id: "invoice-1",
-    sellerId: "seller-1",
-    amount: "1000.0000",
-    netAmount: "950.0000",
-    status: InvoiceStatus.PUBLISHED,
-  } as Invoice);
+  const getMockInvoice = () =>
+    ({
+      id: "invoice-1",
+      sellerId: "seller-1",
+      amount: "1000.0000",
+      netAmount: "950.0000",
+      status: InvoiceStatus.PUBLISHED,
+    }) as Invoice;
 
   it("should create a PENDING investment when within capacity", async () => {
     const mockInvoice = getMockInvoice();
@@ -89,9 +90,7 @@ describe("InvestmentService", () => {
   it("should reject investment if it exceeds capacity", async () => {
     const mockInvoice = getMockInvoice();
     mockQueryBuilder.getOne.mockResolvedValue(mockInvoice);
-    mockEntityManager.find.mockResolvedValue([
-      { investmentAmount: "500.0000" } as Investment,
-    ]);
+    mockEntityManager.find.mockResolvedValue([{ investmentAmount: "500.0000" } as Investment]);
 
     const input = {
       invoiceId: "invoice-1",
@@ -101,7 +100,10 @@ describe("InvestmentService", () => {
     };
 
     await expect(investmentService.createInvestment(input)).rejects.toThrow(
-      new ServiceError("INSUFFICIENT_CAPACITY", "Investment amount 500 exceeds remaining capacity 450"),
+      new ServiceError(
+        "INSUFFICIENT_CAPACITY",
+        "Investment amount 500 exceeds remaining capacity 450"
+      )
     );
   });
 
@@ -117,7 +119,7 @@ describe("InvestmentService", () => {
     };
 
     await expect(investmentService.createInvestment(input)).rejects.toThrow(
-      new ServiceError("SELF_DEALING", "Investors cannot invest in their own invoices"),
+      new ServiceError("SELF_DEALING", "Investors cannot invest in their own invoices")
     );
   });
 
@@ -130,7 +132,7 @@ describe("InvestmentService", () => {
     };
 
     await expect(investmentService.createInvestment(input)).rejects.toThrow(
-      new ServiceError("INVALID_AMOUNT", "Investment amount must be greater than zero"),
+      new ServiceError("INVALID_AMOUNT", "Investment amount must be greater than zero")
     );
   });
 });

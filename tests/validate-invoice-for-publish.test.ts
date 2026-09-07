@@ -71,7 +71,7 @@ describe("validateInvoiceForPublish", () => {
     const invoice = createInvoice({ dueDate: futureDate(-1) });
     const errors = validateInvoiceForPublish(invoice);
     expect(errors).toHaveLength(1);
-    expect(errors[0]).toMatchObject({ field: "dueDate", code: "DUE_DATE_TOO_SOON" });
+    expect(errors[0]).toMatchObject({ field: "dueDate", code: "DUE_DATE_IN_PAST" });
   });
 
   it("returns a validation error for a due date less than 24 hours away", () => {
@@ -97,7 +97,7 @@ describe("validateInvoiceForPublish", () => {
     const errors = validateInvoiceForPublish(invoice);
     expect(errors).toHaveLength(3);
     expect(errors.map((e) => e.code)).toEqual(
-      expect.arrayContaining(["FACE_VALUE_TOO_LOW", "DUE_DATE_TOO_SOON", "MISSING_DOCUMENT"]),
+      expect.arrayContaining(["FACE_VALUE_TOO_LOW", "DUE_DATE_IN_PAST", "MISSING_DOCUMENT"])
     );
   });
 
@@ -124,7 +124,7 @@ describe("validateInvoiceForPublish", () => {
     // Assert each error has the correct error code
     const errorCodes = errors.map((e) => e.code);
     expect(errorCodes).toContain("FACE_VALUE_TOO_LOW");
-    expect(errorCodes).toContain("DUE_DATE_TOO_SOON");
+    expect(errorCodes).toContain("DUE_DATE_IN_PAST");
     expect(errorCodes).toContain("MISSING_DOCUMENT");
 
     // Second call with the same invoice: should return the same errors (deterministic)

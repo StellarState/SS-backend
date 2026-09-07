@@ -2,7 +2,7 @@ import { Request, Response } from "express";
 import { DataSource } from "typeorm";
 import { User } from "@/models/User.model";
 import { KYCStatus } from "@/types/enums";
-import { truncateWalletAddress } from "@/lib/kyc";
+import { logKYCStatusChange } from "@/lib/kyc-status-log";
 import { logger } from "@/observability/logger";
 
 interface ApproveKYCBody {
@@ -10,7 +10,11 @@ interface ApproveKYCBody {
   reviewerId: string;
 }
 
-export async function approveKYC(req: Request<unknown, unknown, ApproveKYCBody>, res: Response, dataSource: DataSource) {
+export async function approveKYC(
+  req: Request<unknown, unknown, ApproveKYCBody>,
+  res: Response,
+  dataSource: DataSource
+) {
   try {
     const adminKey = req.headers["x-admin-key"];
     if (adminKey !== process.env.ADMIN_API_KEY) {
@@ -25,16 +29,22 @@ export async function approveKYC(req: Request<unknown, unknown, ApproveKYCBody>,
       return res.status(404).json({ error: "User not found" });
     }
 
+    // Captured before the update so the audit entry records what the status
+    // actually moved from, not what it moved to.
+    const previousStatus = user.kycStatus;
+    const reviewer = await userRepo.findOneBy({ id: reviewerId });
+
     await userRepo.update(userId, { kycStatus: KYCStatus.APPROVED });
 
     // Logged only after the DB update succeeds, so the audit trail never
     // records a decision that didn't actually persist.
-    const decidedAt = new Date().toISOString();
-    logger.info("KYC approval decision", {
-      wallet_address: truncateWalletAddress(user.stellarAddress),
-      decision: "approved",
-      reviewer_id: reviewerId,
-      decided_at: decidedAt,
+    logKYCStatusChange(logger, {
+      wallet: user.stellarAddress,
+      previousStatus,
+      newStatus: KYCStatus.APPROVED,
+      reviewerWallet: reviewer?.stellarAddress ?? reviewerId,
+      reviewerId,
+      action: "approve",
     });
 
     return res.json({ success: true });

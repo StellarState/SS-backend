@@ -1,6 +1,10 @@
 import type { Request, Response, NextFunction } from "express";
 import Joi from "joi";
-import type { MarketplaceService, MarketplaceFilters, PaginationOptions } from "../services/marketplace.service";
+import type {
+  MarketplaceService,
+  MarketplaceFilters,
+  PaginationOptions,
+} from "../services/marketplace.service";
 import { InvoiceStatus } from "../types/enums";
 import { HttpError } from "../utils/http-error";
 import { ServiceError } from "../utils/service-error";
@@ -8,10 +12,12 @@ import { ServiceError } from "../utils/service-error";
 const getInvoicesSchema = Joi.object({
   page: Joi.number().integer().min(1).default(1),
   limit: Joi.number().integer().min(1).max(100).default(20),
-  status: Joi.alternatives().try(
-    Joi.string().valid(...Object.values(InvoiceStatus)),
-    Joi.array().items(Joi.string().valid(...Object.values(InvoiceStatus))),
-  ).optional(),
+  status: Joi.alternatives()
+    .try(
+      Joi.string().valid(...Object.values(InvoiceStatus)),
+      Joi.array().items(Joi.string().valid(...Object.values(InvoiceStatus)))
+    )
+    .optional(),
   dueBefore: Joi.date().iso().optional(),
   minAmount: Joi.number().min(0).optional(),
   maxAmount: Joi.number().min(0).optional(),
@@ -35,11 +41,7 @@ export interface GetInvoicesRequest extends Request {
 
 export function createMarketplaceController(marketplaceService: MarketplaceService) {
   return {
-    async getInvoices(
-      req: GetInvoicesRequest,
-      res: Response,
-      next: NextFunction,
-    ): Promise<void> {
+    async getInvoices(req: GetInvoicesRequest, res: Response, next: NextFunction): Promise<void> {
       try {
         // Validate query parameters
         const { error, value } = getInvoicesSchema.validate(req.query, {
@@ -53,7 +55,11 @@ export function createMarketplaceController(marketplaceService: MarketplaceServi
 
         // Parse and normalize filters
         const filters: MarketplaceFilters = {
-          status: Array.isArray(value.status) ? value.status : value.status ? [value.status] : undefined,
+          status: Array.isArray(value.status)
+            ? value.status
+            : value.status
+              ? [value.status]
+              : undefined,
           dueBefore: value.dueBefore,
           minAmount: value.minAmount,
           maxAmount: value.maxAmount,

@@ -6,11 +6,16 @@ export function isValidInvoiceStateTransition(
 ): boolean {
   const validTransitions: Record<InvoiceStatus, InvoiceStatus[]> = {
     [InvoiceStatus.DRAFT]: [InvoiceStatus.PUBLISHED, InvoiceStatus.CANCELLED],
-    [InvoiceStatus.PENDING]: [InvoiceStatus.PUBLISHED, InvoiceStatus.CANCELLED],
+    [InvoiceStatus.PENDING]: [
+      InvoiceStatus.PUBLISHED,
+      InvoiceStatus.CANCELLED,
+      InvoiceStatus.REJECTED,
+    ],
     [InvoiceStatus.PUBLISHED]: [InvoiceStatus.FUNDED, InvoiceStatus.CANCELLED],
     [InvoiceStatus.FUNDED]: [InvoiceStatus.SETTLED, InvoiceStatus.CANCELLED],
     [InvoiceStatus.SETTLED]: [InvoiceStatus.CANCELLED],
     [InvoiceStatus.CANCELLED]: [],
+    [InvoiceStatus.REJECTED]: [],
   };
 
   if (!validTransitions[currentStatus]) {

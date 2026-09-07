@@ -2,7 +2,14 @@ import type { Request, Response, NextFunction } from "express";
 import sanitizeHtml from "sanitize-html";
 
 export function sanitizeString(input: string): string {
-  return sanitizeHtml(input, { allowedTags: [], allowedAttributes: {} }).trim();
+  const sanitize =
+    typeof sanitizeHtml === "function"
+      ? sanitizeHtml
+      : (sanitizeHtml as unknown as { default: typeof sanitizeHtml })?.default;
+  if (typeof sanitize === "function") {
+    return sanitize(input, { allowedTags: [], allowedAttributes: {} }).trim();
+  }
+  return input.replace(/<[^>]*>/g, "").trim();
 }
 
 function isBuffer(obj: unknown): obj is Buffer {
@@ -35,17 +42,19 @@ function sanitizeObject(obj: Record<string, unknown>): Record<string, unknown> {
   return sanitized;
 }
 
-export function sanitizeInputMiddleware(
-  req: Request,
-  _res: Response,
-  next: NextFunction,
-): void {
+export function sanitizeInputMiddleware(req: Request, _res: Response, next: NextFunction): void {
   if (req.body && typeof req.body === "object" && !isBuffer(req.body)) {
     req.body = sanitizeObject(req.body);
   }
 
   if (req.query && typeof req.query === "object") {
-    req.query = sanitizeObject(req.query as Record<string, unknown>);
+    const sanitizedQuery = sanitizeObject(req.query as Record<string, unknown>);
+    Object.defineProperty(req, "query", {
+      value: sanitizedQuery,
+      writable: true,
+      configurable: true,
+      enumerable: true,
+    });
   }
 
   next();

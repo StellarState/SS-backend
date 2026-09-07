@@ -22,6 +22,7 @@ export enum InvoiceStatus {
   FUNDED = "funded",
   SETTLED = "settled",
   CANCELLED = "cancelled",
+  REJECTED = "rejected",
 }
 
 export enum InvestmentStatus {
@@ -56,4 +57,5 @@ export enum NotificationType {
   PAYMENT = "payment",
   KYC = "kyc",
   SYSTEM = "system",
+  INVOICE_REJECTED = "invoice_rejected",
 }

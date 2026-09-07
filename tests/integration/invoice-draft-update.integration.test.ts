@@ -18,8 +18,7 @@ class InMemoryInvoiceRepository implements InvoiceRepositoryContract {
   async findOneBy(options: { id?: string; invoiceNumber?: string }) {
     for (const invoice of this.invoices.values()) {
       if (options.id && invoice.id === options.id) return invoice;
-      if (options.invoiceNumber && invoice.invoiceNumber === options.invoiceNumber)
-        return invoice;
+      if (options.invoiceNumber && invoice.invoiceNumber === options.invoiceNumber) return invoice;
     }
     return null;
   }
@@ -33,7 +32,7 @@ class InMemoryInvoiceRepository implements InvoiceRepositoryContract {
     return [...this.invoices.values()].filter(
       (inv) =>
         inv.sellerId === options.where.sellerId &&
-        (options.where.status == null || inv.status === options.where.status),
+        (options.where.status == null || inv.status === options.where.status)
     );
   }
 
@@ -63,10 +62,7 @@ function noopIpfsService(): IPFSService {
   } as unknown as IPFSService;
 }
 
-function seedDraftInvoice(
-  repo: InMemoryInvoiceRepository,
-  sellerId: string,
-): Invoice {
+function seedDraftInvoice(repo: InMemoryInvoiceRepository, sellerId: string): Invoice {
   const now = new Date();
   const invoice: Invoice = {
     id: crypto.randomUUID(),
@@ -81,6 +77,7 @@ function seedDraftInvoice(
     riskScore: null,
     status: InvoiceStatus.DRAFT,
     smartContractId: null,
+    rejectionReason: null,
     createdAt: now,
     updatedAt: now,
     deletedAt: null,
@@ -151,7 +148,7 @@ describe("Invoice draft update integration (issue #112)", () => {
         invoiceId: invoice.id,
         sellerId: sellerA,
         customerName: "Should Not Update",
-      }),
+      })
     ).rejects.toMatchObject({
       code: "invalid_invoice_status",
       statusCode: 400,
@@ -166,7 +163,7 @@ describe("Invoice draft update integration (issue #112)", () => {
         invoiceId: invoice.id,
         sellerId: sellerB,
         customerName: "Unauthorized Update",
-      }),
+      })
     ).rejects.toMatchObject({
       code: "unauthorized_invoice_access",
       statusCode: 403,

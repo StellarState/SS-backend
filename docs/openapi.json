@@ -38,7 +38,10 @@
             "example": "AAAA..."
           }
         },
-        "required": ["status", "contractId"]
+        "required": [
+          "status",
+          "contractId"
+        ]
       },
       "ErrorResponse": {
         "type": "object",
@@ -50,10 +53,101 @@
             "type": "string"
           }
         }
+      },
+      "BatchPublishRequest": {
+        "type": "object",
+        "required": [
+          "invoiceIds"
+        ],
+        "properties": {
+          "invoiceIds": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Ids of the draft invoices to publish."
+          }
+        }
+      },
+      "BatchPublishResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "example": true
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "published": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                },
+                "description": "The invoices that were published."
+              },
+              "count": {
+                "type": "integer",
+                "example": 3
+              }
+            }
+          }
+        }
+      },
+      "RevokeKYCRequest": {
+        "type": "object",
+        "required": [
+          "userId",
+          "reviewerId"
+        ],
+        "properties": {
+          "userId": {
+            "type": "string",
+            "description": "User whose approval is being withdrawn."
+          },
+          "reviewerId": {
+            "type": "string",
+            "description": "Admin performing the revocation."
+          },
+          "revocationReason": {
+            "type": "string",
+            "description": "Recorded in the KYC audit log."
+          }
+        }
       }
     }
   },
   "paths": {
+    "/api/v1/kyc/submit": {
+      "post": {
+        "summary": "Submit KYC verification",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "201": { "description": "Verification submitted" },
+          "401": { "description": "Authentication required" }
+        }
+      }
+    },
+    "/api/v1/kyc/webhook": {
+      "post": {
+        "summary": "Process a KYC provider webhook",
+        "description": "Updates verification and user KYC state after validating the provider HMAC signature.",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object" } } }
+        },
+        "responses": {
+          "204": { "description": "Webhook processed" },
+          "401": { "description": "Invalid webhook signature" }
+        }
+      }
+    },
+    "/api/v1/admin": {
+      "description": "Administrative routes are defined under this prefix."
+    },
     "/api/v1/invoices/{id}/escrow-status": {
       "get": {
         "summary": "Get Soroban Escrow Status",
@@ -107,6 +201,140 @@
           },
           "503": {
             "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/invoices/batch-publish": {
+      "post": {
+        "summary": "Batch publish draft invoices",
+        "description": "Publishes several of the authenticated seller's draft invoices to the marketplace in a single atomic transaction. Every invoice is validated first; if any one of them cannot be published the whole batch is rejected and no invoice changes state. The 400 response lists every rejected invoice and why.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchPublishRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "All invoices published",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchPublishResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Batch rejected; no invoice was changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "KYC approval required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/revoke-kyc": {
+      "post": {
+        "summary": "Revoke a user's KYC approval",
+        "description": "Withdraws a previously granted KYC approval, returning the user to the pending state so they can be reviewed again. Only an approved user can be revoked. Requires the admin API key and an allow-listed source IP.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RevokeKYCRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "KYC revoked"
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "User not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "User is not currently approved",
             "content": {
               "application/json": {
                 "schema": {

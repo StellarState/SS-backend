@@ -8,6 +8,7 @@ export interface PublicUser {
   email: string | null;
   userType: UserType;
   kycStatus: KYCStatus;
+  isKycVerified?: boolean;
   createdAt: Date;
   updatedAt: Date;
 }

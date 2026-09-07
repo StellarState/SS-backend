@@ -101,7 +101,7 @@ describe("MarketplaceService", () => {
           sort: "amount",
           sortOrder: "DESC",
         },
-        { page: 1, limit: 20 },
+        { page: 1, limit: 20 }
       );
     });
 
@@ -133,7 +133,7 @@ describe("MarketplaceService", () => {
 
       expect(mockMarketplaceRepository.findPublishedInvoices).toHaveBeenCalledWith(
         filters,
-        pagination,
+        pagination
       );
     });
 
@@ -148,7 +148,7 @@ describe("MarketplaceService", () => {
 
       expect(mockMarketplaceRepository.findPublishedInvoices).toHaveBeenCalledWith(
         expect.any(Object),
-        { page: 1, limit: 100 }, // Normalized values
+        { page: 1, limit: 100 } // Normalized values
       );
     });
 

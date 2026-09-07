@@ -2,9 +2,7 @@ import type { Request, Response } from "express";
 import type { NotificationService } from "../services/notification.service";
 import { NotificationType } from "../types/enums";
 
-export function createNotificationController(
-  notificationService: NotificationService,
-) {
+export function createNotificationController(notificationService: NotificationService) {
   return {
     list: async (req: Request, res: Response): Promise<void> => {
       const userId = req.user!.id;
@@ -12,7 +10,7 @@ export function createNotificationController(
       const page = Math.max(1, parseInt((req.query.page as string) ?? "1", 10) || 1);
       const limit = Math.min(
         100,
-        Math.max(1, parseInt((req.query.limit as string) ?? "20", 10) || 20),
+        Math.max(1, parseInt((req.query.limit as string) ?? "20", 10) || 20)
       );
 
       const readParam = req.query.read as string | undefined;
@@ -26,8 +24,8 @@ export function createNotificationController(
           ? (typeParam as NotificationType)
           : undefined;
 
-      const sortOrder =
-        (req.query.sort as string) === "asc" ? ("asc" as const) : ("desc" as const);
+      const sortOrder = (req.query.sort as string) === "asc" ? ("asc" as const) : ("desc" as const);
+      const cursor = req.query.cursor as string | undefined;
 
       const result = await notificationService.listNotifications({
         userId,
@@ -36,6 +34,7 @@ export function createNotificationController(
         read,
         type,
         sortOrder,
+        cursor,
       });
 
       res.status(200).json(result);

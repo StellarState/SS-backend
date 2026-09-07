@@ -34,9 +34,47 @@ class InMemoryUserRepository implements UserRepositoryContract {
   }
 
   async findByStellarAddress(stellarAddress: string) {
-    return (
-      [...this.users.values()].find((u) => u.stellarAddress === stellarAddress) ?? null
+    return [...this.users.values()].find((u) => u.stellarAddress === stellarAddress) ?? null;
+  }
+
+  async findByEmail(email: string) {
+    return [...this.users.values()].find((u) => u.email === email) ?? null;
+  }
+
+  async findAll(options?: {
+    skip?: number;
+    take?: number;
+    cursor?: string;
+    order?: "ASC" | "DESC";
+  }) {
+    let results = [...this.users.values()].filter((u) => !u.deletedAt);
+    results.sort((a, b) =>
+      options?.order === "ASC" ? a.id.localeCompare(b.id) : b.id.localeCompare(a.id)
     );
+    if (options?.cursor) {
+      const cursorIndex = results.findIndex((u) => u.id === options.cursor);
+      if (cursorIndex >= 0) {
+        results = results.slice(cursorIndex + 1);
+      }
+    }
+    if (options?.skip) {
+      results = results.slice(options.skip);
+    }
+    if (options?.take) {
+      results = results.slice(0, options.take);
+    }
+    return results;
+  }
+
+  async count(options?: { cursor?: string }): Promise<number> {
+    let results = [...this.users.values()].filter((u) => !u.deletedAt);
+    if (options?.cursor) {
+      const cursorIndex = results.findIndex((u) => u.id === options.cursor);
+      if (cursorIndex >= 0) {
+        results = results.slice(0, cursorIndex);
+      }
+    }
+    return results.length;
   }
 
   async save(user: Partial<InMemoryUser>) {
@@ -77,7 +115,7 @@ class InMemoryChallengeRepository implements ChallengeRepositoryContract {
   async findByAddressAndNonceHash(stellarAddress: string, nonceHash: string) {
     return (
       [...this.challenges.values()].find(
-        (c) => c.stellarAddress === stellarAddress && c.nonceHash === nonceHash,
+        (c) => c.stellarAddress === stellarAddress && c.nonceHash === nonceHash
       ) ?? null
     );
   }
@@ -87,6 +125,28 @@ class InMemoryChallengeRepository implements ChallengeRepositoryContract {
     if (!challenge || challenge.consumedAt) return false;
     challenge.consumedAt = consumedAt;
     return true;
+  }
+
+  async deleteExpired(before: Date): Promise<number> {
+    let count = 0;
+    for (const [id, challenge] of this.challenges.entries()) {
+      if (challenge.expiresAt < before || (challenge.consumedAt && challenge.consumedAt < before)) {
+        this.challenges.delete(id);
+        count++;
+      }
+    }
+    return count;
+  }
+
+  async countByStatus(status: "active" | "consumed" | "expired"): Promise<number> {
+    const now = new Date();
+    let count = 0;
+    for (const challenge of this.challenges.values()) {
+      if (status === "active" && !challenge.consumedAt && challenge.expiresAt > now) count++;
+      if (status === "consumed" && challenge.consumedAt) count++;
+      if (status === "expired" && !challenge.consumedAt && challenge.expiresAt <= now) count++;
+    }
+    return count;
   }
 }
 
@@ -143,7 +203,7 @@ function createTestServer(logger?: AppLogger) {
 async function completeAuthFlow(
   app: ReturnType<typeof createApp>,
   keypair: Keypair,
-  extraHeaders: Record<string, string> = {},
+  extraHeaders: Record<string, string> = {}
 ) {
   const challengeRes = await request(app)
     .post("/api/v1/auth/challenge")
@@ -171,7 +231,7 @@ describe("JWT issuance structured log (issue #111)", () => {
     expect(res.status).toBe(200);
 
     const jwtLog = captureLogger.entries.find(
-      (e) => e.level === "info" && e.message === "jwt.issued",
+      (e) => e.level === "info" && e.message === "jwt.issued"
     );
 
     expect(jwtLog).toBeDefined();

@@ -1,9 +1,7 @@
 import crypto from "crypto";
 import { Investment } from "../../src/models/Investment.model";
 import { Transaction } from "../../src/models/Transaction.model";
-import {
-  OrchestrateInvestmentFundingService,
-} from "../../src/services/stellar/orchestrate-investment-funding.service";
+import { OrchestrateInvestmentFundingService } from "../../src/services/stellar/orchestrate-investment-funding.service";
 import { InvestmentStatus, TransactionStatus, TransactionType } from "../../src/types/enums";
 
 function createInvestment(overrides: Partial<Investment> = {}): Investment {

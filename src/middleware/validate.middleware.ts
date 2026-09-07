@@ -14,8 +14,8 @@ export function validateBody(schema: ObjectSchema) {
         new HttpError(
           400,
           "Request validation failed.",
-          error.details.map((detail) => detail.message),
-        ),
+          error.details.map((detail) => detail.message)
+        )
       );
       return;
     }

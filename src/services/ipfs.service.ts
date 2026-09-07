@@ -60,6 +60,7 @@ export class IPFSService {
     // Log upload attempt before making the HTTP call
     const gateway = new URL(this.config.apiUrl).hostname;
     this.logger.info("IPFS document upload attempt", {
+      operation: "pin_file_to_ipfs",
       invoice_id: invoiceId,
       file_size_bytes: fileBuffer.length,
       gateway,
@@ -88,8 +89,13 @@ export class IPFSService {
         const errorReason = `${response.status} ${response.statusText}`;
 
         this.logger.warn("IPFS document upload failed", {
+          operation: "pin_file_to_ipfs",
           invoice_id: invoiceId,
           error_reason: errorReason,
+          attempt_number: attemptNumber,
+          retry_state: attemptNumber > 1 ? "retry" : "initial",
+          next_action: "retry_or_surface_failure",
+          terminal: true,
           failed_at: new Date().toISOString(),
         });
 
@@ -122,8 +128,13 @@ export class IPFSService {
       const errorMessage = error instanceof Error ? error.message : "Unknown error";
 
       this.logger.warn("IPFS document upload failed", {
+        operation: "pin_file_to_ipfs",
         invoice_id: invoiceId,
         error_reason: errorMessage,
+        attempt_number: attemptNumber,
+        retry_state: attemptNumber > 1 ? "retry" : "initial",
+        next_action: "retry_or_surface_failure",
+        terminal: true,
         failed_at: new Date().toISOString(),
       });
 

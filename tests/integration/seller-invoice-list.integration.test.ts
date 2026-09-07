@@ -52,7 +52,7 @@ describe("Seller invoice list integration: no cross-seller leakage", () => {
         email: "sellerA@test.com",
         userType: UserType.SELLER,
         kycStatus: KYCStatus.APPROVED,
-      }),
+      })
     );
 
     sellerB = await userRepository.save(
@@ -61,7 +61,7 @@ describe("Seller invoice list integration: no cross-seller leakage", () => {
         email: "sellerB@test.com",
         userType: UserType.SELLER,
         kycStatus: KYCStatus.APPROVED,
-      }),
+      })
     );
 
     const invoiceRepository = dataSource.getRepository(Invoice);
@@ -81,7 +81,7 @@ describe("Seller invoice list integration: no cross-seller leakage", () => {
           netAmount: "950.0000",
           dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
           ...overrides,
-        }),
+        })
       );
     }
 
@@ -99,7 +99,7 @@ describe("Seller invoice list integration: no cross-seller leakage", () => {
           netAmount: "1900.0000",
           dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
           ...overrides,
-        }),
+        })
       );
     }
 
@@ -128,7 +128,7 @@ describe("Seller invoice list integration: no cross-seller leakage", () => {
 
     const sellerBInvoiceNumbers = ["INV-B-001", "INV-B-002"];
     expect(
-      result.invoices.some((invoice) => sellerBInvoiceNumbers.includes(invoice.invoiceNumber)),
+      result.invoices.some((invoice) => sellerBInvoiceNumbers.includes(invoice.invoiceNumber))
     ).toBe(false);
   });
 
@@ -144,7 +144,7 @@ describe("Seller invoice list integration: no cross-seller leakage", () => {
 
     const statuses = result.invoices.map((invoice) => invoice.status);
     expect(statuses).toEqual(
-      expect.arrayContaining([InvoiceStatus.DRAFT, InvoiceStatus.PUBLISHED, InvoiceStatus.FUNDED]),
+      expect.arrayContaining([InvoiceStatus.DRAFT, InvoiceStatus.PUBLISHED, InvoiceStatus.FUNDED])
     );
   });
 
@@ -164,7 +164,7 @@ describe("Seller invoice list integration: no cross-seller leakage", () => {
 
     const statuses = result.invoices.map((invoice) => invoice.status);
     expect(statuses).toEqual(
-      expect.arrayContaining([InvoiceStatus.PUBLISHED, InvoiceStatus.SETTLED]),
+      expect.arrayContaining([InvoiceStatus.PUBLISHED, InvoiceStatus.SETTLED])
     );
   });
 });

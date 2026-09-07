@@ -1,5 +1,9 @@
 import crypto from "crypto";
-import { NotificationService, NotificationRepositoryContract, NotificationPage } from "../../src/services/notification.service";
+import {
+  NotificationService,
+  NotificationRepositoryContract,
+  NotificationPage,
+} from "../../src/services/notification.service";
 import { NotificationType } from "../../src/types/enums";
 
 interface StoredNotification {
@@ -15,7 +19,9 @@ interface StoredNotification {
 /**
  * In-memory notification repository for integration testing.
  */
-function createFakeNotificationRepository(): NotificationRepositoryContract & { store: StoredNotification[] } {
+function createFakeNotificationRepository(): NotificationRepositoryContract & {
+  store: StoredNotification[];
+} {
   const store: StoredNotification[] = [];
 
   return {
@@ -36,7 +42,9 @@ function createFakeNotificationRepository(): NotificationRepositoryContract & { 
     },
 
     async findByIdAndUserId(id, userId) {
-      return (store.find((n) => n.id === id && n.userId === userId) ?? null) as import("../../src/models/Notification.model").Notification | null;
+      return (store.find((n) => n.id === id && n.userId === userId) ?? null) as
+        | import("../../src/models/Notification.model").Notification
+        | null;
     },
 
     async markRead(id, userId) {
@@ -54,8 +62,16 @@ function createFakeNotificationRepository(): NotificationRepositoryContract & { 
       const page = options.page ?? 1;
       const limit = options.limit ?? 20;
       return {
-        data: filtered.slice((page - 1) * limit, page * limit) as import("../../src/models/Notification.model").Notification[],
-        meta: { total: filtered.length, page, limit, totalPages: Math.ceil(filtered.length / limit) },
+        data: filtered.slice(
+          (page - 1) * limit,
+          page * limit
+        ) as import("../../src/models/Notification.model").Notification[],
+        meta: {
+          total: filtered.length,
+          page,
+          limit,
+          totalPages: Math.ceil(filtered.length / limit),
+        },
       };
     },
   };
@@ -75,7 +91,7 @@ describe("Notification mark-as-read integration", () => {
       "wallet-1",
       NotificationType.INVOICE,
       "Invoice published",
-      "Your invoice has been published.",
+      "Your invoice has been published."
     );
 
     expect(notif.read).toBe(false);
@@ -106,7 +122,7 @@ describe("Notification mark-as-read integration", () => {
       "wallet-1",
       NotificationType.PAYMENT,
       "Settlement",
-      "Settlement complete.",
+      "Settlement complete."
     );
 
     await service.markNotificationRead(notif.id, "wallet-1");
@@ -120,11 +136,11 @@ describe("Notification mark-as-read integration", () => {
       "wallet-1",
       NotificationType.INVOICE,
       "Invoice",
-      "desc",
+      "desc"
     );
 
-    await expect(
-      service.markNotificationRead(notif.id, "wallet-2"),
-    ).rejects.toThrow("Notification not found");
+    await expect(service.markNotificationRead(notif.id, "wallet-2")).rejects.toThrow(
+      "Notification not found"
+    );
   });
 });

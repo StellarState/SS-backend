@@ -9,9 +9,10 @@ export function ipWhitelistMiddleware(allowedCidrs: string[]) {
       req.socket.remoteAddress;
 
     if (!clientIp || !ipRangeCheck(clientIp, allowedCidrs)) {
-      return res.status(403).json({
+      res.status(403).json({
         error: "Access denied: IP address not authorized.",
       });
+      return;
     }
 
     next();

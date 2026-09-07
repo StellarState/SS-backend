@@ -236,7 +236,7 @@ describe("VerifyPaymentService idempotency (transaction hash as dedup key)", () 
     expect(context.transactions.get(investmentA.id)).toHaveLength(1);
     expect(context.transactions.get(investmentB.id)).toHaveLength(1);
     expect(context.transactions.get(investmentA.id)?.[0].id).not.toBe(
-      context.transactions.get(investmentB.id)?.[0].id,
+      context.transactions.get(investmentB.id)?.[0].id
     );
   });
 });
