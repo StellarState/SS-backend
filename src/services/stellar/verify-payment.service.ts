@@ -4,6 +4,7 @@ import { Investment } from "../../models/Investment.model";
 import { Transaction } from "../../models/Transaction.model";
 import { InvestmentStatus, TransactionStatus, TransactionType } from "../../types/enums";
 import { ServiceError } from "../../utils/service-error";
+import type { AppLogger } from "../../observability/logger";
 import { normalizeHorizonPayment, normalizeHorizonTransaction } from "../../utils/horizon-response";
 
 type FetchLike = typeof fetch;
@@ -75,6 +76,7 @@ interface VerifyPaymentServiceDependencies {
   config: PaymentVerificationConfig;
   fetchImplementation?: FetchLike;
   sleep?: SleepFn;
+  logger?: AppLogger;
 }
 
 export class VerifyPaymentService {
@@ -83,6 +85,15 @@ export class VerifyPaymentService {
   private readonly config: PaymentVerificationConfig;
   private readonly fetchImplementation: FetchLike;
   private readonly sleep: SleepFn;
+  private readonly logger: AppLogger;
+
+  private static NOOP_LOGGER: AppLogger = {
+    debug: () => undefined,
+    info: () => undefined,
+    warn: () => undefined,
+    error: () => undefined,
+    child: () => VerifyPaymentService.NOOP_LOGGER,
+  };
 
   constructor(dependencies: VerifyPaymentServiceDependencies) {
     this.investmentReader = dependencies.investmentReader;
@@ -215,6 +226,18 @@ export class VerifyPaymentService {
 
       const savedTransaction = await unitOfWork.saveTransaction(transaction);
       await unitOfWork.saveInvestment(lockedInvestment);
+
+      // Structured log for accepted funding
+      this.logger.info("Investment funding accepted.", {
+        event: "investment_funding_accepted",
+        investment_id: lockedInvestment.id,
+        invoice_id: lockedInvestment.invoiceId,
+        wallet_id: lockedInvestment.investorId,
+        transaction_id: savedTransaction.id,
+        stellar_tx_hash: input.stellarTxHash,
+        operation_index: matchedPayment.operationIndex,
+        amount: lockedInvestment.investmentAmount,
+      });
 
       return {
         outcome: "verified" as const,

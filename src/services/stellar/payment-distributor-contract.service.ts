@@ -187,26 +187,47 @@ export class PaymentDistributorContractService {
       .build();
     const prepared = await this.rpcServer.prepareTransaction(transaction);
     prepared.sign(signer);
-    const submitted = await this.rpcServer.sendTransaction(prepared);
-    if (submitted.status === "ERROR")
-      throw new Error("Payment distribution transaction was rejected by Soroban RPC.");
 
-    for (let attempt = 0; attempt < this.confirmationAttempts; attempt++) {
-      const result = await this.rpcServer.getTransaction(submitted.hash);
-      if (result.status === "SUCCESS") {
-        this.logger.info("Payment distribution confirmed on-chain.", {
-          invoice_id: input.invoiceId,
-          transaction_hash: submitted.hash,
-        });
-        return {
-          transactionHash: submitted.hash,
-          ledger: "ledger" in result ? Number(result.ledger) : null,
-        };
+    // Submit and map Soroban RPC errors to ServiceError with retryability
+    try {
+      const submitted = await this.rpcServer.sendTransaction(prepared);
+      if (submitted.status === "ERROR") {
+        // Map to a ServiceError (non-retryable transaction rejection)
+        throw require("../stellar/soroban-error-mapper").mapSorobanError(submitted, {
+          contractId: this.contractId,
+        }).error;
       }
-      if (result.status === "FAILED")
-        throw new Error("Payment distribution transaction reverted on-chain.");
-      await new Promise((resolve) => setTimeout(resolve, this.confirmationPollMs));
+
+      for (let attempt = 0; attempt < this.confirmationAttempts; attempt++) {
+        const result = await this.rpcServer.getTransaction(submitted.hash);
+        if (result.status === "SUCCESS") {
+          this.logger.info("Payment distribution confirmed on-chain.", {
+            invoice_id: input.invoiceId,
+            transaction_hash: submitted.hash,
+          });
+          return {
+            transactionHash: submitted.hash,
+            ledger: "ledger" in result ? Number(result.ledger) : null,
+          };
+        }
+        if (result.status === "FAILED") {
+          throw require("../stellar/soroban-error-mapper").mapSorobanError(
+            { status: "FAILED" },
+            { contractId: this.contractId }
+          ).error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, this.confirmationPollMs));
+      }
+      throw new Error("Timed out waiting for payment distribution confirmation.");
+    } catch (err) {
+      // If it's already a ServiceError, rethrow; otherwise map and throw a sanitized ServiceError
+      if (err instanceof Error && (err as any).name === "ServiceError") throw err;
+      const mapper = require("../stellar/soroban-error-mapper");
+      const mapped = mapper.mapSorobanError(err, {
+        contractId: this.contractId,
+        invoiceId: input.invoiceId,
+      });
+      throw mapped.error;
     }
-    throw new Error("Timed out waiting for payment distribution confirmation.");
   }
 }

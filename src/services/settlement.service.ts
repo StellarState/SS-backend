@@ -11,6 +11,11 @@ import { decimalStringToScaledBigInt, scaledBigIntToDecimalString } from "../lib
 import { logInvoiceTransition } from "../lib/invoice-lifecycle-log";
 import { logSettlementCompletion } from "../lib/settlement-completion-log";
 import { logger } from "../observability/logger";
+import {
+  logSettlementStart,
+  logSettlementFailure,
+  logSettlementSuccess,
+} from "../lib/settlement-observability";
 import type { PaymentDistributorContractService } from "./stellar/payment-distributor-contract.service";
 
 // settlement.service.ts stores/computes amounts as decimal strings scaled by
@@ -64,26 +69,28 @@ export class SettlementService {
       throw new ServiceError("INVALID_PROCEEDS", "Settlement proceeds must be greater than zero");
     }
 
-    return await this.dataSource.transaction(async (transactionalEntityManager: EntityManager) => {
-      // 1. Lock the invoice row for update (if supported by the driver).
-      //    SQLite does not support row-level locking, so we fall back to a plain read.
-      let invoice: Invoice | null;
-      try {
-        invoice = await transactionalEntityManager
-          .createQueryBuilder(Invoice, "invoice")
-          .setLock("pessimistic_write")
-          .where("invoice.id = :id", { id: invoiceId })
-          .getOne();
-      } catch {
-        invoice = await transactionalEntityManager
-          .createQueryBuilder(Invoice, "invoice")
-          .where("invoice.id = :id", { id: invoiceId })
-          .getOne();
-      }
+    const startedAt = Date.now();
+    const startedAtIso = new Date(startedAt).toISOString();
+    logSettlementStart(logger, { invoiceId, actorWallet, startedAt: startedAtIso });
 
-      if (!invoice) {
-        throw new ServiceError("INVOICE_NOT_FOUND", "Invoice not found", 404);
-      }
+    try {
+      return await this.dataSource.transaction(
+        async (transactionalEntityManager: EntityManager) => {
+          // 1. Lock the invoice row for update (if supported by the driver).
+          //    SQLite does not support row-level locking, so we fall back to a plain read.
+          let invoice: Invoice | null;
+          try {
+            invoice = await transactionalEntityManager
+              .createQueryBuilder(Invoice, "invoice")
+              .setLock("pessimistic_write")
+              .where("invoice.id = :id", { id: invoiceId })
+              .getOne();
+          } catch {
+            invoice = await transactionalEntityManager
+              .createQueryBuilder(Invoice, "invoice")
+              .where("invoice.id = :id", { id: invoiceId })
+              .getOne();
+          }
 
       // 2. Validate invoice status
       if (invoice.status !== InvoiceStatus.FUNDED) {
@@ -93,11 +100,13 @@ export class SettlementService {
         );
       }
 
-      // 3. Find confirmed investments backing this invoice
-      const investments = await transactionalEntityManager.find(Investment, {
-        where: { invoiceId: invoice.id, status: InvestmentStatus.CONFIRMED },
-        relations: { investor: true },
-      });
+          // 2. Validate invoice status
+          if (invoice.status !== InvoiceStatus.FUNDED) {
+            throw new ServiceError(
+              "INVALID_INVOICE_STATUS",
+              `INVALID_INVOICE_STATUS: Cannot settle an invoice with status ${invoice.status}`
+            );
+          }
 
       if (investments.length === 0) {
         throw new ServiceError(
@@ -178,33 +187,17 @@ export class SettlementService {
         });
       }
 
-      // 5. Transition invoice to SETTLED
-      const previousStatus = invoice.status;
-      invoice.status = InvoiceStatus.SETTLED;
-      await transactionalEntityManager.save(Invoice, invoice);
-
-      logInvoiceTransition(logger, {
-        invoiceId: invoice.id,
-        fromState: previousStatus,
-        toState: InvoiceStatus.SETTLED,
-        actorWallet,
-        reason: "admin_settled",
+      logSettlementFailure(logger, {
+        invoiceId,
+        error: err,
+        durationMs,
+        distributionTxHash: undefined,
+        category,
+        retryable,
       });
 
-      logSettlementCompletion(logger, {
-        invoiceId: invoice.id,
-        totalProceedsStroops: proceedsScaled * DECIMAL_SCALE_TO_STROOP_FACTOR,
-        investorCount: settlements.length,
-      });
-
-      return {
-        invoiceId: invoice.id,
-        status: InvoiceStatus.SETTLED as const,
-        proceeds: proceeds.toFixed(4),
-        settlements,
-        distributionTransactionHash,
-      };
-    });
+      throw err;
+    }
   }
 }
 

@@ -183,9 +183,10 @@ export class ReconcilePendingStellarStateWorker {
           const classification = classifyReconciliationError(error, attempt);
 
           this.logger.warn("Failed to reconcile pending Stellar state.", {
-            investmentId: candidate.investmentId,
-            stellarTxHash: candidate.stellarTxHash,
-            operationIndex: candidate.operationIndex,
+            event: "investment_funding_failed",
+            investment_id: candidate.investmentId,
+            stellar_tx_hash: candidate.stellarTxHash,
+            operation_index: candidate.operationIndex,
             source: candidate.source,
             errorCode: error instanceof ServiceError ? error.code : undefined,
             retryable: classification.retryable,
