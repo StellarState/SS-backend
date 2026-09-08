@@ -2,7 +2,7 @@ import { Request, Response } from "express";
 import { DataSource } from "typeorm";
 import { User } from "@/models/User.model";
 import { KYCStatus } from "@/types/enums";
-import { logKYCStatusChange } from "@/lib/kyc-status-log";
+import { logKYCStatusChange, logKYCReviewFailure } from "@/lib/kyc-status-log";
 import { logger } from "@/observability/logger";
 
 interface RejectKYCBody {
@@ -18,7 +18,16 @@ export async function rejectKYC(
 ) {
   try {
     const adminKey = req.headers["x-admin-key"];
+    const correlationId = req.headers["x-request-id"] as string | undefined;
+
     if (adminKey !== process.env.ADMIN_API_KEY) {
+      logKYCReviewFailure(logger, {
+        userId: req.body?.userId,
+        reviewerId: req.body?.reviewerId,
+        action: "reject",
+        failureCategory: "unauthorized",
+        correlationId,
+      });
       return res.status(401).json({ error: "Unauthorized" });
     }
 
@@ -27,6 +36,13 @@ export async function rejectKYC(
     const userRepo = dataSource.getRepository(User);
     const user = await userRepo.findOneBy({ id: userId });
     if (!user) {
+      logKYCReviewFailure(logger, {
+        userId,
+        reviewerId,
+        action: "reject",
+        failureCategory: "user_not_found",
+        correlationId,
+      });
       return res.status(404).json({ error: "User not found" });
     }
 
@@ -51,6 +67,16 @@ export async function rejectKYC(
 
     return res.json({ success: true });
   } catch (err: unknown) {
+    const correlationId = req.headers["x-request-id"] as string | undefined;
+    logKYCReviewFailure(logger, {
+      userId: req.body?.userId,
+      reviewerId: req.body?.reviewerId,
+      action: "reject",
+      failureCategory: "database_error",
+      correlationId,
+      errorDetails: err instanceof Error ? err.message : String(err),
+    });
+
     const appErr = err as { status?: number; code?: string; message?: string };
     return res.status(appErr.status ?? 500).json({
       error: {
