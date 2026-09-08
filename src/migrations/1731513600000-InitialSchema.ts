@@ -145,6 +145,7 @@ export class InitialSchema1731513600000 implements MigrationInterface {
       CREATE INDEX IF NOT EXISTS "idx_users_user_type" ON "users" ("userType");
       CREATE INDEX IF NOT EXISTS "idx_users_kyc_status" ON "users" ("kycStatus");
       CREATE INDEX IF NOT EXISTS "idx_users_email" ON "users" ("email");
+      CREATE INDEX IF NOT EXISTS "idx_users_user_type_kyc_status" ON "users" ("userType", "kycStatus");
     `);
   }
 
