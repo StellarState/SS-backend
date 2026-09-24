@@ -8,11 +8,19 @@ import { createInvoiceController } from "../controllers/invoice.controller";
 import { authenticateJWT, requireKYC } from "../middleware/auth.middleware";
 import { createWalletRateLimiter } from "../middleware/rate-limit-wallet.middleware";
 import { HttpError } from "../utils/http-error";
+import { ServiceError } from "../utils/service-error";
+import type { ExtensionRequestService } from "../services/extension-request.service";
+import type { AuthenticatedRequest } from "../types/auth";
 
 export interface InvoiceRouterDependencies {
   invoiceService: InvoiceService;
   config: AppConfig;
+  extensionRequestService?: ExtensionRequestService;
 }
+
+const requestExtensionSchema = Joi.object({
+  proposedDeadline: Joi.date().iso().required(),
+});
 
 /**
  * Joi schemas for invoice validation
@@ -120,6 +128,7 @@ function validateQuery(schema: Joi.Schema) {
 export function createInvoiceRouter({
   invoiceService,
   config,
+  extensionRequestService,
 }: InvoiceRouterDependencies): Router {
   const router = Router();
   const controller = createInvoiceController(invoiceService);
@@ -213,6 +222,34 @@ export function createInvoiceRouter({
     upload.single("document"),
     controller.uploadDocument,
   );
+
+  // POST /api/v1/invoices/:id/extension-request - Request a funding deadline extension
+  if (extensionRequestService) {
+    router.post(
+      "/:id/extension-request",
+      authenticateJWT,
+      validateBody(requestExtensionSchema),
+      async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+        try {
+          if (!req.user) {
+            throw new HttpError(401, "Authentication required");
+          }
+          const request = await extensionRequestService.requestExtension({
+            invoiceId: String(req.params.id),
+            requestedBy: req.user.id,
+            proposedDeadline: new Date(req.body.proposedDeadline),
+          });
+          res.status(201).json({ success: true, data: request });
+        } catch (err) {
+          if (err instanceof ServiceError) {
+            next(new HttpError(err.statusCode, err.message));
+            return;
+          }
+          next(err);
+        }
+      },
+    );
+  }
 
   return router;
 }
