@@ -14,17 +14,12 @@ import { createNotificationRouter } from "./routes/notification.routes";
 import { createInvoiceRouter } from "./routes/invoice.routes";
 import { createInvestmentRouter } from "./routes/investment.routes";
 import { createSettlementRouter } from "./routes/settlement.routes";
-import { createInvestorsRouter } from "./routes/investors.routes";
-import { createPortfolioRouter } from "./routes/portfolio.routes";
 
 import type { AuthService } from "./services/auth.service";
 import type { NotificationService } from "./services/notification.service";
 import type { InvoiceService } from "./services/invoice.service";
 import type { InvestmentService } from "./services/investment.service";
 import type { SettlementService } from "./services/settlement.service";
-import type { AcknowledgementService } from "./services/acknowledgement.service";
-import type { ExtensionRequestService } from "./services/extension-request.service";
-import type { PortfolioService } from "./services/portfolio.service";
 
 import dataSource from "./config/database";
 
@@ -60,9 +55,6 @@ export interface AppDependencies {
   invoiceService?: InvoiceService;
   investmentService?: InvestmentService;
   settlementService?: SettlementService;
-  acknowledgementService?: AcknowledgementService;
-  extensionRequestService?: ExtensionRequestService;
-  portfolioService?: PortfolioService;
   logger?: AppLogger;
   metricsEnabled?: boolean;
   metricsRegistry?: MetricsRegistry;
@@ -87,9 +79,6 @@ export function createApp({
   invoiceService,
   investmentService,
   settlementService,
-  acknowledgementService,
-  extensionRequestService,
-  portfolioService,
   logger: appLogger = logger,
   metricsEnabled = true,
   metricsRegistry = new MetricsRegistry(),
@@ -181,32 +170,15 @@ export function createApp({
   }
 
   if (invoiceService && config) {
-    app.use(
-      "/api/v1/invoices",
-      createInvoiceRouter({ invoiceService, config, extensionRequestService }),
-    );
+    app.use("/api/v1/invoices", createInvoiceRouter({ invoiceService, config }));
   }
 
   if (investmentService) {
-    app.use(
-      "/api/v1/investments",
-      createInvestmentRouter({ investmentService, authService, acknowledgementService }),
-    );
+    app.use("/api/v1/investments", createInvestmentRouter({ investmentService, authService }));
   }
 
   if (settlementService) {
     app.use("/api/v1/settlements", createSettlementRouter({ settlementService }));
-  }
-
-  if (acknowledgementService) {
-    app.use(
-      "/api/v1/investors",
-      createInvestorsRouter({ acknowledgementService, authService }),
-    );
-  }
-
-  if (portfolioService) {
-    app.use("/api/v1/portfolio", createPortfolioRouter({ portfolioService, authService }));
   }
 
   app.use(notFoundMiddleware);
