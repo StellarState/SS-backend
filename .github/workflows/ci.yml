@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          sparse-checkout-cone-mode: false
+          sparse-checkout: ''
           ref: ${{ github.event.pull_request.head.sha }}
       - uses: actions/setup-node@v4
         with:
@@ -36,7 +36,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          sparse-checkout-cone-mode: false
+          sparse-checkout: ''
           ref: ${{ github.event.pull_request.head.sha }}
       - uses: actions/setup-node@v4
         with:
@@ -57,7 +57,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          sparse-checkout-cone-mode: false
+          sparse-checkout: ''
           ref: ${{ github.event.pull_request.head.sha }}
       - uses: actions/setup-node@v4
         with:
@@ -95,7 +95,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          sparse-checkout-cone-mode: false
+          sparse-checkout: ''
           ref: ${{ github.event.pull_request.head.sha }}
       - name: Setup Node.js
         uses: actions/setup-node@v4
