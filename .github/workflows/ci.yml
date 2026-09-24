@@ -11,6 +11,9 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: SS-backend
     steps:
       - name: Checkout
         run: |
@@ -33,6 +36,9 @@ jobs:
     name: Type Check
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: SS-backend
     steps:
       - name: Checkout
         run: |
@@ -55,6 +61,9 @@ jobs:
     name: Build
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: SS-backend
     steps:
       - name: Checkout
         run: |
@@ -93,6 +102,9 @@ jobs:
           --health-retries 5
           --health-start-period 10s
 
+    defaults:
+      run:
+        working-directory: SS-backend
     steps:
       - name: Checkout
         run: |
