@@ -12,11 +12,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          sparse-checkout: ''
-          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Checkout
+        run: |
+          git clone --depth=0 https://github.com/StellarState/SS-backend.git
+          cd SS-backend
+          git fetch origin ${{ github.event.pull_request.head.sha }}
+          git checkout ${{ github.event.pull_request.head.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -33,11 +34,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          sparse-checkout: ''
-          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Checkout
+        run: |
+          git clone --depth=0 https://github.com/StellarState/SS-backend.git
+          cd SS-backend
+          git fetch origin ${{ github.event.pull_request.head.sha }}
+          git checkout ${{ github.event.pull_request.head.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -54,11 +56,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          sparse-checkout: ''
-          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Checkout
+        run: |
+          git clone --depth=0 https://github.com/StellarState/SS-backend.git
+          cd SS-backend
+          git fetch origin ${{ github.event.pull_request.head.sha }}
+          git checkout ${{ github.event.pull_request.head.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -92,11 +95,11 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          sparse-checkout: ''
-          ref: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git clone --depth=0 https://github.com/StellarState/SS-backend.git
+          cd SS-backend
+          git fetch origin ${{ github.event.pull_request.head.sha }}
+          git checkout ${{ github.event.pull_request.head.sha }}
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
