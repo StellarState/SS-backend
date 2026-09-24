@@ -14,7 +14,7 @@ jobs:
     steps:
       - name: Checkout
         run: |
-          git clone --depth=0 https://github.com/StellarState/SS-backend.git
+          git clone --no-depth https://github.com/StellarState/SS-backend.git
           cd SS-backend
           git fetch origin ${{ github.event.pull_request.head.sha }}
           git checkout ${{ github.event.pull_request.head.sha }}
@@ -36,7 +36,7 @@ jobs:
     steps:
       - name: Checkout
         run: |
-          git clone --depth=0 https://github.com/StellarState/SS-backend.git
+          git clone --no-depth https://github.com/StellarState/SS-backend.git
           cd SS-backend
           git fetch origin ${{ github.event.pull_request.head.sha }}
           git checkout ${{ github.event.pull_request.head.sha }}
@@ -58,7 +58,7 @@ jobs:
     steps:
       - name: Checkout
         run: |
-          git clone --depth=0 https://github.com/StellarState/SS-backend.git
+          git clone --no-depth https://github.com/StellarState/SS-backend.git
           cd SS-backend
           git fetch origin ${{ github.event.pull_request.head.sha }}
           git checkout ${{ github.event.pull_request.head.sha }}
@@ -96,7 +96,7 @@ jobs:
     steps:
       - name: Checkout
         run: |
-          git clone --depth=0 https://github.com/StellarState/SS-backend.git
+          git clone --no-depth https://github.com/StellarState/SS-backend.git
           cd SS-backend
           git fetch origin ${{ github.event.pull_request.head.sha }}
           git checkout ${{ github.event.pull_request.head.sha }}
