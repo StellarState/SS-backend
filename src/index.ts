@@ -22,6 +22,7 @@ import { createInvestmentService } from "./services/investment.service";
 import { createSettlementService } from "./services/settlement.service";
 import { createMarketplaceService } from "./services/marketplace.service";
 import { KycService } from "./services/kyc.service";
+import { createTransactionService } from "./services/transaction.service";
 import { PaymentDistributorContractService } from "./services/stellar/payment-distributor-contract.service";
 import { getSorobanConfig } from "./config/stellar";
 
@@ -76,6 +77,7 @@ export async function bootstrap(): Promise<{ server: Server }> {
   );
   const marketplaceService = createMarketplaceService(dataSource);
   const kycService = new KycService(dataSource, config.kyc.webhookSecret ?? "", logger);
+  const transactionService = createTransactionService(dataSource);
 
   const app = createApp({
     authService,
@@ -85,6 +87,7 @@ export async function bootstrap(): Promise<{ server: Server }> {
     settlementService,
     marketplaceService,
     kycService,
+    transactionService,
     config,
     logger,
     metricsEnabled: config.observability.metricsEnabled,
