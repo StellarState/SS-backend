@@ -22,10 +22,10 @@ const USER_VALIDATION_CONSTRAINTS = Object.freeze({
 });
 
 /** Columns used by profile lookups; relations are loaded explicitly by callers that need them. */
-export const USER_PROFILE_SELECT = [
+export const USER_PROFILE_SELECT: Array<keyof User> = [
   "id", "stellarAddress", "email", "userType", "kycStatus",
   "isKycVerified", "createdAt", "updatedAt", "deletedAt",
-] as const;
+];
 
 @Entity("users")
 @Index("idx_users_user_type_kyc_status", ["userType", "kycStatus"])
