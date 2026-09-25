@@ -19,6 +19,7 @@ import {
   logSettlementFailure,
   logSettlementSuccess,
 } from "../lib/settlement-observability";
+import type { InvoiceTransitionReason } from "../lib/invoice-lifecycle-log";
 import type { PaymentDistributorContractService } from "./stellar/payment-distributor-contract.service";
 
 // settlement.service.ts stores/computes amounts as decimal strings scaled by
@@ -31,6 +32,8 @@ export interface SettleInvoiceInput {
   invoiceId: string;
   proceeds: string;
   actorWallet: string;
+  /** Recorded in the status history; defaults to `admin_settled`. */
+  trigger?: InvoiceTransitionReason;
 }
 
 export interface PaymentDistributorSettlementConfig {
@@ -66,7 +69,7 @@ export class SettlementService {
    * pro-rata to their share of the invoice's face value.
    */
   async settleInvoice(input: SettleInvoiceInput): Promise<SettleInvoiceResult> {
-    const { invoiceId, proceeds: proceedsInput, actorWallet } = input;
+    const { invoiceId, proceeds: proceedsInput, actorWallet, trigger = "admin_settled" } = input;
 
     const proceeds = new Decimal(proceedsInput);
     if (proceeds.isNegative() || proceeds.isZero()) {
@@ -201,7 +204,7 @@ export class SettlementService {
             entityManagerTransitionStore(transactionalEntityManager),
             invoice,
             InvoiceStatus.SETTLED,
-            { actor: { role: "system", wallet: actorWallet }, trigger: "admin_settled" }
+            { actor: { role: "system", wallet: actorWallet }, trigger }
           );
 
           return {
