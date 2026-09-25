@@ -130,3 +130,18 @@ export function checkKycVerified(req: Request, _res: Response, next: NextFunctio
   }
   next();
 }
+
+export function requireInvestor(req: Request, _res: Response, next: NextFunction): void {
+  const user = (req as AuthenticatedRequest).user;
+  if (!user) {
+    next(new HttpError(401, "Authentication required"));
+    return;
+  }
+
+  if (user.userType !== UserType.INVESTOR && user.userType !== UserType.BOTH) {
+    next(new HttpError(403, "Investor access required"));
+    return;
+  }
+
+  next();
+}

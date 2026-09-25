@@ -1,7 +1,12 @@
 import { DataSource, Repository } from "typeorm";
+import express from "express";
+import request from "supertest";
 import { InvestmentService } from "../../src/services/investment.service";
+import { createInvestorPortfolioRouter } from "../../src/routes/investment.routes";
+import type { AuthService } from "../../src/services/auth.service";
 import { Investment } from "../../src/models/Investment.model";
-import { InvestmentStatus } from "../../src/types/enums";
+import { Invoice } from "../../src/models/Invoice.model";
+import { InvestmentStatus, UserType } from "../../src/types/enums";
 
 describe("Investor dashboard aggregate", () => {
   let mockRepository: jest.Mocked<Repository<Investment>>;
@@ -157,5 +162,139 @@ describe("Investor dashboard aggregate", () => {
       settledReturns: "0.0000",
       failedCount: 0,
     });
+  });
+
+  it("builds a sorted portfolio with active positions and settled payouts", async () => {
+    const seller = {
+      name: " Acme Seller ",
+      email: "seller@example.com",
+      stellarAddress: "GSELLER",
+    };
+    const investments = [
+      seedInvestment({
+        id: "inv-active-later",
+        invoiceId: "invoice-later",
+        investmentAmount: "1000.0000",
+        expectedReturn: "1100.0000",
+        status: InvestmentStatus.PENDING,
+        invoice: {
+          id: "invoice-later",
+          seller,
+          dueDate: new Date("2026-02-02T00:00:00.000Z"),
+        } as unknown as Invoice,
+        updatedAt: new Date("2026-02-01T00:00:00.000Z"),
+      }),
+      seedInvestment({
+        id: "inv-active-earlier",
+        invoiceId: "invoice-earlier",
+        investmentAmount: "500.0000",
+        expectedReturn: "550.0000",
+        status: InvestmentStatus.CONFIRMED,
+        invoice: {
+          id: "invoice-earlier",
+          seller,
+          dueDate: new Date("2026-02-01T00:00:00.000Z"),
+        } as unknown as Invoice,
+        updatedAt: new Date("2026-02-01T00:00:00.000Z"),
+      }),
+      seedInvestment({
+        id: "inv-settled",
+        invoiceId: "invoice-settled",
+        investmentAmount: "700.0000",
+        expectedReturn: "800.0000",
+        actualReturn: "800.0000",
+        status: InvestmentStatus.SETTLED,
+        invoice: {
+          id: "invoice-settled",
+          seller,
+          dueDate: new Date("2026-01-01T00:00:00.000Z"),
+        } as unknown as Invoice,
+        updatedAt: new Date("2026-02-03T00:00:00.000Z"),
+      }),
+    ];
+
+    mockRepository.find.mockResolvedValue(investments);
+
+    const portfolio = await investmentService.getInvestorPortfolio(walletAId);
+
+    expect(portfolio).toEqual({
+      totalInvested: "2200.0000",
+      expectedReturn: "2450.0000",
+      settledPayouts: "800.0000",
+      unrealisedYield: "150.0000",
+      positions: [
+        {
+          invoiceId: "invoice-earlier",
+          sellerName: "Acme Seller",
+          amountInvested: "500.0000",
+          expectedPayout: "550.0000",
+          status: InvestmentStatus.CONFIRMED,
+          fundingDeadline: new Date("2026-02-01T00:00:00.000Z"),
+        },
+        {
+          invoiceId: "invoice-later",
+          sellerName: "Acme Seller",
+          amountInvested: "1000.0000",
+          expectedPayout: "1100.0000",
+          status: InvestmentStatus.PENDING,
+          fundingDeadline: new Date("2026-02-02T00:00:00.000Z"),
+        },
+      ],
+      payouts: [
+        {
+          invoiceId: "invoice-settled",
+          amountInvested: "700.0000",
+          amountReceived: "800.0000",
+          yield: "100.0000",
+          settledAt: new Date("2026-02-03T00:00:00.000Z"),
+        },
+      ],
+    });
+  });
+
+  it("exposes the portfolio through the authenticated investor route", async () => {
+    mockRepository.find.mockResolvedValue([]);
+    const authService = {
+      getCurrentUser: jest.fn().mockResolvedValue({
+        id: walletAId,
+        userType: UserType.INVESTOR,
+      }),
+    } as unknown as AuthService;
+    const app = express();
+    app.use("/api/v1/investor", createInvestorPortfolioRouter({ investmentService, authService }));
+
+    const response = await request(app)
+      .get("/api/v1/investor/portfolio")
+      .set("Authorization", "Bearer investor-token")
+      .expect(200);
+
+    expect(authService.getCurrentUser).toHaveBeenCalledWith("investor-token");
+    expect(response.body).toEqual({
+      success: true,
+      data: {
+        totalInvested: "0.0000",
+        expectedReturn: "0.0000",
+        settledPayouts: "0.0000",
+        unrealisedYield: "0.0000",
+        positions: [],
+        payouts: [],
+      },
+    });
+  });
+
+  it("rejects non-investor users from the portfolio route", async () => {
+    const authService = {
+      getCurrentUser: jest.fn().mockResolvedValue({
+        id: "seller-id",
+        userType: UserType.SELLER,
+      }),
+    } as unknown as AuthService;
+    const app = express();
+    app.use("/api/v1/investor", createInvestorPortfolioRouter({ investmentService, authService }));
+
+    await request(app)
+      .get("/api/v1/investor/portfolio")
+      .set("Authorization", "Bearer seller-token")
+      .expect(403);
   });
 });

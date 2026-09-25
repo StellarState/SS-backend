@@ -126,9 +126,57 @@ export interface InvestorAnalytics {
   monthlyPerformance: MonthlyYieldMetric[];
 }
 
+export interface InvestorPortfolioPosition {
+  invoiceId: string;
+  sellerName: string;
+  amountInvested: string;
+  expectedPayout: string;
+  status: InvestmentStatus;
+  fundingDeadline: Date;
+}
+
+export interface InvestorPortfolioPayout {
+  invoiceId: string;
+  amountInvested: string;
+  amountReceived: string;
+  yield: string;
+  settledAt: Date;
+}
+
+export interface InvestorPortfolio {
+  totalInvested: string;
+  expectedReturn: string;
+  settledPayouts: string;
+  unrealisedYield: string;
+  positions: InvestorPortfolioPosition[];
+  payouts: InvestorPortfolioPayout[];
+}
+
 const ACTIVE_INVESTMENT_STATUSES = [InvestmentStatus.PENDING, InvestmentStatus.CONFIRMED];
 const SETTLED_INVESTMENT_STATUSES = [InvestmentStatus.SETTLED];
 const FAILED_INVESTMENT_STATUSES = [InvestmentStatus.CANCELLED];
+
+interface PortfolioSeller {
+  name?: string | null;
+  email?: string | null;
+  stellarAddress?: string | null;
+}
+
+function portfolioDecimal(value: string | number | null | undefined): Decimal {
+  return new Decimal(value ?? 0);
+}
+
+function portfolioDate(value: Date | string | null | undefined): Date {
+  const date =
+    value instanceof Date ? new Date(value.getTime()) : value ? new Date(value) : new Date(0);
+  return Number.isNaN(date.getTime()) ? new Date(0) : date;
+}
+
+function portfolioSellerName(seller: PortfolioSeller | undefined): string {
+  return (
+    seller?.name?.trim() || seller?.email?.trim() || seller?.stellarAddress || "Unknown seller"
+  );
+}
 
 export class InvestmentService {
   constructor(
@@ -344,6 +392,77 @@ export class InvestmentService {
       weightedAverageApy,
       statusDistribution,
       monthlyPerformance,
+    };
+  }
+
+  async getInvestorPortfolio(investorId: string): Promise<InvestorPortfolio> {
+    const investments = await this.dataSource.getRepository(Investment).find({
+      where: { investorId },
+      relations: ["invoice", "invoice.seller"],
+    });
+
+    let totalInvested = new Decimal(0);
+    let expectedReturn = new Decimal(0);
+    let settledPayouts = new Decimal(0);
+    let unrealisedYield = new Decimal(0);
+    const positions: InvestorPortfolioPosition[] = [];
+    const payouts: InvestorPortfolioPayout[] = [];
+
+    for (const investment of investments) {
+      const amount = portfolioDecimal(investment.investmentAmount);
+      const expected = portfolioDecimal(investment.expectedReturn);
+      const invoice = investment.invoice;
+      const seller = invoice?.seller as PortfolioSeller | undefined;
+
+      totalInvested = totalInvested.plus(amount);
+      expectedReturn = expectedReturn.plus(expected);
+
+      if (ACTIVE_INVESTMENT_STATUSES.includes(investment.status)) {
+        unrealisedYield = unrealisedYield.plus(expected.minus(amount));
+        positions.push({
+          invoiceId: investment.invoiceId,
+          sellerName: portfolioSellerName(seller),
+          amountInvested: amount.toFixed(4),
+          expectedPayout: expected.toFixed(4),
+          status: investment.status,
+          fundingDeadline: portfolioDate(invoice?.dueDate),
+        });
+      }
+
+      if (SETTLED_INVESTMENT_STATUSES.includes(investment.status)) {
+        const received =
+          investment.actualReturn === null || investment.actualReturn === undefined
+            ? new Decimal(0)
+            : portfolioDecimal(investment.actualReturn);
+        settledPayouts = settledPayouts.plus(received);
+        payouts.push({
+          invoiceId: investment.invoiceId,
+          amountInvested: amount.toFixed(4),
+          amountReceived: received.toFixed(4),
+          yield: received.minus(amount).toFixed(4),
+          settledAt: portfolioDate(investment.updatedAt ?? invoice?.updatedAt),
+        });
+      }
+    }
+
+    positions.sort(
+      (left, right) =>
+        left.fundingDeadline.getTime() - right.fundingDeadline.getTime() ||
+        left.invoiceId.localeCompare(right.invoiceId)
+    );
+    payouts.sort(
+      (left, right) =>
+        right.settledAt.getTime() - left.settledAt.getTime() ||
+        left.invoiceId.localeCompare(right.invoiceId)
+    );
+
+    return {
+      totalInvested: totalInvested.toFixed(4),
+      expectedReturn: expectedReturn.toFixed(4),
+      settledPayouts: settledPayouts.toFixed(4),
+      unrealisedYield: unrealisedYield.toFixed(4),
+      positions,
+      payouts,
     };
   }
 
