@@ -64,6 +64,7 @@ export interface AppDependencies {
   settlementService?: SettlementService;
   marketplaceService?: MarketplaceService;
   kycService?: KycService;
+  invoiceEscrowContractService?: import("./services/stellar/invoice-escrow-contract.service").InvoiceEscrowContractService;
   logger?: AppLogger;
   metricsEnabled?: boolean;
   metricsRegistry?: MetricsRegistry;
@@ -90,6 +91,7 @@ export function createApp({
   settlementService,
   marketplaceService,
   kycService,
+  invoiceEscrowContractService,
   logger: appLogger = logger,
   metricsEnabled = true,
   metricsRegistry = new MetricsRegistry(),
@@ -242,7 +244,14 @@ export function createApp({
   if (config?.admin?.ipWhitelist?.length) {
     app.use(
       "/api/v1/admin",
-      createAdminRouter({ dataSource, allowedCidrs: config.admin.ipWhitelist, invoiceService })
+      createAdminRouter({ 
+        dataSource, 
+        allowedCidrs: config.admin.ipWhitelist, 
+        invoiceService,
+        authService,
+        adminWallets: config.admin.wallets || [],
+        invoiceEscrowContractService
+      })
     );
   }
 

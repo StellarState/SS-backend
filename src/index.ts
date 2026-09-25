@@ -77,6 +77,15 @@ export async function bootstrap(): Promise<{ server: Server }> {
   const marketplaceService = createMarketplaceService(dataSource);
   const kycService = new KycService(dataSource, config.kyc.webhookSecret ?? "", logger);
 
+  const { InvoiceEscrowContractService } = require("./services/stellar/invoice-escrow-contract.service");
+  const invoiceEscrowContractService =
+    sorobanConfig.escrowContractId && sorobanConfig.platformSecretKey
+      ? new InvoiceEscrowContractService(
+          { ...sorobanConfig, contractId: sorobanConfig.escrowContractId },
+          logger
+        )
+      : undefined;
+
   const app = createApp({
     authService,
     notificationService,
@@ -85,6 +94,7 @@ export async function bootstrap(): Promise<{ server: Server }> {
     settlementService,
     marketplaceService,
     kycService,
+    invoiceEscrowContractService,
     config,
     logger,
     metricsEnabled: config.observability.metricsEnabled,

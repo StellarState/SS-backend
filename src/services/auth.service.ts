@@ -505,34 +505,32 @@ export class AuthService {
 
     const promise = (async () => {
       const sanitized = publicKey.trim();
-  private async upsertUser(publicKey: string): Promise<User> {
-    const sanitized = publicKey.trim();
-    try {
-      const existingUser = await this.userRepository.findByStellarAddress(sanitized);
-      if (existingUser) {
-        this.logger?.debug("auth.user_found", { wallet: sanitized });
-        return existingUser;
+      try {
+        const existingUser = await this.userRepository.findByStellarAddress(sanitized);
+        if (existingUser) {
+          this.logger?.debug("auth.user_found", { wallet: sanitized });
+          return existingUser;
+        }
+        const created = await this.userRepository.save({ stellarAddress: sanitized });
+        this.logger?.info("auth.user_upserted", {
+          wallet: sanitized,
+          user_id: created.id,
+        });
+        return created;
+      } catch (error) {
+        if (error instanceof Error && error.message.includes("duplicate key")) {
+          const existing = await this.userRepository.findByStellarAddress(sanitized);
+          if (existing) return existing;
+        }
+        this.logger?.error("upsertUser failed", { error, publicKey });
+        throw error;
       }
-      const created = await this.userRepository.save({ stellarAddress: sanitized });
-      this.logger?.info("auth.user_upserted", {
-        wallet: sanitized,
-        user_id: created.id,
-      });
-      return created;
     })().finally(() => {
       this.userUpsertInflight.delete(publicKey);
     });
 
     this.userUpsertInflight.set(publicKey, promise);
     return promise;
-    } catch (error) {
-      if (error instanceof Error && error.message.includes("duplicate key")) {
-        const existing = await this.userRepository.findByStellarAddress(sanitized);
-        if (existing) return existing;
-      }
-      this.logger?.error("upsertUser failed", { error, publicKey });
-      throw error;
-    }
   }
 
   private signToken(user: PublicUser): string {
