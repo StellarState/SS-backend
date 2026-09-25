@@ -147,9 +147,9 @@ const calculateTermsSchema = Joi.object({
 const investSchema = Joi.object({
   walletAddress: Joi.string()
     .trim()
-    .required()
+    .optional()
     .custom((value, helpers) =>
-      isValidStellarPublicKey(value) ? value : helpers.error("any.invalid")
+      !value || isValidStellarPublicKey(value) ? value : helpers.error("any.invalid")
     )
     .messages({ "any.invalid": "walletAddress must be a valid Stellar public key" }),
   amount: Joi.alternatives()
@@ -378,6 +378,15 @@ export function createInvoiceRouter({
       validateBody(investSchema),
       investController.invest as RequestHandler
     );
+
+    router.post(
+      "/:invoiceId/invest",
+      createAuthMiddleware(authService),
+      ...pauseGuard,
+      investRateLimiter,
+      validateBody(investSchema),
+      investController.invest as RequestHandler
+    );
   }
 
   // GET /api/v1/invoices/:id/tokens - Get invoice token holders
@@ -404,7 +413,7 @@ export function createInvoiceRouter({
           }
           const proposedDeadline = new Date(proposedRaw);
           const request = await extensionService.requestExtension({
-            invoiceId: req.params.id,
+            invoiceId: String(req.params.id),
             sellerId: user.id,
             proposedDeadline,
             reason: typeof req.body?.reason === "string" ? req.body.reason : null,
