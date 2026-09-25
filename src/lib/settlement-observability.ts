@@ -46,8 +46,8 @@ export function logSettlementFailure(logger: AppLogger, input: SettlementFailure
     invoice_id: input.invoiceId,
     category:
       input.category ??
-      (input.error instanceof Error && (input.error as any).code
-        ? (input.error as any).code
+      (input.error instanceof Error && (input.error as Error & { code?: unknown }).code
+        ? (input.error as Error & { code?: unknown }).code
         : "unknown"),
     retryable: Boolean(input.retryable),
     duration_ms: input.durationMs ?? null,
