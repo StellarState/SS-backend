@@ -25,6 +25,7 @@ import type { NotificationService } from "./services/notification.service";
 import type { InvoiceService } from "./services/invoice.service";
 import type { InvestmentService } from "./services/investment.service";
 import type { SettlementService } from "./services/settlement.service";
+import type { AdminSettlementService } from "./services/admin-settlement.service";
 import type { MarketplaceService } from "./services/marketplace.service";
 import type { KycService } from "./services/kyc.service";
 
@@ -62,6 +63,7 @@ export interface AppDependencies {
   invoiceService?: InvoiceService;
   investmentService?: InvestmentService;
   settlementService?: SettlementService;
+  adminSettlementService?: AdminSettlementService;
   marketplaceService?: MarketplaceService;
   kycService?: KycService;
   logger?: AppLogger;
@@ -88,6 +90,7 @@ export function createApp({
   invoiceService,
   investmentService,
   settlementService,
+  adminSettlementService,
   marketplaceService,
   kycService,
   logger: appLogger = logger,
@@ -242,7 +245,12 @@ export function createApp({
   if (config?.admin?.ipWhitelist?.length) {
     app.use(
       "/api/v1/admin",
-      createAdminRouter({ dataSource, allowedCidrs: config.admin.ipWhitelist, invoiceService })
+      createAdminRouter({
+        dataSource,
+        allowedCidrs: config.admin.ipWhitelist,
+        invoiceService,
+        adminSettlementService,
+      })
     );
   }
 
