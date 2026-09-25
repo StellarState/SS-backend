@@ -214,7 +214,9 @@ describe("E2E: Complete Invoice Financing Flow", () => {
       },
     } as unknown as AppConfig;
 
-    // Initialize test database (SQLite in-memory)
+    // Initialize test database (SQLite in-memory). Wrapped so a failure in
+    // schema sync or service wiring surfaces with a clear cause instead of
+    // every downstream test throwing an opaque "app is undefined".
     try {
       patchEntityMetadataForSQLite();
 
