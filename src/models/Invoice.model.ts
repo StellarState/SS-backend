@@ -48,6 +48,8 @@ export interface PublicInvoiceDTO {
   sellerId: string;
   invoiceNumber: string;
   customerName: string;
+  issuerName: string | null;
+  description: string | null;
   amount: string;
   discountRate: string;
   netAmount: string;
@@ -81,6 +83,14 @@ export class Invoice {
   @Column({ name: "customer_name", type: "varchar", length: 255 })
   @Index("idx_invoices_customer_name")
   customerName!: string;
+
+  /** Business issuing the invoice; full-text searchable (weight A). */
+  @Column({ name: "issuer_name", type: "varchar", length: 255, nullable: true })
+  issuerName!: string | null;
+
+  /** Free-text description; full-text searchable (weight B). */
+  @Column({ type: "text", nullable: true })
+  description!: string | null;
 
   @Column({ type: "decimal", precision: 18, scale: 4, default: 0 })
   amount!: string;
@@ -536,6 +546,8 @@ export class Invoice {
         sellerId: invoice.sellerId,
         invoiceNumber: invoice.invoiceNumber,
         customerName: invoice.customerName,
+        issuerName: invoice.issuerName ?? null,
+        description: invoice.description ?? null,
         amount: invoice.amount,
         discountRate: invoice.discountRate,
         netAmount: invoice.netAmount,

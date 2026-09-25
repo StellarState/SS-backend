@@ -72,6 +72,8 @@ export interface CreateInvoiceInput {
   sellerId: string;
   invoiceNumber: string;
   customerName: string;
+  issuerName?: string;
+  description?: string;
   amount: string;
   discountRate: string;
   dueDate: Date;
@@ -83,6 +85,8 @@ export interface UpdateInvoiceInput {
   sellerId: string;
   invoiceId: string;
   customerName?: string;
+  issuerName?: string;
+  description?: string;
   amount?: string;
   discountRate?: string;
   dueDate?: Date;
@@ -154,6 +158,8 @@ export interface InvoiceDTO {
   sellerId: string;
   invoiceNumber: string;
   customerName: string;
+  issuerName: string | null;
+  description: string | null;
   amount: string;
   discountRate: string;
   netAmount: string;
@@ -291,6 +297,8 @@ export class InvoiceService {
         sellerId: input.sellerId,
         invoiceNumber,
         customerName: input.customerName.trim().slice(0, 255),
+        issuerName: input.issuerName?.trim().slice(0, 255) || null,
+        description: input.description?.trim() || null,
         amount: input.amount,
         discountRate: input.discountRate,
         netAmount,
@@ -421,6 +429,12 @@ export class InvoiceService {
       // Update fields
       if (input.customerName) {
         invoice.customerName = input.customerName;
+      }
+      if (input.issuerName !== undefined) {
+        invoice.issuerName = input.issuerName.trim().slice(0, 255) || null;
+      }
+      if (input.description !== undefined) {
+        invoice.description = input.description.trim() || null;
       }
       if (input.amount) {
         invoice.amount = input.amount;
@@ -951,6 +965,8 @@ export class InvoiceService {
       sellerId: invoice.sellerId,
       invoiceNumber: invoice.invoiceNumber,
       customerName: invoice.customerName,
+      issuerName: invoice.issuerName ?? null,
+      description: invoice.description ?? null,
       amount: invoice.amount,
       discountRate: invoice.discountRate,
       netAmount: invoice.netAmount,

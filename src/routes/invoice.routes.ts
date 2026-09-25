@@ -16,6 +16,8 @@ import { createWalletRateLimiter } from "../middleware/rate-limit-wallet.middlew
 import { HttpError } from "../utils/http-error";
 import { InvoiceStatus } from "../types/enums";
 import { InvoiceCacheService, createInvoiceCacheService } from "../services/invoice-cache.service";
+import type { InvoiceSearchService } from "../services/invoice-search.service";
+import { createInvoiceSearchHandler } from "./invoice-search.routes";
 
 export interface InvoiceRouterDependencies {
   invoiceService: InvoiceService;
@@ -26,6 +28,8 @@ export interface InvoiceRouterDependencies {
   contractGuardService?: ContractGuardService;
   contractId?: string | null;
   cacheService?: InvoiceCacheService;
+  /** Enables the public GET /search endpoint. */
+  invoiceSearchService?: InvoiceSearchService;
 }
 
 /**
@@ -34,6 +38,8 @@ export interface InvoiceRouterDependencies {
 const createInvoiceSchema = Joi.object({
   invoiceNumber: Joi.string().required().trim().max(64),
   customerName: Joi.string().required().trim().max(255),
+  issuerName: Joi.string().optional().trim().max(255),
+  description: Joi.string().optional().trim().max(5000),
   amount: Joi.string()
     .required()
     .pattern(/^\d+(\.\d{1,4})?$/)
@@ -72,6 +78,8 @@ const createInvoiceSchema = Joi.object({
 
 const updateInvoiceSchema = Joi.object({
   customerName: Joi.string().optional().trim().max(255),
+  issuerName: Joi.string().optional().trim().max(255),
+  description: Joi.string().optional().trim().max(5000),
   amount: Joi.string()
     .optional()
     .pattern(/^\d+(\.\d{1,4})?$/)
@@ -197,6 +205,7 @@ export function createInvoiceRouter({
   contractGuardService,
   contractId = null,
   cacheService,
+  invoiceSearchService,
 }: InvoiceRouterDependencies): Router {
   const router = Router();
   const cache =
@@ -273,6 +282,12 @@ export function createInvoiceRouter({
     validateBody(batchPublishSchema),
     controller.batchPublishInvoices
   );
+
+  // GET /api/v1/invoices/search - Public marketplace full-text search.
+  // Declared ahead of "/:id" so "search" is never matched as an invoice id.
+  if (invoiceSearchService) {
+    router.get("/search", createInvoiceSearchHandler(invoiceSearchService));
+  }
 
   // GET /api/v1/invoices/:id - Get single invoice
   router.get("/:id", authenticateJWT, controller.getInvoice);
