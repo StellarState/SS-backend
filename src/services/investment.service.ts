@@ -572,6 +572,9 @@ export class InvestmentService {
     const MAX_RETRIES = 3;
     let attempt = 0;
 
+    // Bounded by MAX_RETRIES/attempt below (break/throw inside), not an
+    // infinite loop.
+    // eslint-disable-next-line no-constant-condition
     while (true) {
       try {
         // Side effects are collected from the transaction's return value, so

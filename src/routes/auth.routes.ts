@@ -26,7 +26,7 @@ const SIGNATURE_PATTERN = /^[A-Za-z0-9+/=:_\-.]+$/;
 
 type AsyncRouteHandler = (req: Request, res: Response, next: NextFunction) => Promise<void> | void;
 
-const publicKeySchema = Joi.string().trim().required();
+const publicKeySchema = Joi.string().trim().pattern(STELLAR_PUBLIC_KEY_PATTERN).required();
 
 const challengeSchema = Joi.object({
   publicKey: publicKeySchema,
@@ -34,8 +34,8 @@ const challengeSchema = Joi.object({
 
 const verifySchema = Joi.object({
   publicKey: publicKeySchema,
-  nonce: Joi.string().trim().required(),
-  signature: Joi.string().trim().required(),
+  nonce: Joi.string().trim().pattern(NONCE_PATTERN).required(),
+  signature: Joi.string().trim().pattern(SIGNATURE_PATTERN).required(),
 }).unknown(true);
 
 function wrapAuthHandler(

@@ -10,6 +10,7 @@ import {
 } from "stellar-sdk";
 import type { AppLogger } from "../../observability/logger";
 import { logger as globalLogger } from "../../observability/logger";
+import { mapSorobanError } from "./soroban-error-mapper";
 
 /**
  * A single payout leg: an on-chain destination and the amount (in stroops)
@@ -193,7 +194,7 @@ export class PaymentDistributorContractService {
       const submitted = await this.rpcServer.sendTransaction(prepared);
       if (submitted.status === "ERROR") {
         // Map to a ServiceError (non-retryable transaction rejection)
-        throw require("../stellar/soroban-error-mapper").mapSorobanError(submitted, {
+        throw mapSorobanError(submitted, {
           contractId: this.contractId,
         }).error;
       }
@@ -211,7 +212,7 @@ export class PaymentDistributorContractService {
           };
         }
         if (result.status === "FAILED") {
-          throw require("../stellar/soroban-error-mapper").mapSorobanError(
+          throw mapSorobanError(
             { status: "FAILED" },
             { contractId: this.contractId }
           ).error;
@@ -221,9 +222,8 @@ export class PaymentDistributorContractService {
       throw new Error("Timed out waiting for payment distribution confirmation.");
     } catch (err) {
       // If it's already a ServiceError, rethrow; otherwise map and throw a sanitized ServiceError
-      if (err instanceof Error && (err as any).name === "ServiceError") throw err;
-      const mapper = require("../stellar/soroban-error-mapper");
-      const mapped = mapper.mapSorobanError(err, {
+      if (err instanceof Error && err.name === "ServiceError") throw err;
+      const mapped = mapSorobanError(err, {
         contractId: this.contractId,
         invoiceId: input.invoiceId,
       });
