@@ -47,6 +47,21 @@ export function createAdminRouter({
     router.post("/invoices/:id/reject", (req, res) => {
       rejectInvoice(req, res, invoiceService);
     });
+
+    router.get("/invoices/:id/document", async (req, res, next) => {
+      try {
+        const result = await invoiceService.getDocumentUrl({
+           invoiceId: req.params.id,
+           isAdmin: true
+        });
+        res.status(200).json({
+          success: true,
+          data: { url: result }
+        });
+      } catch (error) {
+        next(error);
+      }
+    });
   }
 
   return router;
