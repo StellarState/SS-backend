@@ -17,7 +17,9 @@ import { createInvoiceRouter } from "./routes/invoice.routes";
 import { createInvestmentRouter } from "./routes/investment.routes";
 import { createSettlementRouter } from "./routes/settlement.routes";
 import { createMarketplaceRouter } from "./routes/marketplace.routes";
+import { createSecondaryMarketRouter } from "./routes/secondary-market.routes";
 import { createAdminRouter } from "./routes/admin/admin.routes";
+import { createXlmUsdRateRouter } from "./routes/xlm-usd-rate.routes";
 import { createContractGuardService } from "./services/stellar/contract-guard.service";
 
 import type { AuthService } from "./services/auth.service";
@@ -26,7 +28,9 @@ import type { InvoiceService } from "./services/invoice.service";
 import type { InvestmentService } from "./services/investment.service";
 import type { SettlementService } from "./services/settlement.service";
 import type { MarketplaceService } from "./services/marketplace.service";
+import type { SecondaryMarketService } from "./services/secondary-market.service";
 import type { KycService } from "./services/kyc.service";
+import type { XlmUsdRateService } from "./services/xlm-usd-rate.service";
 
 import dataSource from "./config/database";
 
@@ -63,7 +67,9 @@ export interface AppDependencies {
   investmentService?: InvestmentService;
   settlementService?: SettlementService;
   marketplaceService?: MarketplaceService;
+  secondaryMarketService?: SecondaryMarketService;
   kycService?: KycService;
+  xlmUsdRateService?: XlmUsdRateService;
   logger?: AppLogger;
   metricsEnabled?: boolean;
   metricsRegistry?: MetricsRegistry;
@@ -89,7 +95,9 @@ export function createApp({
   investmentService,
   settlementService,
   marketplaceService,
+  secondaryMarketService,
   kycService,
+  xlmUsdRateService,
   logger: appLogger = logger,
   metricsEnabled = true,
   metricsRegistry = new MetricsRegistry(),
@@ -237,6 +245,21 @@ export function createApp({
 
   if (marketplaceService) {
     app.use("/api/v1/marketplace", createMarketplaceRouter({ marketplaceService }));
+  }
+
+  if (secondaryMarketService) {
+    app.use("/api/v1/secondary-market", createSecondaryMarketRouter({
+      secondaryMarketService,
+      authService,
+    }));
+    app.use("/secondary-market", createSecondaryMarketRouter({
+      secondaryMarketService,
+      authService,
+    }));
+  }
+
+  if (xlmUsdRateService) {
+    app.use("/rates", createXlmUsdRateRouter({ xlmUsdRateService }));
   }
 
   if (config?.admin?.ipWhitelist?.length) {

@@ -21,8 +21,11 @@ import { createIPFSService } from "./services/ipfs.service";
 import { createInvestmentService } from "./services/investment.service";
 import { createSettlementService } from "./services/settlement.service";
 import { createMarketplaceService } from "./services/marketplace.service";
+import { createSecondaryMarketService } from "./services/secondary-market.service";
 import { KycService } from "./services/kyc.service";
+import { XlmUsdRateService } from "./services/xlm-usd-rate.service";
 import { PaymentDistributorContractService } from "./services/stellar/payment-distributor-contract.service";
+import { InvoiceEscrowContractService } from "./services/stellar/invoice-escrow-contract.service";
 import { getSorobanConfig } from "./config/stellar";
 
 export async function bootstrap(): Promise<{ server: Server }> {
@@ -51,12 +54,25 @@ export async function bootstrap(): Promise<{ server: Server }> {
     dataSource,
     stateMachine: invoiceStateMachine,
   });
+  const sorobanConfig = getSorobanConfig();
+  const escrowRefundService =
+    sorobanConfig.escrowContractId && sorobanConfig.rpcUrl
+      ? new InvoiceEscrowContractService(
+          {
+            contractId: sorobanConfig.escrowContractId,
+            rpcUrl: sorobanConfig.rpcUrl,
+            networkPassphrase: sorobanConfig.networkPassphrase,
+            platformSecretKey: sorobanConfig.platformSecretKey,
+          },
+          logger
+        )
+      : undefined;
   const investmentService = createInvestmentService(
     dataSource,
     invoiceStateMachine,
-    createInvestmentNotifier(notificationService, logger)
+    createInvestmentNotifier(notificationService, logger),
+    escrowRefundService
   );
-  const sorobanConfig = getSorobanConfig();
   const distributor =
     sorobanConfig.paymentDistributorContractId && sorobanConfig.platformSecretKey
       ? new PaymentDistributorContractService(
@@ -75,7 +91,20 @@ export async function bootstrap(): Promise<{ server: Server }> {
     invoiceStateMachine
   );
   const marketplaceService = createMarketplaceService(dataSource);
+  const secondaryMarketService = createSecondaryMarketService(dataSource);
   const kycService = new KycService(dataSource, config.kyc.webhookSecret ?? "", logger);
+  const xlmUsdRateService = new XlmUsdRateService({
+    redisUrl: config.cache.redisUrl,
+    enabled: config.cache.enabled,
+    horizonUrl: config.rates.xlmUsd.horizonUrl,
+    refreshIntervalMs: config.rates.xlmUsd.refreshIntervalMs,
+    cacheTtlSeconds: config.rates.xlmUsd.cacheTtlSeconds,
+    staleAfterMs: config.rates.xlmUsd.staleAfterMs,
+    assetCode: config.rates.xlmUsd.assetCode,
+    assetIssuer: config.rates.xlmUsd.assetIssuer,
+    logger,
+  });
+  xlmUsdRateService.start();
 
   const app = createApp({
     authService,
@@ -84,7 +113,9 @@ export async function bootstrap(): Promise<{ server: Server }> {
     investmentService,
     settlementService,
     marketplaceService,
+    secondaryMarketService,
     kycService,
+    xlmUsdRateService,
     config,
     logger,
     metricsEnabled: config.observability.metricsEnabled,
