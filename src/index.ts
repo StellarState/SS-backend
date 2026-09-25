@@ -24,6 +24,7 @@ import { createMarketplaceService } from "./services/marketplace.service";
 import { KycService } from "./services/kyc.service";
 import { PaymentDistributorContractService } from "./services/stellar/payment-distributor-contract.service";
 import { getSorobanConfig } from "./config/stellar";
+import { EventIndexerService } from "./services/stellar/event-indexer.service";
 
 export async function bootstrap(): Promise<{ server: Server }> {
   const config = getConfig();
@@ -57,6 +58,16 @@ export async function bootstrap(): Promise<{ server: Server }> {
     createInvestmentNotifier(notificationService, logger)
   );
   const sorobanConfig = getSorobanConfig();
+  const eventIndexer =
+    config.sorobanIndexer.enabled && config.sorobanEscrow.contractId && config.sorobanEscrow.rpcUrl
+      ? new EventIndexerService({
+          contractIds: [config.sorobanEscrow.contractId],
+          rpcUrl: config.sorobanEscrow.rpcUrl,
+          dataSource,
+          logger,
+          lagAlertThresholdLedgers: config.sorobanIndexer.lagAlertThresholdLedgers,
+        })
+      : undefined;
   const distributor =
     sorobanConfig.paymentDistributorContractId && sorobanConfig.platformSecretKey
       ? new PaymentDistributorContractService(
@@ -93,6 +104,11 @@ export async function bootstrap(): Promise<{ server: Server }> {
   const server = app.listen(config.port, () => {
     logger.info("Server running", { port: config.port });
   });
+
+  if (eventIndexer) {
+    eventIndexer.start(config.sorobanIndexer.intervalMs);
+    server.on("close", () => eventIndexer.stop());
+  }
 
   return { server };
 }
