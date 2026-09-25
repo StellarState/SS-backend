@@ -65,6 +65,7 @@ export interface AppConfig {
   };
   admin: {
     ipWhitelist: string[];
+    wallets: string[];
   };
   cache: {
     redisUrl?: string;
@@ -304,6 +305,7 @@ export function getConfig(): AppConfig {
 
     admin: {
       ipWhitelist: parseCsv(process.env.ADMIN_IP_WHITELIST),
+      wallets: parseCsv(process.env.ADMIN_WALLETS),
     },
 
     cache: {
