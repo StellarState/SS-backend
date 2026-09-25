@@ -9,6 +9,14 @@ export function createKycController(service: KycService) {
       const verification = await service.submitKycVerification(req.user.id, req.body);
       return res.status(201).json({ success: true, data: verification });
     },
+    submitDocument: async (req: AuthenticatedRequest, res: Response) => {
+      if (!req.user) return res.status(401).json({ error: "Authentication required" });
+      const verification = await service.submitKycVerificationByWallet(
+        req.user.stellarAddress,
+        req.body,
+      );
+      return res.status(201).json({ success: true, data: verification });
+    },
     webhook: async (req: Request, res: Response) => {
       if (!Buffer.isBuffer(req.body)) {
         return res

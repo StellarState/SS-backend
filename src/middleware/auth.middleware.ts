@@ -291,3 +291,23 @@ export function checkKycVerified(req: Request, _res: Response, next: NextFunctio
   }
   next();
 }
+
+export function requireSeller() {
+  return (req: Request, _res: Response, next: NextFunction): void => {
+    const authReq = req as AuthenticatedRequest;
+    if (!authReq.user) {
+      next(new HttpError(401, "Authentication required."));
+      return;
+    }
+
+    if (
+      authReq.user.userType !== UserType.SELLER &&
+      authReq.user.userType !== UserType.BOTH
+    ) {
+      next(new HttpError(403, "Seller access required."));
+      return;
+    }
+
+    next();
+  };
+}
