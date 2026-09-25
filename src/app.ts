@@ -14,7 +14,7 @@ import { createAuthRouter } from "./routes/auth.routes";
 import { createKycRouter, createKycWebhookRouter } from "./routes/kyc.routes";
 import { createNotificationRouter } from "./routes/notification.routes";
 import { createInvoiceRouter } from "./routes/invoice.routes";
-import { createInvestmentRouter } from "./routes/investment.routes";
+import { createInvestmentRouter, createInvestorPortfolioRouter } from "./routes/investment.routes";
 import { createSettlementRouter } from "./routes/settlement.routes";
 import { createMarketplaceRouter } from "./routes/marketplace.routes";
 import { createAdminRouter } from "./routes/admin/admin.routes";
@@ -220,6 +220,13 @@ export function createApp({
         authService,
         contractGuardService,
         contractId: pauseGuardContractId,
+      })
+    );
+    app.use(
+      "/api/v1/investor",
+      createInvestorPortfolioRouter({
+        investmentService,
+        authService,
       })
     );
   }
