@@ -6,6 +6,7 @@ export enum UserType {
   SELLER = "seller",
   INVESTOR = "investor",
   BOTH = "both",
+  ADMIN = "admin",
 }
 
 export enum KYCStatus {
