@@ -65,10 +65,16 @@ interface AuthTokenPayload extends JwtPayload {
   stellarAddress: string;
 }
 
+export interface AuthConfig extends Pick<AppConfig, "auth" | "stellar"> {
+  jwt: AppConfig["jwt"] & { publicKey?: string };
+  serverKeypair?: Keypair;
+  serverPublicKey?: string;
+}
+
 export interface AuthServiceDependencies {
   userRepository: UserRepositoryContract;
   challengeRepository: ChallengeRepositoryContract;
-  config: Pick<AppConfig, "jwt" | "auth" | "stellar"> & { serverKeypair?: Keypair };
+  config: AuthConfig;
   logger?: AppLogger;
   /**
    * Override the clock used for challenge TTL checks. Mostly useful in tests;
@@ -85,6 +91,7 @@ export interface ChallengeResponse {
   issuedAt: string;
   expiresAt: string;
   network: string;
+  transaction?: string;
 }
 
 export interface VerifyChallengeInput {
@@ -107,7 +114,7 @@ const MIN_NONCE_LENGTH = 16;
 export class AuthService {
   private readonly userRepository: UserRepositoryContract;
   private readonly challengeRepository: ChallengeRepositoryContract;
-  private readonly config: Pick<AppConfig, "jwt" | "auth" | "stellar">;
+  private readonly config: AuthConfig;
   private readonly logger?: AppLogger;
   private readonly serverKeypair?: Keypair;
   private readonly now: () => number;
@@ -148,12 +155,15 @@ export class AuthService {
       const expiresAt = new Date(issuedAt.getTime() + this.config.auth.challengeTtlMs);
 
       let nonce: string;
+      let transactionXdr: string | undefined;
       if (this.serverKeypair) {
-        ({ nonce } = buildWalletChallenge(
+        const walletChallenge = buildWalletChallenge(
           sanitizedKey,
           this.config.stellar.networkPassphrase,
           this.serverKeypair
-        ));
+        );
+        nonce = walletChallenge.nonce;
+        transactionXdr = walletChallenge.transaction.toXDR();
       } else {
         nonce = crypto.randomBytes(32).toString("hex");
       }
@@ -200,6 +210,7 @@ export class AuthService {
         issuedAt: issuedAt.toISOString(),
         expiresAt: expiresAt.toISOString(),
         network: this.config.stellar.network,
+        ...(transactionXdr ? { transaction: transactionXdr } : {}),
       };
     } catch (error) {
       if (error instanceof HttpError) throw error;
@@ -246,7 +257,7 @@ export class AuthService {
         throw new HttpError(401, "Challenge already used.");
       }
 
-      if (challenge.expiresAt.getTime() <= Date.now()) {
+      if (challenge.expiresAt.getTime() <= this.now()) {
         this.recordChallengeMetric("expired", sanitizedKey);
         throw new HttpError(401, "Challenge expired.");
       }
@@ -392,7 +403,8 @@ export class AuthService {
 
       let payload: AuthTokenPayload;
       try {
-        payload = jwt.verify(sanitizedToken, this.config.jwt.secret) as AuthTokenPayload;
+        const verifyKey = this.config.jwt.publicKey ?? this.config.jwt.secret;
+        payload = jwt.verify(sanitizedToken, verifyKey) as AuthTokenPayload;
       } catch (error) {
         throw new HttpError(
           401,
@@ -419,8 +431,7 @@ export class AuthService {
         });
         throw new HttpError(500, "Failed to fetch current user.");
       }
-
-      if (!user) {
+if (!user) {
         throw new HttpError(
           401,
           "Invalid or expired token.",
@@ -474,12 +485,13 @@ export class AuthService {
    * the same address are coalesced into a single repository round-trip via
    * {@link userUpsertInflight}.
    */
-  private upsertUser(publicKey: string): Promise<User> {
+  private async upsertUser(publicKey: string): Promise<User> {
+    const sanitized = publicKey.trim();
+
     const cached = this.userUpsertInflight.get(publicKey);
     if (cached) return cached;
 
     const promise = (async () => {
-      const sanitized = publicKey.trim();
       try {
         const existingUser = await this.userRepository.findByStellarAddress(sanitized);
         if (existingUser) {
@@ -500,22 +512,26 @@ export class AuthService {
         this.logger?.error("upsertUser failed", { error, publicKey });
         throw error;
       }
-    })().finally(() => {
-      this.userUpsertInflight.delete(publicKey);
-    });
+    })();
 
     this.userUpsertInflight.set(publicKey, promise);
     return promise;
   }
 
   private signToken(user: PublicUser): string {
+    const isAsymmetric =
+      typeof this.config.jwt.secret === "string" &&
+      this.config.jwt.secret.includes("BEGIN");
+
     const signOptions: SignOptions = {
       expiresIn: this.config.jwt.expiresIn as SignOptions["expiresIn"],
+      ...(isAsymmetric ? { algorithm: "RS256" as const } : {}),
     };
 
     return jwt.sign(
       {
         stellarAddress: user.stellarAddress,
+        walletAddress: user.stellarAddress,
         userId: user.id,
       },
       this.config.jwt.secret,
@@ -527,19 +543,42 @@ export class AuthService {
   }
 
   generateToken(user: { id: string; stellarAddress: string }): string & { token: string } {
+    const isAsymmetric =
+      typeof this.config.jwt.secret === "string" &&
+      this.config.jwt.secret.includes("BEGIN");
+
+    const signOptions: SignOptions = {
+      expiresIn: this.config.jwt.expiresIn as SignOptions["expiresIn"],
+      ...(isAsymmetric ? { algorithm: "RS256" as const } : {}),
+    };
+
     const rawToken = jwt.sign(
       {
         stellarAddress: user.stellarAddress,
+        walletAddress: user.stellarAddress,
         userId: user.id,
       },
       this.config.jwt.secret,
       {
-        expiresIn: this.config.jwt.expiresIn as SignOptions["expiresIn"],
+        ...signOptions,
         subject: user.stellarAddress,
       }
     );
     const tokenObj = Object.assign(new String(rawToken), { token: rawToken });
     return tokenObj as unknown as string & { token: string };
+  }
+
+  getServerPublicKey(): string | undefined {
+    return this.serverKeypair?.publicKey() ?? this.config.jwt.publicKey ?? this.config.serverPublicKey;
+  }
+
+  getPublicKey(): string | undefined {
+    return this.getServerPublicKey();
+  }
+
+  verifyToken(token: string, key?: string): AuthTokenPayload {
+    const verifyKey = key ?? this.config.jwt.publicKey ?? this.config.jwt.secret;
+    return jwt.verify(token.trim(), verifyKey) as AuthTokenPayload;
   }
 }
 
@@ -729,7 +768,7 @@ function decodeSignature(signature: string): Buffer {
   }
 
   if (!/^[A-Za-z0-9+/_=-]+$/.test(trimmedSignature)) {
-    throw new HttpError(400, "Signature must be base64, base64url, or hex encoded.");
+    throw new HttpError(401, "Invalid signature.");
   }
 
   const normalizedBase64Signature = trimmedSignature.replace(/-/g, "+").replace(/_/g, "/");

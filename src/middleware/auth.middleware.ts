@@ -37,7 +37,7 @@ export const MAX_BEARER_TOKEN_LENGTH = 4_096;
 export const DEFAULT_AUTH_LOOKUP_TIMEOUT_MS = 5_000;
 
 /** Tokens are signed by AuthService with the default HMAC algorithm. */
-const ALLOWED_JWT_ALGORITHMS: jwt.Algorithm[] = ["HS256"];
+const ALLOWED_JWT_ALGORITHMS: jwt.Algorithm[] = ["HS256", "RS256", "ES256"];
 
 const JWT_SHAPE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*$/;
 
@@ -87,18 +87,21 @@ export function extractBearerToken(header: unknown): BearerTokenResult {
   return { ok: true, token };
 }
 
-function missingOrMalformedTokenError(result: Extract<BearerTokenResult, { ok: false }>) {
+function missingOrMalformedTokenError(
+  result: Extract<BearerTokenResult, { ok: false }>,
+  appLogger?: AppLogger
+) {
   if (result.reason === "missing_token") {
     return new HttpError(
       401,
       "Authorization token is required.",
-      buildAuthFailureDetails(undefined, "missing_token")
+      buildAuthFailureDetails(undefined, "missing_token", appLogger)
     );
   }
   return new HttpError(
     401,
     "Invalid or expired token.",
-    buildAuthFailureDetails(result.token, result.reason)
+    buildAuthFailureDetails(result.token, result.reason, appLogger)
   );
 }
 
@@ -292,4 +295,24 @@ export function checkKycVerified(req: Request, _res: Response, next: NextFunctio
     return;
   }
   next();
+}
+
+export function requireSeller() {
+  return (req: Request, _res: Response, next: NextFunction): void => {
+    const authReq = req as AuthenticatedRequest;
+    if (!authReq.user) {
+      next(new HttpError(401, "Authentication required."));
+      return;
+    }
+
+    if (
+      authReq.user.userType !== UserType.SELLER &&
+      authReq.user.userType !== UserType.BOTH
+    ) {
+      next(new HttpError(403, "Seller access required."));
+      return;
+    }
+
+    next();
+  };
 }

@@ -165,7 +165,7 @@ export class Invoice {
   @Column({ name: "yield_bps", type: "int", nullable: true })
   yieldBps!: number | null;
 
-  @Column({ name: "funding_deadline", type: "timestamp", nullable: true })
+  @Column({ name: "funding_deadline", type: "timestamptz", nullable: true })
   fundingDeadline!: Date | null;
 
   @Column({ name: "ipfs_document_url", type: "varchar", length: 512, nullable: true })
@@ -645,6 +645,8 @@ export class Invoice {
   /**
    * Calculates and formats amounts using Decimal precision and sanitizes customer name.
    */
+  @BeforeInsert()
+  @BeforeUpdate()
   calculateAndFormatAmounts(): void {
     try {
       if (this.customerName) {
@@ -765,6 +767,4 @@ export class Invoice {
       throw new AppError(500, "Failed to serialize invoice", "INVOICE_SERIALIZATION_FAILED");
     }
   }
-
 }
-

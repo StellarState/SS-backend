@@ -9,10 +9,7 @@ import Joi from "joi";
 import { createAuthController } from "../controllers/auth.controller";
 import { createAuthMiddleware } from "../middleware/auth.middleware";
 import { validateBody } from "../middleware/validate.middleware";
-import {
-  createChallengeRateLimitMiddleware,
-  createVerifyRateLimitMiddleware,
-} from "../middleware/rate-limit.middleware";
+import { createAuthRateLimiter } from "../middleware/redis-rate-limit.middleware";
 import { createCircuitBreaker } from "../lib/circuit-breaker";
 import type { AuthService } from "../services/auth.service";
 import type { AppLogger } from "../observability/logger";
@@ -127,13 +124,34 @@ function createIdempotencyMiddleware() {
 
 
 
+function validateQuery(schema: Joi.Schema): RequestHandler {
+  return (req: Request, _res: Response, next: NextFunction) => {
+    const { error, value } = schema.validate(req.query, {
+      stripUnknown: true,
+      convert: true,
+    });
+
+    if (error) {
+      return next(new HttpError(400, `Invalid query parameters: ${error.message}`));
+    }
+
+    Object.defineProperty(req, "query", {
+      value,
+      writable: true,
+      configurable: true,
+      enumerable: true,
+    });
+    next();
+  };
+}
+
 export function createAuthRouter(authService: AuthService, logger: AppLogger): Router {
   const router = Router();
   const controller = createAuthController(authService);
   const authMiddleware = createAuthMiddleware(authService);
 
-  const challengeRateLimiter = createChallengeRateLimitMiddleware(logger);
-  const verifyRateLimiter = createVerifyRateLimitMiddleware(logger);
+  const challengeRateLimiter = createAuthRateLimiter("challenge", { logger });
+  const verifyRateLimiter = createAuthRateLimiter("verify", { logger });
   const idempotencyMiddleware = createIdempotencyMiddleware();
   const circuitBreaker = createCircuitBreaker({ failureThreshold: 5, timeout: 30000 });
 
@@ -167,6 +185,13 @@ export function createAuthRouter(authService: AuthService, logger: AppLogger): R
   router.use(markAuthRouteBase());
   router.use(noStoreAuthResponse());
   router.use(idempotencyMiddleware);
+
+  router.get(
+    "/challenge",
+    challengeRateLimiter,
+    validateQuery(challengeSchema),
+    withCircuitBreakerAndWrap("auth.challenge", controller.challenge as AsyncRouteHandler)
+  );
 
   router.post(
     "/challenge",

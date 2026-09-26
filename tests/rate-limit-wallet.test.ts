@@ -292,8 +292,6 @@ describe("Wallet-based rate limiting", () => {
     shortApp.use(express.json());
 
     const limiter = createWalletRateLimiter({ windowMs: 150, maxRequests: 2 }, "per-wallet-test");
-        // Wait for window to expire
-        await new Promise((resolve) => setTimeout(resolve, 500));
 
     shortApp.post(
       "/test",
@@ -341,4 +339,3 @@ describe("Wallet-based rate limiting", () => {
     await request(shortApp).post("/test").set("Authorization", `Bearer ${tokenB}`).expect(200);
   });
 });
-
