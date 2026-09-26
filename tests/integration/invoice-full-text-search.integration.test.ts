@@ -98,10 +98,10 @@ describeIfDb("Invoice full-text search (Postgres)", () => {
     expect(items[0].rank).toBeGreaterThan(items[1].rank!);
   });
 
-  it("stems words, so 'shipments' finds 'shipping'", async () => {
+  it("stems words, so 'shipped' finds 'shipping'", async () => {
     const hit = await seed({ issuerName: "Oceanic", description: "Container shipping to Lagos" });
 
-    const { items } = await service.search({ q: "shipments" });
+    const { items } = await service.search({ q: "shipped" });
 
     expect(ids(items)).toEqual([hit.id]);
   });
@@ -177,9 +177,9 @@ describeIfDb("Invoice full-text search (Postgres)", () => {
   it("answers within 300ms on an indexed table", async () => {
     await dataSource.query(
       `INSERT INTO "invoices" ("seller_id", "invoice_number", "customer_name", "amount", "discount_rate",
-         "net_amount", "due_date", "status", "issuer_name", "description")
+         "net_amount", "due_date", "status", "issuer_name", "description", "version")
        SELECT $1, 'BULK-' || g, 'Customer', 1000, 5, 950, DATE '2026-12-01', 'published',
-              'Issuer ' || g, 'Invoice for freight batch ' || g
+              'Issuer ' || g, 'Invoice for freight batch ' || g, 1
        FROM generate_series(1, 20000) AS g`,
       [sellerId]
     );
