@@ -24,6 +24,9 @@ import { InvoiceStatus, KYCStatus, UserType } from "../../src/types/enums";
 const databaseUrl = process.env.DATABASE_URL;
 const describeIfDb = databaseUrl ? describe : describe.skip;
 
+/** Own schema so parallel suites sharing this database cannot drop or lock our tables. */
+const TEST_SCHEMA = "fts_integration_test";
+
 describeIfDb("Invoice full-text search (Postgres)", () => {
   let dataSource: DataSource;
   let service: InvoiceSearchService;
@@ -31,12 +34,18 @@ describeIfDb("Invoice full-text search (Postgres)", () => {
   let counter = 0;
 
   beforeAll(async () => {
+    const admin = new DataSource({ type: "postgres", url: databaseUrl });
+    await admin.initialize();
+    await admin.query(`DROP SCHEMA IF EXISTS ${TEST_SCHEMA} CASCADE`);
+    await admin.query(`CREATE SCHEMA ${TEST_SCHEMA}`);
+    await admin.destroy();
+
     dataSource = new DataSource({
       type: "postgres",
       url: databaseUrl,
+      extra: { options: `-c search_path=${TEST_SCHEMA}` },
       entities: [User, Invoice, Investment, Transaction, KYCVerification, Notification, AuthChallenge],
       synchronize: true,
-      dropSchema: true,
       logging: false,
     });
     await dataSource.initialize();
@@ -57,7 +66,10 @@ describeIfDb("Invoice full-text search (Postgres)", () => {
   }, 30000);
 
   afterAll(async () => {
-    if (dataSource?.isInitialized) await dataSource.destroy();
+    if (dataSource?.isInitialized) {
+      await dataSource.query(`DROP SCHEMA IF EXISTS ${TEST_SCHEMA} CASCADE`);
+      await dataSource.destroy();
+    }
   });
 
   beforeEach(async () => {
