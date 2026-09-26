@@ -30,7 +30,7 @@ import { Transaction } from "../../src/models/Transaction.model";
 import { KYCVerification } from "../../src/models/KYCVerification.model";
 import { Notification } from "../../src/models/Notification.model";
 
-describe("Integration: Invoice Analytics Authorization", () => {
+describe("Integration: Invoice Token Holders Authorization", () => {
   let dataSource: DataSource;
   let app: ReturnType<typeof createApp>;
   let config: AppConfig;
@@ -91,7 +91,7 @@ describe("Integration: Invoice Analytics Authorization", () => {
     await dataSource.destroy();
   });
 
-  it("should return 403 when seller B tries to access seller A's invoice analytics", async () => {
+  it("should return 403 when seller B tries to access seller A's invoice token holders", async () => {
     const userRepo = dataSource.getRepository(User);
     const invoiceRepo = dataSource.getRepository(Invoice);
 
@@ -101,16 +101,13 @@ describe("Integration: Invoice Analytics Authorization", () => {
     const invoice = await invoiceRepo.save(
       invoiceRepo.create({
         sellerId: sellerA.id,
-        invoiceNumber: "INV-ANALYTICS-001",
+        invoiceNumber: "INV-TOKENS-001",
         customerName: "Test Customer",
         amount: "1000.0000",
         discountRate: "5.00",
         netAmount: "950.0000",
         dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
         status: InvoiceStatus.PUBLISHED,
-        faceValue: "1000.0000",
-        fundingTarget: "1000.0000",
-        yieldBps: 500,
         ipfsHash: "QmTestHash123",
       })
     );
@@ -118,14 +115,14 @@ describe("Integration: Invoice Analytics Authorization", () => {
     const tokenB = authService.generateToken({ id: sellerB.id, stellarAddress: sellerB.stellarAddress });
 
     const res = await request(app)
-      .get(`/api/v1/invoices/${invoice.id}/analytics`)
+      .get(`/api/v1/invoices/${invoice.id}/tokens`)
       .set("Authorization", `Bearer ${tokenB}`);
 
     expect(res.status).toBe(403);
     expect(res.body.error.code).toBe("FORBIDDEN");
   });
 
-  it("should return 200 when seller A accesses their own invoice analytics", async () => {
+  it("should return 200 when seller A accesses their own invoice token holders", async () => {
     const userRepo = dataSource.getRepository(User);
     const invoiceRepo = dataSource.getRepository(Invoice);
 
@@ -134,16 +131,13 @@ describe("Integration: Invoice Analytics Authorization", () => {
     const invoice = await invoiceRepo.save(
       invoiceRepo.create({
         sellerId: sellerA.id,
-        invoiceNumber: "INV-ANALYTICS-002",
+        invoiceNumber: "INV-TOKENS-002",
         customerName: "Test Customer 2",
         amount: "2000.0000",
         discountRate: "5.00",
         netAmount: "1900.0000",
         dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
         status: InvoiceStatus.PUBLISHED,
-        faceValue: "2000.0000",
-        fundingTarget: "2000.0000",
-        yieldBps: 500,
         ipfsHash: "QmTestHash456",
       })
     );
@@ -151,7 +145,7 @@ describe("Integration: Invoice Analytics Authorization", () => {
     const tokenA = authService.generateToken({ id: sellerA.id, stellarAddress: sellerA.stellarAddress });
 
     const res = await request(app)
-      .get(`/api/v1/invoices/${invoice.id}/analytics`)
+      .get(`/api/v1/invoices/${invoice.id}/tokens`)
       .set("Authorization", `Bearer ${tokenA}`);
 
     expect(res.status).toBe(200);
@@ -159,7 +153,7 @@ describe("Integration: Invoice Analytics Authorization", () => {
     expect(res.body.data).toBeDefined();
   });
 
-  it("should return 401 when unauthenticated request accesses invoice analytics", async () => {
+  it("should return 401 when unauthenticated request accesses invoice token holders", async () => {
     const userRepo = dataSource.getRepository(User);
     const invoiceRepo = dataSource.getRepository(Invoice);
 
@@ -168,21 +162,18 @@ describe("Integration: Invoice Analytics Authorization", () => {
     const invoice = await invoiceRepo.save(
       invoiceRepo.create({
         sellerId: sellerA.id,
-        invoiceNumber: "INV-ANALYTICS-003",
+        invoiceNumber: "INV-TOKENS-003",
         customerName: "Test Customer 3",
         amount: "3000.0000",
         discountRate: "5.00",
         netAmount: "2850.0000",
         dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
         status: InvoiceStatus.PUBLISHED,
-        faceValue: "3000.0000",
-        fundingTarget: "3000.0000",
-        yieldBps: 500,
         ipfsHash: "QmTestHash789",
       })
     );
 
-    const res = await request(app).get(`/api/v1/invoices/${invoice.id}/analytics`);
+    const res = await request(app).get(`/api/v1/invoices/${invoice.id}/tokens`);
 
     expect(res.status).toBe(401);
   });
