@@ -22,6 +22,7 @@ import {
   logSettlementFailure,
   logSettlementSuccess,
 } from "../lib/settlement-observability";
+import type { InvoiceTransitionReason } from "../lib/invoice-lifecycle-log";
 import {
   settlementEventEmitter,
   SettlementEventEmitter,
@@ -40,6 +41,8 @@ export interface SettleInvoiceInput {
   invoiceId: string;
   proceeds: string;
   actorWallet: string;
+  /** Recorded in the status history; defaults to `admin_settled`. */
+  trigger?: InvoiceTransitionReason;
   sellerId?: string;
 }
 
@@ -180,7 +183,13 @@ export class SettlementService {
    * a settlement event for downstream processing.
    */
   async settleInvoice(input: SettleInvoiceInput): Promise<SettleInvoiceResult> {
-    const { invoiceId, proceeds: proceedsInput, actorWallet, sellerId } = input;
+    const {
+      invoiceId,
+      proceeds: proceedsInput,
+      actorWallet,
+      sellerId,
+      trigger = "admin_settled",
+    } = input;
 
     const proceeds = new Decimal(proceedsInput);
     if (proceeds.isNegative() || proceeds.isZero()) {
@@ -368,7 +377,7 @@ export class SettlementService {
             entityManagerTransitionStore(transactionalEntityManager),
             invoice,
             InvoiceStatus.SETTLED,
-            { actor: { role: "system", wallet: actorWallet }, trigger: "admin_settled" }
+            { actor: { role: "system", wallet: actorWallet }, trigger }
           );
 
           const eventPayload: SettlementEventPayload = {

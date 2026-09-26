@@ -23,6 +23,8 @@ export enum InvoiceStatus {
   SETTLED = "settled",
   CANCELLED = "cancelled",
   REJECTED = "rejected",
+  /** Reached maturity without being fully funded. */
+  FAILED = "failed",
 }
 
 export enum InvestmentStatus {

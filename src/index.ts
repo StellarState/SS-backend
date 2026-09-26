@@ -24,8 +24,12 @@ import { createMarketplaceService } from "./services/marketplace.service";
 import { KycService } from "./services/kyc.service";
 import { PaymentDistributorContractService } from "./services/stellar/payment-distributor-contract.service";
 import { getSorobanConfig } from "./config/stellar";
+import { createInvoiceMaturityWorker, SettlementEventBus } from "./workers/invoice-maturity.worker";
 
-export async function bootstrap(): Promise<{ server: Server }> {
+export async function bootstrap(): Promise<{
+  server: Server;
+  settlementEvents: SettlementEventBus;
+}> {
   const config = getConfig();
 
   if (!dataSource.isInitialized) {
@@ -94,7 +98,23 @@ export async function bootstrap(): Promise<{ server: Server }> {
     logger.info("Server running", { port: config.port });
   });
 
-  return { server };
+  // Settlement outcomes for notification dispatch; the state machine effects
+  // above already notify sellers and investors of each status change.
+  const settlementEvents = new SettlementEventBus();
+  const maturityWorker = createInvoiceMaturityWorker(
+    dataSource,
+    settlementService,
+    invoiceStateMachine,
+    settlementEvents,
+    config.maturity,
+    logger
+  );
+  maturityWorker.start();
+  server.on("close", () => {
+    void maturityWorker.stop();
+  });
+
+  return { server, settlementEvents };
 }
 
 if (require.main === module) {
