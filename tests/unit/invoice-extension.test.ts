@@ -41,7 +41,7 @@ describe("InvoiceExtensionService (issue #477)", () => {
       if (call === 1) return requestRepo;
       if (call === 2) return invoiceRepo;
       return investmentRepo;
-    });
+    }) as any;
 
     return {
       service: new InvoiceExtensionService(dataSource as never),

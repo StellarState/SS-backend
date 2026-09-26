@@ -19,6 +19,7 @@ import { createInvoiceRouter } from "./routes/invoice.routes";
 import { createInvestmentRouter } from "./routes/investment.routes";
 import { createSettlementRouter } from "./routes/settlement.routes";
 import { createMarketplaceRouter } from "./routes/marketplace.routes";
+import { createSellerRouter } from "./routes/seller.routes";
 import { createAdminRouter } from "./routes/admin/admin.routes";
 import { createInvestorRouter } from "./routes/investor.routes";
 import { createPortfolioRouter } from "./routes/portfolio.routes";
@@ -34,6 +35,7 @@ import type { InvoiceService } from "./services/invoice.service";
 import type { InvestmentService } from "./services/investment.service";
 import type { SettlementService } from "./services/settlement.service";
 import type { MarketplaceService } from "./services/marketplace.service";
+import type { SellerService } from "./services/seller.service";
 import type { KycService } from "./services/kyc.service";
 import type { InvestorAcknowledgementService } from "./services/investor-acknowledgement.service";
 import type { InvoiceExtensionService } from "./services/invoice-extension.service";
@@ -107,9 +109,14 @@ export interface AppDependencies {
   investmentService?: InvestmentService;
   settlementService?: SettlementService;
   marketplaceService?: MarketplaceService;
+  sellerService?: SellerService;
   kycService?: KycService;
   ratingsLeaderboardService?: RatingsLeaderboardService;
   dividendCycleService?: DividendCycleService;
+  acknowledgementService?: InvestorAcknowledgementService;
+  portfolioService?: PortfolioService;
+  extensionService?: InvoiceExtensionService;
+  adminMetricsService?: AdminMetricsService;
   logger?: AppLogger;
   metricsEnabled?: boolean;
   metricsRegistry?: MetricsRegistry;
@@ -135,9 +142,14 @@ export function createApp({
   investmentService,
   settlementService,
   marketplaceService,
+  sellerService,
   kycService,
   ratingsLeaderboardService,
   dividendCycleService,
+  acknowledgementService,
+  portfolioService,
+  extensionService,
+  adminMetricsService,
   logger: appLogger = logger,
   metricsEnabled = true,
   metricsRegistry = new MetricsRegistry(),
@@ -314,6 +326,12 @@ export function createApp({
 
   if (marketplaceService) {
     app.use("/api/v1/marketplace", createMarketplaceRouter({ marketplaceService }));
+    app.use("/marketplace", createMarketplaceRouter({ marketplaceService }));
+  }
+
+  if (sellerService) {
+    app.use("/api/v1/seller", createSellerRouter({ sellerService, authService }));
+    app.use("/seller", createSellerRouter({ sellerService, authService }));
   }
 
   // ---- Keys: Ratings Leaderboard ----
