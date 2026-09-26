@@ -29,6 +29,7 @@ import type { InvestmentService } from "./services/investment.service";
 import type { SettlementService } from "./services/settlement.service";
 import type { MarketplaceService } from "./services/marketplace.service";
 import type { KycService } from "./services/kyc.service";
+import type { InvoiceSearchService } from "./services/invoice-search.service";
 
 import dataSource from "./config/database";
 
@@ -98,6 +99,7 @@ export interface AppDependencies {
   settlementService?: SettlementService;
   marketplaceService?: MarketplaceService;
   kycService?: KycService;
+  invoiceSearchService?: InvoiceSearchService;
   logger?: AppLogger;
   metricsEnabled?: boolean;
   metricsRegistry?: MetricsRegistry;
@@ -124,6 +126,7 @@ export function createApp({
   settlementService,
   marketplaceService,
   kycService,
+  invoiceSearchService,
   logger: appLogger = logger,
   metricsEnabled = true,
   metricsRegistry = new MetricsRegistry(),
@@ -255,6 +258,7 @@ export function createApp({
       authService,
       contractGuardService,
       contractId: pauseGuardContractId,
+      invoiceSearchService,
     });
     app.use("/api/v1/invoices", invoiceRouter);
     app.use("/invoices", invoiceRouter);
