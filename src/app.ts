@@ -20,6 +20,8 @@ import { createInvestmentRouter } from "./routes/investment.routes";
 import { createSettlementRouter } from "./routes/settlement.routes";
 import { createMarketplaceRouter } from "./routes/marketplace.routes";
 import { createAdminRouter } from "./routes/admin/admin.routes";
+import { createInvestorRouter } from "./routes/investor.routes";
+import { createPortfolioRouter } from "./routes/portfolio.routes";
 import { createContractGuardService } from "./services/stellar/contract-guard.service";
 
 import type { AuthService } from "./services/auth.service";
@@ -29,6 +31,10 @@ import type { InvestmentService } from "./services/investment.service";
 import type { SettlementService } from "./services/settlement.service";
 import type { MarketplaceService } from "./services/marketplace.service";
 import type { KycService } from "./services/kyc.service";
+import type { InvestorAcknowledgementService } from "./services/investor-acknowledgement.service";
+import type { InvoiceExtensionService } from "./services/invoice-extension.service";
+import type { AdminMetricsService } from "./services/admin-metrics.service";
+import type { PortfolioService } from "./services/portfolio.service";
 
 import dataSource from "./config/database";
 
@@ -98,6 +104,10 @@ export interface AppDependencies {
   settlementService?: SettlementService;
   marketplaceService?: MarketplaceService;
   kycService?: KycService;
+  acknowledgementService?: InvestorAcknowledgementService;
+  extensionService?: InvoiceExtensionService;
+  adminMetricsService?: AdminMetricsService;
+  portfolioService?: PortfolioService;
   logger?: AppLogger;
   metricsEnabled?: boolean;
   metricsRegistry?: MetricsRegistry;
@@ -124,6 +134,10 @@ export function createApp({
   settlementService,
   marketplaceService,
   kycService,
+  acknowledgementService,
+  extensionService,
+  adminMetricsService,
+  portfolioService,
   logger: appLogger = logger,
   metricsEnabled = true,
   metricsRegistry = new MetricsRegistry(),
@@ -255,6 +269,7 @@ export function createApp({
       authService,
       contractGuardService,
       contractId: pauseGuardContractId,
+      extensionService,
     });
     app.use("/api/v1/invoices", invoiceRouter);
     app.use("/invoices", invoiceRouter);
@@ -270,6 +285,20 @@ export function createApp({
         contractId: pauseGuardContractId,
       })
     );
+  }
+
+  // Issue #473 — accreditation acknowledgement
+  if (acknowledgementService) {
+    const investorRouter = createInvestorRouter({ authService, acknowledgementService });
+    app.use("/api/v1/investors", investorRouter);
+    app.use("/investors", investorRouter);
+  }
+
+  // Issue #479 — portfolio summary with P&L
+  if (portfolioService) {
+    const portfolioRouter = createPortfolioRouter({ authService, portfolioService });
+    app.use("/api/v1/portfolio", portfolioRouter);
+    app.use("/portfolio", portfolioRouter);
   }
 
   if (settlementService) {
@@ -290,7 +319,13 @@ export function createApp({
   if (config?.admin?.ipWhitelist?.length) {
     app.use(
       "/api/v1/admin",
-      createAdminRouter({ dataSource, allowedCidrs: config.admin.ipWhitelist, invoiceService })
+      createAdminRouter({
+        dataSource,
+        allowedCidrs: config.admin.ipWhitelist,
+        invoiceService,
+        extensionService,
+        metricsService: adminMetricsService,
+      })
     );
   }
 

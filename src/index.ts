@@ -22,6 +22,10 @@ import { createInvestmentService } from "./services/investment.service";
 import { createSettlementService } from "./services/settlement.service";
 import { createMarketplaceService } from "./services/marketplace.service";
 import { KycService } from "./services/kyc.service";
+import { createInvestorAcknowledgementService } from "./services/investor-acknowledgement.service";
+import { createInvoiceExtensionService } from "./services/invoice-extension.service";
+import { createAdminMetricsService } from "./services/admin-metrics.service";
+import { createPortfolioService } from "./services/portfolio.service";
 import { PaymentDistributorContractService } from "./services/stellar/payment-distributor-contract.service";
 import { getSorobanConfig } from "./config/stellar";
 
@@ -76,6 +80,16 @@ export async function bootstrap(): Promise<{ server: Server }> {
   );
   const marketplaceService = createMarketplaceService(dataSource);
   const kycService = new KycService(dataSource, config.kyc.webhookSecret ?? "", logger);
+  const acknowledgementService = createInvestorAcknowledgementService(dataSource);
+  const extensionService = createInvoiceExtensionService(dataSource, notificationService);
+  const adminMetricsService = createAdminMetricsService(dataSource);
+  const portfolioService = createPortfolioService(dataSource);
+
+  // Keep process.env.TERMS_VERSION aligned with resolved config for services
+  // that read the env directly (acknowledgement gate in InvestmentService).
+  if (!process.env.TERMS_VERSION) {
+    process.env.TERMS_VERSION = config.termsVersion;
+  }
 
   const app = createApp({
     authService,
@@ -85,6 +99,10 @@ export async function bootstrap(): Promise<{ server: Server }> {
     settlementService,
     marketplaceService,
     kycService,
+    acknowledgementService,
+    extensionService,
+    adminMetricsService,
+    portfolioService,
     config,
     logger,
     metricsEnabled: config.observability.metricsEnabled,
