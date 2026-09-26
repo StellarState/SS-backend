@@ -1,12 +1,12 @@
-import { AddMarketplaceIndexes1711100000000 } from "../../src/migrations/1711100000000-AddMarketplaceIndexes";
+import { AddMarketplaceIndexes1711000000000 } from "../../src/migrations/1711000000000-AddMarketplaceIndexes";
 import { AppError } from "../../src/utils/http-error";
 
 describe("AddMarketplaceIndexes Migration - Issue #144", () => {
-  let migration: AddMarketplaceIndexes1711100000000;
-  let mockQueryRunner: any;
+  let migration: AddMarketplaceIndexes1711000000000;
+  let mockQueryRunner: { query: jest.Mock };
 
   beforeEach(() => {
-    migration = new AddMarketplaceIndexes1711100000000();
+    migration = new AddMarketplaceIndexes1711000000000();
     mockQueryRunner = {
       query: jest.fn().mockResolvedValue(undefined),
     };
@@ -17,25 +17,25 @@ describe("AddMarketplaceIndexes Migration - Issue #144", () => {
     expect(mockQueryRunner.query).toHaveBeenCalledTimes(3);
   });
 
-  it("should create IDX_INVOICES_STATUS_CREATED_AT_DESC index", async () => {
+  it("should create idx_invoices_status_created_at_desc index", async () => {
     await migration.up(mockQueryRunner);
-    const calls = mockQueryRunner.query.mock.calls.map((c) => c[0]);
-    expect(calls.some((sql) => sql.includes("IDX_INVOICES_STATUS_CREATED_AT_DESC"))).toBe(true);
-    expect(calls.some((sql) => sql.includes("created_at\" DESC"))).toBe(true);
+    const calls = mockQueryRunner.query.mock.calls.map((c: unknown[]) => c[0] as string);
+    expect(calls.some((sql: string) => sql.includes("idx_invoices_status_created_at_desc"))).toBe(true);
+    expect(calls.some((sql: string) => sql.includes("created_at\" DESC"))).toBe(true);
   });
 
-  it("should create IDX_INVOICES_STATUS_AMOUNT_DESC index", async () => {
+  it("should create idx_invoices_status_amount_desc index", async () => {
     await migration.up(mockQueryRunner);
-    const calls = mockQueryRunner.query.mock.calls.map((c) => c[0]);
-    expect(calls.some((sql) => sql.includes("IDX_INVOICES_STATUS_AMOUNT_DESC"))).toBe(true);
-    expect(calls.some((sql) => sql.includes("amount\" DESC"))).toBe(true);
+    const calls = mockQueryRunner.query.mock.calls.map((c: unknown[]) => c[0] as string);
+    expect(calls.some((sql: string) => sql.includes("idx_invoices_status_amount_desc"))).toBe(true);
+    expect(calls.some((sql: string) => sql.includes("amount\" DESC"))).toBe(true);
   });
 
-  it("should create IDX_INVESTMENTS_INVESTOR_ID_STATUS index", async () => {
+  it("should create idx_investments_investor_id_status index", async () => {
     await migration.up(mockQueryRunner);
-    const calls = mockQueryRunner.query.mock.calls.map((c) => c[0]);
-    expect(calls.some((sql) => sql.includes("IDX_INVESTMENTS_INVESTOR_ID_STATUS"))).toBe(true);
-    expect(calls.some((sql) => sql.includes("investor_id") && sql.includes("status"))).toBe(true);
+    const calls = mockQueryRunner.query.mock.calls.map((c: unknown[]) => c[0] as string);
+    expect(calls.some((sql: string) => sql.includes("idx_investments_investor_id_status"))).toBe(true);
+    expect(calls.some((sql: string) => sql.includes("investor_id") && sql.includes("status"))).toBe(true);
   });
 
   it("should throw AppError on up migration failure", async () => {
@@ -50,10 +50,10 @@ describe("AddMarketplaceIndexes Migration - Issue #144", () => {
 
   it("should drop indexes in reverse order on down migration", async () => {
     await migration.down(mockQueryRunner);
-    const calls = mockQueryRunner.query.mock.calls.map((c) => c[0]);
-    expect(calls[0]).toContain("IDX_INVESTMENTS_INVESTOR_ID_STATUS");
-    expect(calls[1]).toContain("IDX_INVOICES_STATUS_AMOUNT_DESC");
-    expect(calls[2]).toContain("IDX_INVOICES_STATUS_CREATED_AT_DESC");
+    const calls = mockQueryRunner.query.mock.calls.map((c: unknown[]) => c[0] as string);
+    expect(calls[0]).toContain("idx_investments_investor_id_status");
+    expect(calls[1]).toContain("idx_invoices_status_amount_desc");
+    expect(calls[2]).toContain("idx_invoices_status_created_at_desc");
   });
 
   it("should throw AppError on down migration failure", async () => {
