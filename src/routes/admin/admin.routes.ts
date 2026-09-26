@@ -8,6 +8,10 @@ import { rejectKYC } from "./reject-kyc";
 import { revokeKYC } from "./revoke-kyc";
 import { approveInvoice } from "./approve-invoice";
 import { rejectInvoice } from "./reject-invoice";
+import { createRoyaltyAnalyticsService } from "@/services/royalty-analytics.service";
+import { createAdminRoyaltiesRouter } from "./royalties.routes";
+import { createAnalyticsSnapshotService } from "@/services/analytics-snapshot.service";
+import { createAdminAnalyticsTrendsRouter } from "./analytics-trends.routes";
 
 export interface AdminRouterDependencies {
   dataSource: DataSource;
@@ -48,6 +52,14 @@ export function createAdminRouter({
       rejectInvoice(req, res, invoiceService);
     });
   }
+
+  // ---- Royalty analytics (GET /admin/royalties/analytics) ----
+  const royaltyAnalyticsService = createRoyaltyAnalyticsService(dataSource);
+  router.use("/royalties", createAdminRoyaltiesRouter({ royaltyAnalyticsService }));
+
+  // ---- Analytics trends / daily snapshots (GET /admin/analytics/trends) ----
+  const analyticsSnapshotService = createAnalyticsSnapshotService(dataSource);
+  router.use("/analytics", createAdminAnalyticsTrendsRouter({ analyticsSnapshotService }));
 
   return router;
 }

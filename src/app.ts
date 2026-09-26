@@ -21,6 +21,10 @@ import { createSettlementRouter } from "./routes/settlement.routes";
 import { createMarketplaceRouter } from "./routes/marketplace.routes";
 import { createAdminRouter } from "./routes/admin/admin.routes";
 import { createContractGuardService } from "./services/stellar/contract-guard.service";
+import { createKeysRouter } from "./routes/keys.routes";
+import { createDividendsRouter } from "./routes/dividends.routes";
+import type { RatingsLeaderboardService } from "./services/ratings-leaderboard.service";
+import type { DividendCycleService } from "./services/dividend-cycle.service";
 
 import type { AuthService } from "./services/auth.service";
 import type { NotificationService } from "./services/notification.service";
@@ -98,6 +102,8 @@ export interface AppDependencies {
   settlementService?: SettlementService;
   marketplaceService?: MarketplaceService;
   kycService?: KycService;
+  ratingsLeaderboardService?: RatingsLeaderboardService;
+  dividendCycleService?: DividendCycleService;
   logger?: AppLogger;
   metricsEnabled?: boolean;
   metricsRegistry?: MetricsRegistry;
@@ -124,6 +130,8 @@ export function createApp({
   settlementService,
   marketplaceService,
   kycService,
+  ratingsLeaderboardService,
+  dividendCycleService,
   logger: appLogger = logger,
   metricsEnabled = true,
   metricsRegistry = new MetricsRegistry(),
@@ -285,6 +293,16 @@ export function createApp({
 
   if (marketplaceService) {
     app.use("/api/v1/marketplace", createMarketplaceRouter({ marketplaceService }));
+  }
+
+  // ---- Keys: Ratings Leaderboard ----
+  if (ratingsLeaderboardService) {
+    app.use("/api/v1/keys", createKeysRouter({ ratingsLeaderboardService }));
+  }
+
+  // ---- Dividends: Cycle Config & Distribution ----
+  if (dividendCycleService) {
+    app.use("/api/v1/dividends", createDividendsRouter({ dividendCycleService, authService }));
   }
 
   if (config?.admin?.ipWhitelist?.length) {
