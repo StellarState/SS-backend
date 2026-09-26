@@ -7,8 +7,13 @@ export function createAuthController(authService: AuthService) {
   return {
     // Request challenge for signing
     challenge: async (req: AuthenticatedRequest, res: Response): Promise<void> => {
-      const challenge = await authService.createChallenge(req.body.publicKey);
-      res.status(201).json({ challenge });
+      const publicKey = (req.method === "GET" ? req.query?.publicKey : req.body?.publicKey) as string;
+      const challenge = await authService.createChallenge(publicKey);
+      const statusCode = req.method === "GET" ? 200 : 201;
+      res.status(statusCode).json({
+        ...challenge,
+        challenge,
+      });
     },
 
     // Verify signed challenge and create session
