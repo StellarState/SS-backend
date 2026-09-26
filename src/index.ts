@@ -21,6 +21,7 @@ import { createIPFSService } from "./services/ipfs.service";
 import { createInvestmentService } from "./services/investment.service";
 import { createSettlementService } from "./services/settlement.service";
 import { createMarketplaceService } from "./services/marketplace.service";
+import { createAdminUserService } from "./services/admin-user.service";
 import { KycService } from "./services/kyc.service";
 import { PaymentDistributorContractService } from "./services/stellar/payment-distributor-contract.service";
 import { getSorobanConfig } from "./config/stellar";
@@ -85,6 +86,7 @@ export async function bootstrap(): Promise<{ server: Server }> {
     settlementService,
     marketplaceService,
     kycService,
+    adminUserService: createAdminUserService(dataSource, logger),
     config,
     logger,
     metricsEnabled: config.observability.metricsEnabled,

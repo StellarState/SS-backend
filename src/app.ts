@@ -20,6 +20,12 @@ import { createInvestmentRouter } from "./routes/investment.routes";
 import { createSettlementRouter } from "./routes/settlement.routes";
 import { createMarketplaceRouter } from "./routes/marketplace.routes";
 import { createAdminRouter } from "./routes/admin/admin.routes";
+import {
+  createDataSourceSuspensionLookup,
+  createSuspendedWalletGuard,
+  type SuspensionLookup,
+} from "./middleware/suspended-wallet.middleware";
+import type { AdminUserService } from "./services/admin-user.service";
 import { createContractGuardService } from "./services/stellar/contract-guard.service";
 
 import type { AuthService } from "./services/auth.service";
@@ -98,6 +104,9 @@ export interface AppDependencies {
   settlementService?: SettlementService;
   marketplaceService?: MarketplaceService;
   kycService?: KycService;
+  adminUserService?: AdminUserService;
+  /** Defaults to reading users.is_suspended from the app data source. */
+  suspensionLookup?: SuspensionLookup;
   logger?: AppLogger;
   metricsEnabled?: boolean;
   metricsRegistry?: MetricsRegistry;
@@ -124,6 +133,8 @@ export function createApp({
   settlementService,
   marketplaceService,
   kycService,
+  adminUserService,
+  suspensionLookup,
   logger: appLogger = logger,
   metricsEnabled = true,
   metricsRegistry = new MetricsRegistry(),
@@ -225,6 +236,16 @@ export function createApp({
     });
   }
 
+  // Every request with a bearer token for a suspended wallet gets a 403,
+  // on all authenticated routes.
+  app.use(
+    "/api/v1",
+    createSuspendedWalletGuard(
+      suspensionLookup ?? createDataSourceSuspensionLookup(dataSource),
+      appLogger
+    )
+  );
+
   app.use("/api/v1/auth", createAuthRouter(authService, appLogger));
   app.use("/auth", createAuthRouter(authService, appLogger));
 
@@ -290,7 +311,13 @@ export function createApp({
   if (config?.admin?.ipWhitelist?.length) {
     app.use(
       "/api/v1/admin",
-      createAdminRouter({ dataSource, allowedCidrs: config.admin.ipWhitelist, invoiceService })
+      createAdminRouter({
+        dataSource,
+        allowedCidrs: config.admin.ipWhitelist,
+        invoiceService,
+        adminUserService,
+        authService,
+      })
     );
   }
 
