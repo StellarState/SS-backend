@@ -10,8 +10,10 @@ import { rejectKYC } from "./reject-kyc";
 import { revokeKYC } from "./revoke-kyc";
 import { approveInvoice } from "./approve-invoice";
 import { rejectInvoice } from "./reject-invoice";
-import { ServiceError } from "@/utils/service-error";
-import { PublicAppError } from "@/utils/http-error";
+import { createRoyaltyAnalyticsService } from "@/services/royalty-analytics.service";
+import { createAdminRoyaltiesRouter } from "./royalties.routes";
+import { createAnalyticsSnapshotService } from "@/services/analytics-snapshot.service";
+import { createAdminAnalyticsTrendsRouter } from "./analytics-trends.routes";
 
 export interface AdminRouterDependencies {
   dataSource: DataSource;
@@ -60,87 +62,13 @@ export function createAdminRouter({
     });
   }
 
-  // GET /admin/metrics — platform-wide dashboard aggregates (issue #478)
-  if (metricsService) {
-    router.get("/metrics", async (req: Request, res: Response, next: NextFunction) => {
-      try {
-        const from =
-          typeof req.query.from === "string" && req.query.from
-            ? new Date(req.query.from)
-            : null;
-        const to =
-          typeof req.query.to === "string" && req.query.to ? new Date(req.query.to) : null;
-        if (from && Number.isNaN(from.getTime())) {
-          throw new PublicAppError(400, "Invalid from date", "INVALID_DATE");
-        }
-        if (to && Number.isNaN(to.getTime())) {
-          throw new PublicAppError(400, "Invalid to date", "INVALID_DATE");
-        }
-        const metrics = await metricsService.getMetrics({ from, to });
-        res.setHeader("Cache-Control", "private, max-age=60");
-        res.status(200).json({ success: true, data: metrics });
-      } catch (error) {
-        next(error);
-      }
-    });
-  }
+  // ---- Royalty analytics (GET /admin/royalties/analytics) ----
+  const royaltyAnalyticsService = createRoyaltyAnalyticsService(dataSource);
+  router.use("/royalties", createAdminRoyaltiesRouter({ royaltyAnalyticsService }));
 
-  // PATCH /admin/invoices/:id/extension-request/:reqId — approve/reject (issue #477)
-  if (extensionService) {
-    router.patch(
-      "/invoices/:id/extension-request/:reqId",
-      async (req: Request, res: Response, next: NextFunction) => {
-        try {
-          const decisionRaw = String(req.body?.decision ?? "").toLowerCase();
-          if (decisionRaw !== "approve" && decisionRaw !== "reject") {
-            throw new PublicAppError(
-              400,
-              'decision must be "approve" or "reject"',
-              "INVALID_DECISION"
-            );
-          }
-          const reviewedBy =
-            (typeof req.body?.reviewedBy === "string" && req.body.reviewedBy) ||
-            (req.ip ?? "admin");
-
-          const result = await extensionService.reviewExtension({
-            invoiceId: req.params.id,
-            requestId: req.params.reqId,
-            decision: decisionRaw,
-            reviewedBy,
-            reviewNote: typeof req.body?.reviewNote === "string" ? req.body.reviewNote : null,
-          });
-
-          res.status(200).json({
-            success: true,
-            data: {
-              request: {
-                id: result.request.id,
-                status: result.request.status,
-                proposedDeadline: result.request.proposedDeadline.toISOString(),
-                previousDeadline: result.request.previousDeadline?.toISOString() ?? null,
-                reviewedBy: result.request.reviewedBy,
-                reviewedAt: result.request.reviewedAt?.toISOString() ?? null,
-              },
-              invoice: result.invoice
-                ? {
-                    id: result.invoice.id,
-                    fundingDeadline: result.invoice.fundingDeadline?.toISOString() ?? null,
-                    status: result.invoice.status,
-                  }
-                : null,
-            },
-          });
-        } catch (error) {
-          if (error instanceof ServiceError) {
-            next(new PublicAppError(error.statusCode, error.message, error.code, error.details));
-            return;
-          }
-          next(error);
-        }
-      }
-    );
-  }
+  // ---- Analytics trends / daily snapshots (GET /admin/analytics/trends) ----
+  const analyticsSnapshotService = createAnalyticsSnapshotService(dataSource);
+  router.use("/analytics", createAdminAnalyticsTrendsRouter({ analyticsSnapshotService }));
 
   return router;
 }

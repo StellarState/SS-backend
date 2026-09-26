@@ -28,6 +28,9 @@ import { createAdminMetricsService } from "./services/admin-metrics.service";
 import { createPortfolioService } from "./services/portfolio.service";
 import { PaymentDistributorContractService } from "./services/stellar/payment-distributor-contract.service";
 import { getSorobanConfig } from "./config/stellar";
+import { createRatingsLeaderboardService } from "./services/ratings-leaderboard.service";
+import { createDividendCycleService } from "./services/dividend-cycle.service";
+import { scheduleAnalyticsSnapshotJob } from "./workers/analytics-snapshot.worker";
 
 export async function bootstrap(): Promise<{ server: Server }> {
   const config = getConfig();
@@ -91,6 +94,14 @@ export async function bootstrap(): Promise<{ server: Server }> {
     process.env.TERMS_VERSION = config.termsVersion;
   }
 
+  // ---- Feature: Ratings Leaderboard ----
+  const ratingsLeaderboardService = createRatingsLeaderboardService(dataSource, {
+    redisUrl: config.cache.redisUrl,
+  });
+
+  // ---- Feature: Dividend Cycle Config ----
+  const dividendCycleService = createDividendCycleService(dataSource);
+
   const app = createApp({
     authService,
     notificationService,
@@ -99,10 +110,8 @@ export async function bootstrap(): Promise<{ server: Server }> {
     settlementService,
     marketplaceService,
     kycService,
-    acknowledgementService,
-    extensionService,
-    adminMetricsService,
-    portfolioService,
+    ratingsLeaderboardService,
+    dividendCycleService,
     config,
     logger,
     metricsEnabled: config.observability.metricsEnabled,
@@ -110,6 +119,14 @@ export async function bootstrap(): Promise<{ server: Server }> {
 
   const server = app.listen(config.port, () => {
     logger.info("Server running", { port: config.port });
+  });
+
+  // ---- Start daily analytics snapshot cron (midnight UTC) ----
+  const snapshotScheduler = scheduleAnalyticsSnapshotJob(dataSource);
+
+  // Stop scheduler on server close
+  server.on("close", () => {
+    snapshotScheduler.stop();
   });
 
   return { server };

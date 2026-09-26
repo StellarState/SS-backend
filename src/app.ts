@@ -23,6 +23,10 @@ import { createAdminRouter } from "./routes/admin/admin.routes";
 import { createInvestorRouter } from "./routes/investor.routes";
 import { createPortfolioRouter } from "./routes/portfolio.routes";
 import { createContractGuardService } from "./services/stellar/contract-guard.service";
+import { createKeysRouter } from "./routes/keys.routes";
+import { createDividendsRouter } from "./routes/dividends.routes";
+import type { RatingsLeaderboardService } from "./services/ratings-leaderboard.service";
+import type { DividendCycleService } from "./services/dividend-cycle.service";
 
 import type { AuthService } from "./services/auth.service";
 import type { NotificationService } from "./services/notification.service";
@@ -104,10 +108,8 @@ export interface AppDependencies {
   settlementService?: SettlementService;
   marketplaceService?: MarketplaceService;
   kycService?: KycService;
-  acknowledgementService?: InvestorAcknowledgementService;
-  extensionService?: InvoiceExtensionService;
-  adminMetricsService?: AdminMetricsService;
-  portfolioService?: PortfolioService;
+  ratingsLeaderboardService?: RatingsLeaderboardService;
+  dividendCycleService?: DividendCycleService;
   logger?: AppLogger;
   metricsEnabled?: boolean;
   metricsRegistry?: MetricsRegistry;
@@ -134,10 +136,8 @@ export function createApp({
   settlementService,
   marketplaceService,
   kycService,
-  acknowledgementService,
-  extensionService,
-  adminMetricsService,
-  portfolioService,
+  ratingsLeaderboardService,
+  dividendCycleService,
   logger: appLogger = logger,
   metricsEnabled = true,
   metricsRegistry = new MetricsRegistry(),
@@ -314,6 +314,16 @@ export function createApp({
 
   if (marketplaceService) {
     app.use("/api/v1/marketplace", createMarketplaceRouter({ marketplaceService }));
+  }
+
+  // ---- Keys: Ratings Leaderboard ----
+  if (ratingsLeaderboardService) {
+    app.use("/api/v1/keys", createKeysRouter({ ratingsLeaderboardService }));
+  }
+
+  // ---- Dividends: Cycle Config & Distribution ----
+  if (dividendCycleService) {
+    app.use("/api/v1/dividends", createDividendsRouter({ dividendCycleService, authService }));
   }
 
   if (config?.admin?.ipWhitelist?.length) {
