@@ -5,6 +5,7 @@ import Joi from "joi";
 import type { InvoiceService } from "../services/invoice.service";
 import type { AppConfig } from "../config/env";
 import { createInvoiceController } from "../controllers/invoice.controller";
+import { submitInvoice } from "./invoices/submit";
 import { createInvoiceInvestmentController } from "../controllers/invoice-investment.controller";
 import { authenticateJWT, createAuthMiddleware, requireKYC } from "../middleware/auth.middleware";
 import { checkContractNotPaused } from "../middleware/contract-pause-guard.middleware";
@@ -12,7 +13,10 @@ import type { AuthService } from "../services/auth.service";
 import type { InvestmentService } from "../services/investment.service";
 import type { ContractGuardService } from "../services/stellar/contract-guard.service";
 import { isValidStellarPublicKey } from "../utils/stellar-address.utils";
-import { createWalletRateLimiter } from "../middleware/rate-limit-wallet.middleware";
+import {
+  createInvestRateLimiter,
+  createInvoiceSubmitRateLimiter,
+} from "../middleware/redis-rate-limit.middleware";
 import { HttpError } from "../utils/http-error";
 import { InvoiceStatus } from "../types/enums";
 import { InvoiceCacheService, createInvoiceCacheService } from "../services/invoice-cache.service";
@@ -114,11 +118,14 @@ const batchPublishSchema = Joi.object({
 });
 
 const getInvoicesQuerySchema = Joi.object({
-  page: Joi.number().integer().min(1).default(1),
+  page: Joi.number().integer().min(1).optional(),
   limit: Joi.number().integer().min(1).max(100).default(20),
   status: Joi.string()
+    .trim()
+    .lowercase()
     .valid(...Object.values(InvoiceStatus))
     .optional(),
+  cursor: Joi.string().allow("", null).optional(),
 });
 
 const calculateTermsSchema = Joi.object({
@@ -189,10 +196,12 @@ function validateQuery(schema: Joi.Schema) {
     }
 
     // Replace req.query with validated value
-    // In Express, req.query is a getter/setter by default, but we can override it
-    // if we use the default query parser.
-    Object.keys(req.query).forEach((key) => delete req.query[key]);
-    Object.assign(req.query, value);
+    Object.defineProperty(req, "query", {
+      value,
+      writable: true,
+      configurable: true,
+      enumerable: true,
+    });
     next();
   };
 }
@@ -251,25 +260,45 @@ export function createInvoiceRouter({
 
   const kycGating = requireKYC(config.kyc.skipVerification);
 
-  // Per-wallet rate limit: max 5 invoice publishes per 60 seconds
-  const publishRateLimiter = createWalletRateLimiter(
-    { windowMs: 60_000, maxRequests: 5 },
-    "invoice-publish"
-  );
+  // Rate limiters: per-IP and per-wallet sliding window counters stored in Redis
+  const publishRateLimiter = createInvoiceSubmitRateLimiter("publish");
+  const createInvoiceRateLimiter = createInvoiceSubmitRateLimiter("create");
+  const submitInvoiceRateLimiter = createInvoiceSubmitRateLimiter("submit");
 
   // ============ INVOICE CRUD ENDPOINTS ============
 
   // GET /api/v1/invoices - List invoices for authenticated seller
   router.get("/", authenticateJWT, validateQuery(getInvoicesQuerySchema), controller.getInvoices);
 
-  // POST /api/v1/invoices - Create new invoice
+  // POST /api/v1/invoices and POST /invoices - Submit invoice for admin review or create draft invoice
   router.post(
     "/",
     authenticateJWT,
+    (req: Request, res: Response, next: NextFunction) => {
+      const isSubmission =
+        req.baseUrl === "/invoices" ||
+        req.body?.title !== undefined ||
+        req.body?.faceValue !== undefined ||
+        req.body?.fundingTarget !== undefined ||
+        req.body?.yieldBps !== undefined ||
+        req.body?.fundingDeadline !== undefined ||
+        req.body?.ipfsDocumentUrl !== undefined;
+
+      if (isSubmission) {
+        return submitInvoice(req, res, invoiceService);
+      }
+      next();
+    },
     kycGating,
+    createInvoiceRateLimiter,
     validateBody(createInvoiceSchema),
     controller.createInvoice
   );
+
+  // POST /api/v1/invoices/submit - Explicit submit alias
+  router.post("/submit", authenticateJWT, (req: Request, res: Response) => {
+    return submitInvoice(req, res, invoiceService);
+  });
 
   // POST /api/v1/invoices/batch-publish - Publish several drafts atomically.
   // Declared ahead of the "/:id" routes so "batch-publish" is never matched as
@@ -314,7 +343,13 @@ export function createInvoiceRouter({
   );
 
   // POST /api/v1/invoices/:id/submit - Submit a draft for admin review (draft → pending)
-  router.post("/:id/submit", authenticateJWT, kycGating, controller.submitInvoiceForReview);
+  router.post(
+    "/:id/submit",
+    authenticateJWT,
+    kycGating,
+    submitInvoiceRateLimiter,
+    controller.submitInvoiceForReview
+  );
 
   // GET /api/v1/invoices/:id/history - Status transition history, oldest first
   router.get("/:id/history", authenticateJWT, controller.getInvoiceStatusHistory);
@@ -337,10 +372,7 @@ export function createInvoiceRouter({
     const pauseGuard: RequestHandler[] = contractGuardService
       ? [checkContractNotPaused({ contractGuardService, contractId })]
       : [];
-    const investRateLimiter = createWalletRateLimiter(
-      { windowMs: 60_000, maxRequests: 10 },
-      "invoice-invest"
-    );
+    const investRateLimiter = createInvestRateLimiter("invoice-invest");
 
     router.post(
       "/:id/invest",
