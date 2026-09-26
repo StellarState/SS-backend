@@ -7,19 +7,27 @@ import type { AppConfig } from "../config/env";
 import { createInvoiceController } from "../controllers/invoice.controller";
 import { submitInvoice } from "./invoices/submit";
 import { createInvoiceInvestmentController } from "../controllers/invoice-investment.controller";
-import { authenticateJWT, createAuthMiddleware, requireKYC } from "../middleware/auth.middleware";
+import {
+  authenticateJWT,
+  createAuthMiddleware,
+  requireKYC,
+  requireSeller,
+} from "../middleware/auth.middleware";
 import { checkContractNotPaused } from "../middleware/contract-pause-guard.middleware";
 import type { AuthService } from "../services/auth.service";
 import type { InvestmentService } from "../services/investment.service";
+import type { InvoiceExtensionService } from "../services/invoice-extension.service";
 import type { ContractGuardService } from "../services/stellar/contract-guard.service";
 import { isValidStellarPublicKey } from "../utils/stellar-address.utils";
 import {
   createInvestRateLimiter,
   createInvoiceSubmitRateLimiter,
 } from "../middleware/redis-rate-limit.middleware";
-import { HttpError } from "../utils/http-error";
+import { HttpError, PublicAppError } from "../utils/http-error";
 import { InvoiceStatus } from "../types/enums";
 import { InvoiceCacheService, createInvoiceCacheService } from "../services/invoice-cache.service";
+import { ServiceError } from "../utils/service-error";
+import type { AuthenticatedRequest } from "../types/auth";
 
 export interface InvoiceRouterDependencies {
   invoiceService: InvoiceService;
@@ -30,6 +38,8 @@ export interface InvoiceRouterDependencies {
   contractGuardService?: ContractGuardService;
   contractId?: string | null;
   cacheService?: InvoiceCacheService;
+  /** Issue #477 — seller funding deadline extension requests. */
+  extensionService?: InvoiceExtensionService;
 }
 
 /**
@@ -206,6 +216,7 @@ export function createInvoiceRouter({
   contractGuardService,
   contractId = null,
   cacheService,
+  extensionService,
 }: InvoiceRouterDependencies): Router {
   const router = Router();
   const cache =
@@ -377,6 +388,49 @@ export function createInvoiceRouter({
 
   // POST /api/v1/invoices/calculate-terms - Calculate invoice discounting terms, fees, and APR
   router.post("/calculate-terms", validateBody(calculateTermsSchema), controller.calculateTerms);
+
+  // POST /api/v1/invoices/:id/extension-request — seller requests funding deadline extension (issue #477)
+  if (extensionService && authService) {
+    router.post(
+      "/:id/extension-request",
+      createAuthMiddleware(authService),
+      requireSeller(),
+      async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+        try {
+          const user = req.user!;
+          const proposedRaw = req.body?.proposedDeadline ?? req.body?.newDeadline;
+          if (!proposedRaw) {
+            throw new PublicAppError(400, "proposedDeadline is required", "MISSING_FIELDS");
+          }
+          const proposedDeadline = new Date(proposedRaw);
+          const request = await extensionService.requestExtension({
+            invoiceId: req.params.id,
+            sellerId: user.id,
+            proposedDeadline,
+            reason: typeof req.body?.reason === "string" ? req.body.reason : null,
+          });
+          res.status(201).json({
+            success: true,
+            data: {
+              id: request.id,
+              invoiceId: request.invoiceId,
+              proposedDeadline: request.proposedDeadline.toISOString(),
+              previousDeadline: request.previousDeadline?.toISOString() ?? null,
+              status: request.status,
+              reason: request.reason,
+              createdAt: request.createdAt.toISOString(),
+            },
+          });
+        } catch (error) {
+          if (error instanceof ServiceError) {
+            next(new PublicAppError(error.statusCode, error.message, error.code, error.details));
+            return;
+          }
+          next(error);
+        }
+      }
+    );
+  }
 
   return router;
 }

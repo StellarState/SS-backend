@@ -1,8 +1,10 @@
-import { Router } from "express";
+import { Router, type Request, type Response, type NextFunction } from "express";
 import { DataSource } from "typeorm";
 
 import { ipWhitelistMiddleware } from "@/middleware/ip-whitelist.middleware";
 import type { InvoiceService } from "@/services/invoice.service";
+import type { InvoiceExtensionService } from "@/services/invoice-extension.service";
+import type { AdminMetricsService } from "@/services/admin-metrics.service";
 import { approveKYC } from "./approve-kyc";
 import { rejectKYC } from "./reject-kyc";
 import { revokeKYC } from "./revoke-kyc";
@@ -19,16 +21,23 @@ export interface AdminRouterDependencies {
   /** Optional: enables POST /invoices/:id/approve and /invoices/:id/reject.
    *  Omitted deployments (e.g. minimal test apps) simply won't mount them. */
   invoiceService?: InvoiceService;
+  /** Issue #477 — admin approval gate for funding deadline extensions. */
+  extensionService?: InvoiceExtensionService;
+  /** Issue #478 — platform metrics aggregation for the admin dashboard. */
+  metricsService?: AdminMetricsService;
 }
 
 export function createAdminRouter({
   dataSource,
   allowedCidrs,
   invoiceService,
+  extensionService,
+  metricsService,
 }: AdminRouterDependencies): Router {
   const router = Router();
   const ipWhitelist = ipWhitelistMiddleware(allowedCidrs);
 
+  // Admin-only: IP whitelist is the role gate for this router (issue #478).
   router.use(ipWhitelist);
 
   router.post("/approve-kyc", (req, res) => {
