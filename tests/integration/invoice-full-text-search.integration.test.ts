@@ -43,7 +43,7 @@ describeIfDb("Invoice full-text search (Postgres)", () => {
     dataSource = new DataSource({
       type: "postgres",
       url: databaseUrl,
-      extra: { options: `-c search_path=${TEST_SCHEMA}` },
+      extra: { options: `-c search_path=${TEST_SCHEMA},public` },
       entities: [User, Invoice, Investment, Transaction, KYCVerification, Notification, AuthChallenge],
       synchronize: true,
       logging: false,
