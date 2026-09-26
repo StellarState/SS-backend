@@ -25,7 +25,11 @@ function patchEntityMetadataForSQLite(): void {
 }
 
 import { createAuthService } from "../../src/services/auth.service";
-import { AuthChallenge } from "../../src/models/AuthChallenge.model"; // Need this maybe?
+import { createInvoiceService } from "../../src/services/invoice.service";
+import { AuthChallenge } from "../../src/models/AuthChallenge.model";
+import { Transaction } from "../../src/models/Transaction.model";
+import { KYCVerification } from "../../src/models/KYCVerification.model";
+import { Notification } from "../../src/models/Notification.model";
 import { HttpError } from "../../src/utils/http-error";
 
 describe("Integration: Seller Dashboard Aggregates", () => {
@@ -35,23 +39,54 @@ describe("Integration: Seller Dashboard Aggregates", () => {
   let authService: ReturnType<typeof createAuthService>;
 
   beforeAll(async () => {
+    process.env.JWT_SECRET = "test-secret";
     patchEntityMetadataForSQLite();
     dataSource = new DataSource({
       type: "sqlite",
       database: ":memory:",
-      entities: [User, Invoice, Investment],
+      entities: [User, Invoice, Investment, AuthChallenge, Transaction, KYCVerification, Notification],
       synchronize: true,
       dropSchema: true,
     });
     await dataSource.initialize();
 
     config = {
-        jwt: { secret: "test-secret", expiresIn: "1h" },
-        kyc: { skipVerification: true },
-    } as any;
+      port: 3000,
+      nodeEnv: "test",
+      jwt: { secret: "test-secret", expiresIn: "1h" },
+      auth: { challengeTtlMs: 5 * 60 * 1000 },
+      observability: { metricsEnabled: false },
+      http: {
+        trustProxy: false,
+        corsAllowedOrigins: [],
+        corsAllowCredentials: false,
+        bodySizeLimit: "1mb",
+        shutdownTimeoutMs: 15000,
+        rateLimit: { enabled: false, windowMs: 60000, max: 1000 },
+      },
+      reconciliation: { enabled: false, intervalMs: 30000, batchSize: 25, gracePeriodMs: 60000, maxRuntimeMs: 10000 },
+      stellar: { network: "testnet", networkPassphrase: "Test SDF Network ; September 2015" },
+      sorobanEscrow: { enabled: false, contractId: null, fundingMode: "wallet_xdr", settlementMode: "wallet_xdr" },
+      admin: { apiKey: "test-admin-key" },
+      ipfs: {
+        pinataJwt: "test",
+        pinataGateway: "test",
+        timeoutMs: 5000,
+        maxRetries: 3,
+        baseRetryDelayMs: 100,
+        maxFileSizeMB: 10,
+        allowedMimeTypes: ["application/pdf", "image/png", "image/jpeg"],
+        uploadRateLimit: { windowMs: 15 * 60 * 1000, maxUploads: 10 },
+      },
+      kyc: {
+        skipVerification: true,
+        webhookSecret: "",
+      },
+    } as unknown as AppConfig;
 
-    authService = createAuthService(config, dataSource.getRepository(User), dataSource.getRepository(AuthChallenge));
-    app = createApp(dataSource, config);
+    authService = createAuthService(dataSource, config);
+    const invoiceService = createInvoiceService(dataSource, {} as any);
+    app = createApp({ authService, invoiceService, config });
   });
 
   afterAll(async () => {
@@ -61,8 +96,8 @@ describe("Integration: Seller Dashboard Aggregates", () => {
   it("should restrict seller dashboard aggregates (invoice list) to owned invoices", async () => {
     // 1. Setup - Create 2 users
     const userRepo = dataSource.getRepository(User);
-    const sellerA = await userRepo.save(userRepo.create({ stellarAddress: "GA-SELLER-A", kycVerified: true }));
-    const sellerB = await userRepo.save(userRepo.create({ stellarAddress: "GA-SELLER-B", kycVerified: true }));
+    const sellerA = await userRepo.save(userRepo.create({ stellarAddress: "GA-SELLER-A", isKycVerified: true }));
+    const sellerB = await userRepo.save(userRepo.create({ stellarAddress: "GA-SELLER-B", isKycVerified: true }));
 
     // 2. Create invoices for each
     const invoiceRepo = dataSource.getRepository(Invoice);
