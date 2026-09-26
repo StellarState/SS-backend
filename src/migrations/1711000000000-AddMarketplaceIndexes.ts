@@ -10,8 +10,8 @@ export class AddMarketplaceIndexes1711000000000 implements MigrationInterface {
     `);
 
     await queryRunner.query(`
-      CREATE INDEX IF NOT EXISTS "idx_invoices_status_face_value_desc"
-      ON "invoices" ("status", "face_value" DESC);
+      CREATE INDEX IF NOT EXISTS "idx_invoices_status_amount_desc"
+      ON "invoices" ("status", "amount" DESC);
     `);
 
     await queryRunner.query(`
@@ -26,7 +26,7 @@ export class AddMarketplaceIndexes1711000000000 implements MigrationInterface {
     `);
 
     await queryRunner.query(`
-      DROP INDEX IF EXISTS "public"."idx_invoices_status_face_value_desc";
+      DROP INDEX IF EXISTS "public"."idx_invoices_status_amount_desc";
     `);
 
     await queryRunner.query(`
