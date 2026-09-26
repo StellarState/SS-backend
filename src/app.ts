@@ -1,6 +1,7 @@
 import cors from "cors";
 import helmet from "helmet";
 import express, { Request } from "express";
+import { randomUUID } from "crypto";
 
 import { createErrorMiddleware, notFoundMiddleware } from "./middleware/error.middleware";
 import { applyRateLimiters } from "./middleware/rate-limit.middleware";
@@ -18,7 +19,13 @@ import { createInvestmentRouter } from "./routes/investment.routes";
 import { createSettlementRouter } from "./routes/settlement.routes";
 import { createMarketplaceRouter } from "./routes/marketplace.routes";
 import { createAdminRouter } from "./routes/admin/admin.routes";
+import { createInvestorRouter } from "./routes/investor.routes";
+import { createPortfolioRouter } from "./routes/portfolio.routes";
 import { createContractGuardService } from "./services/stellar/contract-guard.service";
+import { createKeysRouter } from "./routes/keys.routes";
+import { createDividendsRouter } from "./routes/dividends.routes";
+import type { RatingsLeaderboardService } from "./services/ratings-leaderboard.service";
+import type { DividendCycleService } from "./services/dividend-cycle.service";
 
 import type { AuthService } from "./services/auth.service";
 import type { NotificationService } from "./services/notification.service";
@@ -27,6 +34,10 @@ import type { InvestmentService } from "./services/investment.service";
 import type { SettlementService } from "./services/settlement.service";
 import type { MarketplaceService } from "./services/marketplace.service";
 import type { KycService } from "./services/kyc.service";
+import type { InvestorAcknowledgementService } from "./services/investor-acknowledgement.service";
+import type { InvoiceExtensionService } from "./services/invoice-extension.service";
+import type { AdminMetricsService } from "./services/admin-metrics.service";
+import type { PortfolioService } from "./services/portfolio.service";
 
 import dataSource from "./config/database";
 
@@ -56,6 +67,38 @@ interface RequestWithId extends Request {
   requestId?: string;
 }
 
+async function probeDatabase(): Promise<"ok" | "degraded"> {
+  if (!dataSource.isInitialized) {
+    return "ok";
+  }
+
+  try {
+    await dataSource.query("SELECT 1");
+    return "ok";
+  } catch {
+    return "degraded";
+  }
+}
+
+async function probeHorizon(): Promise<"ok" | "degraded"> {
+  const url = process.env.HORIZON_URL;
+  if (!url) {
+    return "ok";
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 1500);
+
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    return response.ok ? "ok" : "degraded";
+  } catch {
+    return "degraded";
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export interface AppDependencies {
   authService: AuthService;
   notificationService?: NotificationService;
@@ -64,6 +107,12 @@ export interface AppDependencies {
   settlementService?: SettlementService;
   marketplaceService?: MarketplaceService;
   kycService?: KycService;
+  ratingsLeaderboardService?: RatingsLeaderboardService;
+  dividendCycleService?: DividendCycleService;
+  acknowledgementService?: InvestorAcknowledgementService;
+  extensionService?: InvoiceExtensionService;
+  adminMetricsService?: AdminMetricsService;
+  portfolioService?: PortfolioService;
   logger?: AppLogger;
   metricsEnabled?: boolean;
   metricsRegistry?: MetricsRegistry;
@@ -90,6 +139,12 @@ export function createApp({
   settlementService,
   marketplaceService,
   kycService,
+  ratingsLeaderboardService,
+  dividendCycleService,
+  acknowledgementService,
+  extensionService,
+  adminMetricsService,
+  portfolioService,
   logger: appLogger = logger,
   metricsEnabled = true,
   metricsRegistry = new MetricsRegistry(),
@@ -102,6 +157,17 @@ export function createApp({
   if (http?.trustProxy !== undefined) {
     app.set("trust proxy", http.trustProxy);
   }
+
+  // Registered first so every request, including ones rejected by helmet,
+  // CORS, the KYC webhook router or a rate limiter, is logged and carries a
+  // correlation ID.
+  app.use(
+    createRequestObservabilityMiddleware({
+      logger: appLogger,
+      metricsEnabled,
+      metricsRegistry,
+    })
+  );
 
   app.use(helmet());
 
@@ -131,28 +197,31 @@ export function createApp({
         : undefined,
     });
   }
-  app.use(
-    createRequestObservabilityMiddleware({
-      logger: appLogger,
-      metricsEnabled,
-      metricsRegistry,
-    })
-  );
 
-  app.get("/health", (req, res) => {
-    const requestId =
-      (req.headers["x-request-id"] as string) || (req as RequestWithId).requestId || "unknown";
+  app.get("/health", async (_req, res) => {
+    const requestId = (_req as RequestWithId).requestId ?? randomUUID();
 
-    res.setHeader("x-request-id", requestId);
+    const database = await probeDatabase();
+    const horizon = await probeHorizon();
+    const healthy = database === "ok" && horizon === "ok";
 
-    res.status(200).json({
-      success: true,
+    if (healthy) {
+      appLogger?.info("Health check passed", { requestId, database, horizon });
+    } else {
+      appLogger?.warn("Health check degraded", { requestId, database, horizon });
+    }
+
+    res.status(healthy ? 200 : 503).json({
+      success: healthy,
       requestId,
       data: {
-        status: "ok",
+        status: healthy ? "ok" : "degraded",
         timestamp: new Date().toISOString(),
         uptimeSeconds: Number(process.uptime().toFixed(3)),
         requestId,
+        traceId: requestId,
+        database,
+        horizon,
       },
     });
   });
@@ -179,6 +248,7 @@ export function createApp({
   }
 
   app.use("/api/v1/auth", createAuthRouter(authService, appLogger));
+  app.use("/auth", createAuthRouter(authService, appLogger));
 
   if (kycService) {
     app.use("/api/v1/kyc", createKycRouter(kycService, authService));
@@ -186,10 +256,7 @@ export function createApp({
 
   if (notificationService) {
     app.use("/api/v1/notifications", createNotificationRouter(notificationService, authService));
-  }
-
-  if (invoiceService && config) {
-    app.use("/api/v1/invoices", createInvoiceRouter({ invoiceService, config }));
+    app.use("/notifications", createNotificationRouter(notificationService, authService));
   }
 
   // The emergency pause guard only has something to check when a Soroban
@@ -202,6 +269,20 @@ export function createApp({
       ? createContractGuardService({ rpcUrl: pauseGuardRpcUrl })
       : undefined;
 
+  if (invoiceService && config) {
+    const invoiceRouter = createInvoiceRouter({
+      invoiceService,
+      config,
+      investmentService,
+      authService,
+      contractGuardService,
+      contractId: pauseGuardContractId,
+      extensionService,
+    });
+    app.use("/api/v1/invoices", invoiceRouter);
+    app.use("/invoices", invoiceRouter);
+  }
+
   if (investmentService) {
     app.use(
       "/api/v1/investments",
@@ -212,6 +293,20 @@ export function createApp({
         contractId: pauseGuardContractId,
       })
     );
+  }
+
+  // Issue #473 — accreditation acknowledgement
+  if (acknowledgementService) {
+    const investorRouter = createInvestorRouter({ authService, acknowledgementService });
+    app.use("/api/v1/investors", investorRouter);
+    app.use("/investors", investorRouter);
+  }
+
+  // Issue #479 — portfolio summary with P&L
+  if (portfolioService) {
+    const portfolioRouter = createPortfolioRouter({ authService, portfolioService });
+    app.use("/api/v1/portfolio", portfolioRouter);
+    app.use("/portfolio", portfolioRouter);
   }
 
   if (settlementService) {
@@ -229,10 +324,26 @@ export function createApp({
     app.use("/api/v1/marketplace", createMarketplaceRouter({ marketplaceService }));
   }
 
+  // ---- Keys: Ratings Leaderboard ----
+  if (ratingsLeaderboardService) {
+    app.use("/api/v1/keys", createKeysRouter({ ratingsLeaderboardService }));
+  }
+
+  // ---- Dividends: Cycle Config & Distribution ----
+  if (dividendCycleService) {
+    app.use("/api/v1/dividends", createDividendsRouter({ dividendCycleService, authService }));
+  }
+
   if (config?.admin?.ipWhitelist?.length) {
     app.use(
       "/api/v1/admin",
-      createAdminRouter({ dataSource, allowedCidrs: config.admin.ipWhitelist, invoiceService })
+      createAdminRouter({
+        dataSource,
+        allowedCidrs: config.admin.ipWhitelist,
+        invoiceService,
+        extensionService,
+        metricsService: adminMetricsService,
+      })
     );
   }
 
