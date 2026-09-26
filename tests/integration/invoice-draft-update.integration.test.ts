@@ -84,7 +84,7 @@ function seedDraftInvoice(repo: InMemoryInvoiceRepository, sellerId: string): In
     seller: undefined as unknown as Invoice["seller"],
     investments: [],
     transactions: [],
-  } as Invoice;
+  } as unknown as Invoice;
 
   repo.save(invoice);
   return invoice;

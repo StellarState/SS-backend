@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { DataSource } from "typeorm";
+import { DataSource, In } from "typeorm";
 import { KYCVerification } from "../models/KYCVerification.model";
 import { User } from "../models/User.model";
 import { KYCStatus, KYCVerificationType } from "../types/enums";
@@ -19,6 +19,17 @@ export interface KycWebhookPayload {
   providerReference?: string;
   reason?: string;
 }
+
+export type KycDocumentType = "passport" | "national_id" | "drivers_license";
+
+export interface KycDocumentSubmission {
+  documentType: KycDocumentType;
+  documentNumber: string;
+  ipfsDocumentUrl: string;
+}
+
+/** Statuses that indicate a KYC submission is already in flight or finalized enough to block a new one. */
+const PENDING_STATUSES = [KYCStatus.PENDING, KYCStatus.APPROVED];
 
 export class KycService {
   constructor(
@@ -50,6 +61,58 @@ export class KycService {
       await manager
         .getRepository(User)
         .update(userId, { kycStatus: KYCStatus.PENDING, isKycVerified: false });
+      return saved;
+    });
+  }
+
+  async submitKycVerificationByWallet(
+    wallet: string,
+    payload: KycDocumentSubmission
+  ): Promise<KYCVerification> {
+    return this.dataSource.transaction(async (manager) => {
+      const user = await manager.getRepository(User).findOne({
+        where: { stellarAddress: wallet },
+      });
+      if (!user) throw new HttpError(404, "User not found.");
+
+      const repository = manager.getRepository(KYCVerification);
+      const existing = await repository.findOne({
+        where: {
+          wallet,
+          status: In(PENDING_STATUSES),
+        },
+      });
+      if (existing) {
+        throw new HttpError(
+          409,
+          "A KYC verification is already pending or approved for this wallet."
+        );
+      }
+
+      const verification = repository.create({
+        userId: user.id,
+        wallet,
+        verificationType: KYCVerificationType.IDENTITY,
+        status: KYCStatus.PENDING,
+        documents: {
+          documentType: payload.documentType,
+          documentNumber: payload.documentNumber,
+          ipfsDocumentUrl: payload.ipfsDocumentUrl,
+        },
+      });
+      const saved = await repository.save(verification);
+
+      await manager
+        .getRepository(User)
+        .update(user.id, { kycStatus: KYCStatus.PENDING, isKycVerified: false });
+
+      this.appLogger.info("kyc.submission.created", {
+        user_id: user.id,
+        wallet,
+        document_type: payload.documentType,
+        verification_id: saved.id,
+      });
+
       return saved;
     });
   }
