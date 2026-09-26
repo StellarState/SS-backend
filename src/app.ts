@@ -10,6 +10,8 @@ import { sanitizeInputMiddleware } from "./middleware/sanitize-input.middleware"
 import { logger, type AppLogger } from "./observability/logger";
 import { getMetricsContentType, MetricsRegistry } from "./observability/metrics";
 
+import { randomUUID } from "crypto";
+
 import { createAuthRouter } from "./routes/auth.routes";
 import { createKycRouter, createKycWebhookRouter } from "./routes/kyc.routes";
 import { createNotificationRouter } from "./routes/notification.routes";
@@ -60,6 +62,38 @@ export function createRequestLifecycleTracker() {
 
 interface RequestWithId extends Request {
   requestId?: string;
+}
+
+async function probeDatabase(): Promise<"ok" | "degraded"> {
+  if (!dataSource.isInitialized) {
+    return "ok";
+  }
+
+  try {
+    await dataSource.query("SELECT 1");
+    return "ok";
+  } catch {
+    return "degraded";
+  }
+}
+
+async function probeHorizon(): Promise<"ok" | "degraded"> {
+  const url = process.env.HORIZON_URL;
+  if (!url) {
+    return "ok";
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 1500);
+
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    return response.ok ? "ok" : "degraded";
+  } catch {
+    return "degraded";
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export interface AppDependencies {
@@ -153,17 +187,30 @@ export function createApp({
         : undefined,
     });
   }
-  app.get("/health", (req, res) => {
-    const requestId = (req as RequestWithId).requestId ?? "unknown";
+  app.get("/health", async (_req, res) => {
+    const requestId = (_req as RequestWithId).requestId ?? randomUUID();
 
-    res.status(200).json({
-      success: true,
+    const database = await probeDatabase();
+    const horizon = await probeHorizon();
+    const healthy = database === "ok" && horizon === "ok";
+
+    if (healthy) {
+      appLogger?.info("Health check passed", { requestId, database, horizon });
+    } else {
+      appLogger?.warn("Health check degraded", { requestId, database, horizon });
+    }
+
+    res.status(healthy ? 200 : 503).json({
+      success: healthy,
       requestId,
       data: {
-        status: "ok",
+        status: healthy ? "ok" : "degraded",
         timestamp: new Date().toISOString(),
         uptimeSeconds: Number(process.uptime().toFixed(3)),
         requestId,
+        traceId: requestId,
+        database,
+        horizon,
       },
     });
   });
@@ -200,6 +247,7 @@ export function createApp({
   );
 
   app.use("/api/v1/auth", createAuthRouter(authService, appLogger));
+  app.use("/auth", createAuthRouter(authService, appLogger));
 
   if (kycService) {
     app.use("/api/v1/kyc", createKycRouter(kycService, authService));
@@ -207,6 +255,7 @@ export function createApp({
 
   if (notificationService) {
     app.use("/api/v1/notifications", createNotificationRouter(notificationService, authService));
+    app.use("/notifications", createNotificationRouter(notificationService, authService));
   }
 
   // The emergency pause guard only has something to check when a Soroban
@@ -220,17 +269,16 @@ export function createApp({
       : undefined;
 
   if (invoiceService && config) {
-    app.use(
-      "/api/v1/invoices",
-      createInvoiceRouter({
-        invoiceService,
-        config,
-        investmentService,
-        authService,
-        contractGuardService,
-        contractId: pauseGuardContractId,
-      })
-    );
+    const invoiceRouter = createInvoiceRouter({
+      invoiceService,
+      config,
+      investmentService,
+      authService,
+      contractGuardService,
+      contractId: pauseGuardContractId,
+    });
+    app.use("/api/v1/invoices", invoiceRouter);
+    app.use("/invoices", invoiceRouter);
   }
 
   if (investmentService) {

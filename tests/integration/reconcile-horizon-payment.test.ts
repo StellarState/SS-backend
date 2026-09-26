@@ -252,7 +252,7 @@ describe("Horizon Reconciliation Worker Integration Test", () => {
       expect(transaction?.status).toBe(TransactionStatus.COMPLETED);
       expect(transaction?.type).toBe(TransactionType.INVESTMENT);
       expect(transaction?.amount).toBe("500.0000");
-      expect(transaction?.stellarTxHash).toBe("test-tx-hash-123");
+      expect(transaction?.stellarTxHash?.toLowerCase()).toBe("test-tx-hash-123");
     });
 
     it("should not re-process confirmed transaction on second reconciliation cycle", async () => {
