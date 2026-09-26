@@ -19,6 +19,8 @@ import { createInvoiceRouter } from "./routes/invoice.routes";
 import { createInvestmentRouter } from "./routes/investment.routes";
 import { createSettlementRouter } from "./routes/settlement.routes";
 import { createMarketplaceRouter } from "./routes/marketplace.routes";
+import { createKeysRouter } from "./routes/keys.routes";
+import { createSwapRouter } from "./routes/swap.routes";
 import { createAdminRouter } from "./routes/admin/admin.routes";
 import { createContractGuardService } from "./services/stellar/contract-guard.service";
 
@@ -29,6 +31,10 @@ import type { InvestmentService } from "./services/investment.service";
 import type { SettlementService } from "./services/settlement.service";
 import type { MarketplaceService } from "./services/marketplace.service";
 import type { KycService } from "./services/kyc.service";
+import type { CreatorKeyService } from "./services/creator-key.service";
+import type { CurveMigrationService } from "./services/curve-migration.service";
+import type { AclService } from "./services/acl.service";
+import type { AtomicSwapService } from "./services/atomic-swap.service";
 
 import dataSource from "./config/database";
 
@@ -98,6 +104,14 @@ export interface AppDependencies {
   settlementService?: SettlementService;
   marketplaceService?: MarketplaceService;
   kycService?: KycService;
+  /** Optional: mounts GET /api/v1/keys/:id and /:id/buy-limit. */
+  creatorKeyService?: CreatorKeyService;
+  /** Optional: mounts the creator-only curve migration listing. */
+  curveMigrationService?: CurveMigrationService;
+  /** Optional: mounts the admin-only ACL endpoints. */
+  aclService?: AclService;
+  /** Optional: mounts the atomic swap history/lookup endpoints. */
+  swapService?: AtomicSwapService;
   logger?: AppLogger;
   metricsEnabled?: boolean;
   metricsRegistry?: MetricsRegistry;
@@ -124,6 +138,10 @@ export function createApp({
   settlementService,
   marketplaceService,
   kycService,
+  creatorKeyService,
+  curveMigrationService,
+  aclService,
+  swapService,
   logger: appLogger = logger,
   metricsEnabled = true,
   metricsRegistry = new MetricsRegistry(),
@@ -287,10 +305,32 @@ export function createApp({
     app.use("/api/v1/marketplace", createMarketplaceRouter({ marketplaceService }));
   }
 
-  if (config?.admin?.ipWhitelist?.length) {
+  if (creatorKeyService) {
+    const keysRouter = createKeysRouter({
+      creatorKeyService,
+      curveMigrationService,
+      authService,
+    });
+    app.use("/api/v1/keys", keysRouter);
+    app.use("/keys", keysRouter);
+  }
+
+  if (swapService) {
+    const swapRouter = createSwapRouter({ swapService, authService });
+    app.use("/api/v1/swaps", swapRouter);
+    app.use("/swaps", swapRouter);
+  }
+
+  if (config?.admin?.ipWhitelist?.length || aclService) {
     app.use(
       "/api/v1/admin",
-      createAdminRouter({ dataSource, allowedCidrs: config.admin.ipWhitelist, invoiceService })
+      createAdminRouter({
+        dataSource,
+        allowedCidrs: config?.admin?.ipWhitelist ?? [],
+        invoiceService,
+        aclService,
+        authService,
+      })
     );
   }
 

@@ -23,6 +23,7 @@ import { createSettlementService } from "./services/settlement.service";
 import { createMarketplaceService } from "./services/marketplace.service";
 import { KycService } from "./services/kyc.service";
 import { PaymentDistributorContractService } from "./services/stellar/payment-distributor-contract.service";
+import { createOnchainProjections } from "./services/onchain-projections.service";
 import { getSorobanConfig } from "./config/stellar";
 
 export async function bootstrap(): Promise<{ server: Server }> {
@@ -77,6 +78,10 @@ export async function bootstrap(): Promise<{ server: Server }> {
   const marketplaceService = createMarketplaceService(dataSource);
   const kycService = new KycService(dataSource, config.kyc.webhookSecret ?? "", logger);
 
+  // Read models projected from Soroban contract events: creator key buy
+  // limits, the integration ACL, curve migrations and atomic swap history.
+  const projections = createOnchainProjections({ dataSource, logger });
+
   const app = createApp({
     authService,
     notificationService,
@@ -85,6 +90,10 @@ export async function bootstrap(): Promise<{ server: Server }> {
     settlementService,
     marketplaceService,
     kycService,
+    creatorKeyService: projections.creatorKeyService,
+    curveMigrationService: projections.curveMigrationService,
+    aclService: projections.aclService,
+    swapService: projections.swapService,
     config,
     logger,
     metricsEnabled: config.observability.metricsEnabled,
