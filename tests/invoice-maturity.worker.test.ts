@@ -50,6 +50,9 @@ function buildWorker(invoices: MaturedInvoice[], overrides: Partial<MaturedInvoi
       invoiceId: input.invoiceId,
       status: InvoiceStatus.SETTLED as const,
       proceeds: input.proceeds,
+      totalDistributed: input.proceeds,
+      remainder: "0.0000",
+      remainderDust: "0.0000",
       settlements: [
         { investmentId: "inv-1", investorId: "u-1", investmentAmount: "60", actualReturn: "600" },
         { investmentId: "inv-2", investorId: "u-2", investmentAmount: "40", actualReturn: "400" },

@@ -273,7 +273,7 @@ class TypeOrmMaturedInvoiceRepository implements MaturedInvoiceRepository {
       }
       // Fully funded but not yet transitioned: leave it for the funding flow
       // rather than failing money that is actually committed.
-      if (new Decimal(invoice.fundedAmount).gte(invoice.netAmount)) {
+      if (new Decimal(invoice.fundedAmount ?? 0).gte(invoice.netAmount)) {
         return null;
       }
 
