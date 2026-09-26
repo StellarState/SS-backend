@@ -100,6 +100,13 @@ function findPausedContract(
   service: ContractGuardService,
   contractIds: readonly string[]
 ): Promise<string | null> {
+  if (contractIds.length === 1) {
+    const [contractId] = contractIds;
+    return service
+      .checkContractPauseState(contractId)
+      .then((paused) => (paused ? contractId : null));
+  }
+
   return new Promise<string | null>((resolve, reject) => {
     let pending = contractIds.length;
     let firstError: unknown;
