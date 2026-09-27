@@ -36,6 +36,28 @@ export interface SettleEscrowParams {
   invoiceId: string;
 }
 
+export interface FundEscrowResult {
+  contractId: string;
+  invoiceId: string;
+  investorAddress: string;
+  amountStroops: string;
+  operation: xdr.Operation;
+}
+
+export interface RecordPaymentResult {
+  contractId: string;
+  invoiceId: string;
+  payerAddress: string;
+  amountStroops: string;
+  operation: xdr.Operation;
+}
+
+export interface SettleEscrowResult {
+  contractId: string;
+  invoiceId: string;
+  operation: xdr.Operation;
+}
+
 export interface SorobanContractConfig {
   rpcUrl: string;
   networkPassphrase: string;
