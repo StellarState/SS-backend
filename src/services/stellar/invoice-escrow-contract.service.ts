@@ -14,14 +14,18 @@ import type {
   CreateEscrowParams,
   CreateEscrowResult,
   FundEscrowParams,
+  FundEscrowResult,
   RecordPaymentParams,
+  RecordPaymentResult,
   SettleEscrowParams,
+  SettleEscrowResult,
   SimulateTransactionResult,
   SendTransactionResult,
 } from "../../types/soroban.types";
 
 export type CreateEscrowInput = CreateEscrowParams;
-export type { CreateEscrowResult, FundEscrowParams, RecordPaymentParams, SettleEscrowParams };
+export type { CreateEscrowResult, FundEscrowResult, RecordPaymentResult, SettleEscrowResult };
+export type { FundEscrowParams, RecordPaymentParams, SettleEscrowParams };
 
 /**
  * Maximum value (inclusive) accepted for `amountStroops`. Soroban `i128`
@@ -298,14 +302,14 @@ export class InvoiceEscrowContractService {
     const safeSeller = sanitizeString(sellerAddress, "sellerAddress");
     const safeToken = sanitizeString(paymentTokenAddress, "paymentTokenAddress");
     const amountBigInt = this.parseStroopAmount(amountStroops, "amountStroops");
-    this.parseDueDate(dueDateTimestamp);
+    const safeDueDate = this.parseDueDate(dueDateTimestamp);
 
     return this.contract.call(
       "create_escrow",
       nativeToScVal(safeInvoiceId, { type: "symbol" }),
       new Address(safeSeller).toScVal(),
       nativeToScVal(amountBigInt, { type: "i128" }),
-      nativeToScVal(dueDateTimestamp, { type: "u64" }),
+      nativeToScVal(safeDueDate, { type: "u64" }),
       new Address(safeToken).toScVal(),
     );
   }
@@ -438,6 +442,10 @@ export class InvoiceEscrowContractService {
    * Polls for transaction confirmation until it reaches `SUCCESS`, `FAILED`,
    * or times out. Each polling cycle tolerates transient RPC errors via
    * {@link withRpcRetry}; only `NOT_FOUND` is treated as "keep polling".
+   *
+   * Jitter is applied to the poll interval to spread concurrent poller load
+   * across time windows, reducing the risk of thundering-herd problems against
+   * the Soroban RPC endpoint under peak concurrency.
    */
   public async waitForTransactionConfirmation(
     txHash: string,
@@ -455,7 +463,10 @@ export class InvoiceEscrowContractService {
 
     for (let attempt = 0; attempt < this.confirmationAttempts; attempt++) {
       try {
-        const result = await this.rpcServer.getTransaction(safeTxHash);
+        const result = await this.withRpcRetry(
+          () => this.rpcServer!.getTransaction(safeTxHash),
+          "getTransaction",
+        );
         const status = this.extractStatus(result);
         if (status === "SUCCESS") {
           lastLedger = "ledger" in result ? Number(result.ledger) : null;
@@ -475,7 +486,13 @@ export class InvoiceEscrowContractService {
           });
           return { status: "FAILED", ledger: null };
         }
-        // NOT_FOUND: keep polling.
+        // NOT_FOUND: keep polling – log at debug for observability.
+        this.logger.debug("Soroban transaction not yet confirmed, continuing to poll.", {
+          txHash: safeTxHash,
+          sorobanContractId: this.contractId,
+          attempt: attempt + 1,
+          totalAttempts: this.confirmationAttempts,
+        });
       } catch (error) {
         this.logger.warn("Transient error while checking transaction status", {
           txHash: safeTxHash,
@@ -486,7 +503,7 @@ export class InvoiceEscrowContractService {
       }
 
       if (attempt < this.confirmationAttempts - 1) {
-        await sleep(this.confirmationPollMs);
+        await sleep(jitter(this.confirmationPollMs, RPC_RETRY_MAX_JITTER_MS));
       }
     }
 
@@ -494,6 +511,7 @@ export class InvoiceEscrowContractService {
       txHash: safeTxHash,
       sorobanContractId: this.contractId,
       attempts: this.confirmationAttempts,
+      lastPollIntervalMs: this.confirmationPollMs,
     });
     throw new ServiceError(
       "transaction_confirmation_timeout",
@@ -522,6 +540,34 @@ export class InvoiceEscrowContractService {
   }
 
   /**
+   * Configuration object for the error behaviour of {@link withRpcRetry}.
+   */
+  private static readonly RPC_ERROR_CONFIGS: Record<string, {
+    errorCode: string;
+    errorDescription: string;
+    logMessage: string;
+  }> = {
+    simulateTransaction: {
+      errorCode: "soroban_simulation_failed",
+      errorDescription:
+        "Failed to simulate the transaction against the Soroban RPC endpoint.",
+      logMessage: "Soroban simulateTransaction call failed.",
+    },
+    getTransaction: {
+      errorCode: "soroban_get_transaction_failed",
+      errorDescription:
+        "Failed to retrieve transaction status from the Soroban RPC endpoint.",
+      logMessage: "Soroban getTransaction call failed.",
+    },
+    sendTransaction: {
+      errorCode: "soroban_submission_failed",
+      errorDescription:
+        "Failed to submit the transaction to the Soroban RPC endpoint.",
+      logMessage: "Soroban sendTransaction call failed.",
+    },
+  };
+
+  /**
    * Run an RPC call with bounded retry on transient failures. The full failure
    * is logged and wrapped in a {@link ServiceError} (`502`) once retries are
    * exhausted so callers see a stable, sanitized error code. The final
@@ -533,19 +579,14 @@ export class InvoiceEscrowContractService {
     operation: () => Promise<T>,
     operationName: string,
   ): Promise<T> {
+    const errorConfig = InvoiceEscrowContractService.RPC_ERROR_CONFIGS[operationName] ?? {
+      errorCode: "soroban_submission_failed",
+      errorDescription:
+        "Failed to submit the transaction to the Soroban RPC endpoint.",
+      logMessage: "Soroban sendTransaction call failed.",
+    };
+
     let lastError: unknown;
-    const finalFailureMessage =
-      operationName === "simulateTransaction"
-        ? "Soroban simulateTransaction call failed."
-        : "Soroban sendTransaction call failed.";
-    const finalErrorCode =
-      operationName === "simulateTransaction"
-        ? "soroban_simulation_failed"
-        : "soroban_submission_failed";
-    const finalErrorDescription =
-      operationName === "simulateTransaction"
-        ? "Failed to simulate the transaction against the Soroban RPC endpoint."
-        : "Failed to submit the transaction to the Soroban RPC endpoint.";
 
     for (let attempt = 1; attempt <= this.rpcRetryAttempts; attempt++) {
       try {
@@ -554,7 +595,7 @@ export class InvoiceEscrowContractService {
         lastError = error;
         const isLast = attempt === this.rpcRetryAttempts;
         if (isLast) {
-          this.logger.error(finalFailureMessage, {
+          this.logger.error(errorConfig.logMessage, {
             sorobanContractId: this.contractId,
             operation: operationName,
             attempts: attempt,
@@ -574,7 +615,7 @@ export class InvoiceEscrowContractService {
     }
 
     const reason = lastError instanceof Error ? lastError.message : String(lastError);
-    throw new ServiceError(finalErrorCode, finalErrorDescription, 502, {
+    throw new ServiceError(errorConfig.errorCode, errorConfig.errorDescription, 502, {
       operation: operationName,
       attempts: this.rpcRetryAttempts,
       reason,
@@ -591,22 +632,25 @@ export class InvoiceEscrowContractService {
    * Only sanitized metadata (`invoiceId`, `sorobanContractId`,
    * `sellerAddress`, `amountStroops`) is logged — no secret keys, signing
    * seeds, or auth tokens are ever written to logs.
+   *
+   * Input validation is delegated entirely to {@link buildCreateEscrowTx} so
+   * that parsing and sanitization logic lives in a single location and is not
+   * duplicated for callers who bypass this method.
    */
   public async createEscrowOnChain(
     input: CreateEscrowInput,
   ): Promise<CreateEscrowResult> {
-    const amountBigInt = this.parseStroopAmount(input.amountStroops, "amountStroops");
-    this.parseDueDate(input.dueDateTimestamp);
-
     const operation = this.buildCreateEscrowTx(
       input.invoiceId,
       input.sellerAddress,
-      amountBigInt,
+      input.amountStroops,
       input.dueDateTimestamp,
-      input.paymentTokenAddress
+      input.paymentTokenAddress,
     );
 
-    const amountStroopsStr = amountBigInt.toString();
+    // Convert to string for safe structured logging — the value was already
+    // validated by buildCreateEscrowTx.
+    const amountStroopsStr = String(input.amountStroops);
 
     this.logger.info("Soroban escrow created successfully on-chain.", {
       invoiceId: input.invoiceId,
@@ -620,6 +664,120 @@ export class InvoiceEscrowContractService {
       invoiceId: input.invoiceId,
       sellerAddress: input.sellerAddress,
       amountStroops: amountStroopsStr,
+      operation,
+    };
+  }
+
+  /**
+   * Funds/invests into an escrow on-chain and logs the structured completion
+   * event.
+   *
+   * Note: this method builds the operation payload and emits the structured
+   * log line; actual on-chain submission is performed by the caller using
+   * {@link submitTransaction} + {@link waitForTransactionConfirmation}.
+   * Only sanitized metadata (`invoiceId`, `sorobanContractId`,
+   * `investorAddress`, `amountStroops`) is logged — no secret keys, signing
+   * seeds, or auth tokens are ever written to logs.
+   *
+   * Input validation is delegated entirely to {@link buildFundEscrowTx} so
+   * that parsing and sanitization logic lives in a single location and is not
+   * duplicated for callers who bypass this method.
+   */
+  public async fundEscrowOnChain(
+    input: FundEscrowParams,
+  ): Promise<FundEscrowResult> {
+    const operation = this.buildFundEscrowTx(
+      input.invoiceId,
+      input.investorAddress,
+      input.amountStroops,
+    );
+
+    const amountStroopsStr = String(input.amountStroops);
+
+    this.logger.info("Soroban escrow funded successfully on-chain.", {
+      invoiceId: input.invoiceId,
+      sorobanContractId: this.contractId,
+      investorAddress: input.investorAddress,
+      amountStroops: amountStroopsStr,
+    });
+
+    return {
+      contractId: this.contractId,
+      invoiceId: input.invoiceId,
+      investorAddress: input.investorAddress,
+      amountStroops: amountStroopsStr,
+      operation,
+    };
+  }
+
+  /**
+   * Records a payment against an escrow on-chain and logs the structured
+   * completion event.
+   *
+   * Note: this method builds the operation payload and emits the structured
+   * log line; actual on-chain submission is performed by the caller using
+   * {@link submitTransaction} + {@link waitForTransactionConfirmation}.
+   * Only sanitized metadata (`invoiceId`, `sorobanContractId`,
+   * `payerAddress`, `amountStroops`) is logged — no secret keys, signing
+   * seeds, or auth tokens are ever written to logs.
+   *
+   * Input validation is delegated entirely to {@link buildRecordPaymentTx}
+   * so that parsing and sanitization logic lives in a single location and is
+   * not duplicated for callers who bypass this method.
+   */
+  public async recordPaymentOnChain(
+    input: RecordPaymentParams,
+  ): Promise<RecordPaymentResult> {
+    const operation = this.buildRecordPaymentTx(
+      input.invoiceId,
+      input.payerAddress,
+      input.amountStroops,
+    );
+
+    const amountStroopsStr = String(input.amountStroops);
+
+    this.logger.info("Soroban payment recorded successfully on-chain.", {
+      invoiceId: input.invoiceId,
+      sorobanContractId: this.contractId,
+      payerAddress: input.payerAddress,
+      amountStroops: amountStroopsStr,
+    });
+
+    return {
+      contractId: this.contractId,
+      invoiceId: input.invoiceId,
+      payerAddress: input.payerAddress,
+      amountStroops: amountStroopsStr,
+      operation,
+    };
+  }
+
+  /**
+   * Settles/releases an escrow on-chain and logs the structured completion
+   * event.
+   *
+   * Note: this method builds the operation payload and emits the structured
+   * log line; actual on-chain submission is performed by the caller using
+   * {@link submitTransaction} + {@link waitForTransactionConfirmation}.
+   * No secret keys, signing seeds, or auth tokens are ever written to logs.
+   *
+   * Input validation is delegated entirely to {@link buildSettleEscrowTx} so
+   * that parsing and sanitization logic lives in a single location and is not
+   * duplicated for callers who bypass this method.
+   */
+  public async settleEscrowOnChain(
+    input: SettleEscrowParams,
+  ): Promise<SettleEscrowResult> {
+    const operation = this.buildSettleEscrowTx(input.invoiceId);
+
+    this.logger.info("Soroban escrow settled successfully on-chain.", {
+      invoiceId: input.invoiceId,
+      sorobanContractId: this.contractId,
+    });
+
+    return {
+      contractId: this.contractId,
+      invoiceId: input.invoiceId,
       operation,
     };
   }
