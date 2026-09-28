@@ -29,6 +29,7 @@ import { createRatingsLeaderboardService } from "./services/ratings-leaderboard.
 import { createDividendCycleService } from "./services/dividend-cycle.service";
 import { createSecondaryMarketService } from "./services/secondary-market.service";
 import { createWatchlistService } from "./services/watchlist.service";
+import { createOnboardingService } from "./services/onboarding.service";
 import { createSettlementWorker } from "./workers/settlement.worker";
 import { scheduleAnalyticsSnapshotJob } from "./workers/analytics-snapshot.worker";
 
@@ -130,6 +131,13 @@ export async function bootstrap(): Promise<{ server: Server }> {
     secondaryMarketService,
     watchlistService,
     settlementWorker,
+    onboardingService,
+    aclService: projections.aclService,
+    creatorKeyService: projections.creatorKeyService,
+    curveMigrationService: projections.curveMigrationService,
+    swapService: projections.swapService,
+    royaltyEarningsService: projections.royaltyEarningsService,
+    dividendDistributionService: projections.dividendDistributionService,
     config,
     logger,
     metricsEnabled: config.observability.metricsEnabled,

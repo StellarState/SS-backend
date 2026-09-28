@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type NextFunction, type Request, type Response } from "express";
 import { DataSource } from "typeorm";
 
 import { ipWhitelistMiddleware } from "@/middleware/ip-whitelist.middleware";
@@ -77,8 +77,8 @@ export function createAdminRouter({
   authService,
   aclService,
   invoiceService,
-  extensionService: _extensionService,
-  metricsService: _metricsService,
+  extensionService,
+  metricsService,
 }: AdminRouterDependencies): Router {
   const router = Router();
 
