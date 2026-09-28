@@ -6,7 +6,8 @@ import type { AppConfig } from "../config/env";
 import { AuthChallenge } from "../models/AuthChallenge.model";
 import { User, USER_PROFILE_SELECT } from "../models/User.model";
 import type { PublicUser } from "../types/auth";
-import { HttpError } from "../utils/http-error";
+import { AppError, HttpError, PublicAppError } from "../utils/http-error";
+import { RefreshToken } from "../models/RefreshToken.model";
 import {
   buildAuthFailureDetails,
   classifyJwtError,
@@ -60,6 +61,41 @@ export interface ChallengeRepositoryContract {
   countByStatus(status: "active" | "consumed" | "expired"): Promise<number>;
 }
 
+export interface RefreshTokenRecord {
+  id: string;
+  tokenHash: string;
+  userId: string;
+  stellarAddress: string;
+  sessionId: string;
+  expiresAt: Date;
+  usedAt: Date | null;
+  revokedAt: Date | null;
+  replacedById: string | null;
+}
+
+export interface CreateRefreshTokenInput {
+  tokenHash: string;
+  userId: string;
+  stellarAddress: string;
+  sessionId: string;
+  expiresAt: Date;
+}
+
+export interface RefreshTokenRepositoryContract {
+  create(input: CreateRefreshTokenInput): Promise<RefreshTokenRecord>;
+  findByHash(tokenHash: string): Promise<RefreshTokenRecord | null>;
+  /**
+   * Marks a token as used, but only if it is neither used nor revoked yet.
+   * Returns false when another request got there first.
+   */
+  markUsed(id: string, usedAt: Date): Promise<boolean>;
+  setReplacedBy(id: string, replacedById: string): Promise<void>;
+  /** Revokes every live token in one login session; returns how many changed. */
+  revokeSession(sessionId: string, revokedAt: Date): Promise<number>;
+  /** Revokes every live token for a wallet across all sessions; returns how many changed. */
+  revokeAllForWallet(stellarAddress: string, revokedAt: Date): Promise<number>;
+}
+
 interface AuthTokenPayload extends JwtPayload {
   sub: string;
   stellarAddress: string;
@@ -74,6 +110,11 @@ export interface AuthConfig extends Pick<AppConfig, "auth" | "stellar"> {
 export interface AuthServiceDependencies {
   userRepository: UserRepositoryContract;
   challengeRepository: ChallengeRepositoryContract;
+  /**
+   * Enables refresh tokens (issue #563). Without it, login returns only an
+   * access token and /auth/refresh and /auth/logout answer 503.
+   */
+  refreshTokenRepository?: RefreshTokenRepositoryContract;
   config: AuthConfig;
   logger?: AppLogger;
   /**
@@ -108,14 +149,33 @@ export interface VerifyChallengeResponse {
   tokenType: "Bearer";
   expiresIn: string;
   user: PublicUser;
+  /** Present when refresh tokens are enabled. */
+  refreshToken?: string;
+  refreshTokenExpiresAt?: string;
+}
+
+export interface RefreshSessionResponse extends VerifyChallengeResponse {
+  refreshToken: string;
+  refreshTokenExpiresAt: string;
 }
 
 /** Minimum nonce length (chars) accepted by verifyChallenge. */
 const MIN_NONCE_LENGTH = 16;
 
+const DEFAULT_REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Every refresh failure means the client has to sign in again, so each one
+ * says so in its details instead of leaving the client to guess from the code.
+ */
+function refreshTokenError(code: string, message: string): PublicAppError {
+  return new PublicAppError(401, message, code, { reloginRequired: true });
+}
+
 export class AuthService {
   private readonly userRepository: UserRepositoryContract;
   private readonly challengeRepository: ChallengeRepositoryContract;
+  private readonly refreshTokenRepository?: RefreshTokenRepositoryContract;
   private readonly config: AuthConfig;
   private readonly logger?: AppLogger;
   private readonly serverKeypair?: Keypair;
@@ -136,6 +196,7 @@ export class AuthService {
   constructor(dependencies: AuthServiceDependencies) {
     this.userRepository = dependencies.userRepository;
     this.challengeRepository = dependencies.challengeRepository;
+    this.refreshTokenRepository = dependencies.refreshTokenRepository;
     this.config = dependencies.config;
     this.logger = dependencies.logger;
     this.serverKeypair = dependencies.config.serverKeypair;
@@ -339,11 +400,25 @@ export class AuthService {
         ip_address: input.ipAddress ?? null,
       });
 
+      let refresh: { refreshToken: string; refreshTokenExpiresAt: string } | undefined;
+      if (this.refreshTokenRepository) {
+        try {
+          refresh = await this.issueRefreshToken(publicUser, crypto.randomUUID());
+        } catch (error) {
+          this.logger?.error("Failed to issue refresh token", {
+            error: error instanceof Error ? error.message : String(error),
+            stellarAddress: sanitizedKey,
+          });
+          throw new HttpError(500, "Failed to verify challenge.");
+        }
+      }
+
       return {
         token,
         tokenType: "Bearer",
         expiresIn: this.config.jwt.expiresIn,
         user: publicUser,
+        ...refresh,
       };
     } catch (error) {
       if (error instanceof HttpError) {
@@ -361,6 +436,151 @@ export class AuthService {
       });
       throw new HttpError(500, "Failed to verify challenge.");
     }
+  }
+
+  /**
+   * Exchanges a refresh token for a new access + refresh token pair
+   * (issue #563). The presented token is used up in the process.
+   *
+   * Presenting a token that was already rotated means either the client
+   * retried with a stale token or someone else holds a copy of it. The two
+   * cannot be told apart, so every session for the wallet is revoked and the
+   * owner has to sign in again.
+   */
+  async refreshSession(rawToken: unknown): Promise<RefreshSessionResponse> {
+    const repository = this.requireRefreshTokens();
+    const record = await this.findRefreshToken(repository, rawToken);
+    const now = new Date(this.now());
+
+    if (record.usedAt) {
+      await this.revokeAfterReuse(repository, record, now);
+      throw refreshTokenError(
+        "REFRESH_TOKEN_REUSED",
+        "Refresh token has already been used. All sessions have been signed out; please log in again."
+      );
+    }
+
+    if (record.revokedAt) {
+      throw refreshTokenError(
+        "REFRESH_TOKEN_REVOKED",
+        "Refresh token has been revoked. Please log in again."
+      );
+    }
+
+    if (record.expiresAt.getTime() <= now.getTime()) {
+      throw refreshTokenError(
+        "REFRESH_TOKEN_EXPIRED",
+        "Refresh token has expired. Please log in again."
+      );
+    }
+
+    // Claim the token before issuing its replacement. If two requests race
+    // with the same token only one can win this update; the loser is handled
+    // exactly like any other replay.
+    const claimed = await repository.markUsed(record.id, now);
+    if (!claimed) {
+      await this.revokeAfterReuse(repository, record, now);
+      throw refreshTokenError(
+        "REFRESH_TOKEN_REUSED",
+        "Refresh token has already been used. All sessions have been signed out; please log in again."
+      );
+    }
+
+    const user = await this.userRepository.findByStellarAddress(record.stellarAddress);
+    if (!user) {
+      await repository.revokeSession(record.sessionId, now);
+      throw refreshTokenError("INVALID_REFRESH_TOKEN", "Invalid refresh token.");
+    }
+
+    const publicUser = toPublicUser(user);
+    const refresh = await this.issueRefreshToken(publicUser, record.sessionId, record.id);
+
+    this.logger?.info("auth.refresh_rotated", {
+      wallet: this.tryTruncateWallet(record.stellarAddress),
+      session_id: record.sessionId,
+    });
+
+    return {
+      token: this.signToken(publicUser),
+      tokenType: "Bearer",
+      expiresIn: this.config.jwt.expiresIn,
+      user: publicUser,
+      ...refresh,
+    };
+  }
+
+  /**
+   * Revokes the login session the refresh token belongs to (issue #563).
+   * Logging out an already revoked session is a no-op.
+   */
+  async logout(rawToken: unknown): Promise<void> {
+    const repository = this.requireRefreshTokens();
+    const record = await this.findRefreshToken(repository, rawToken);
+    const revoked = await repository.revokeSession(record.sessionId, new Date(this.now()));
+
+    this.logger?.info("auth.logout", {
+      wallet: this.tryTruncateWallet(record.stellarAddress),
+      session_id: record.sessionId,
+      revoked_tokens: revoked,
+    });
+  }
+
+  private requireRefreshTokens(): RefreshTokenRepositoryContract {
+    if (!this.refreshTokenRepository) {
+      throw new AppError(503, "Refresh tokens are not enabled.", "REFRESH_TOKENS_DISABLED");
+    }
+    return this.refreshTokenRepository;
+  }
+
+  private async findRefreshToken(
+    repository: RefreshTokenRepositoryContract,
+    rawToken: unknown
+  ): Promise<RefreshTokenRecord> {
+    if (typeof rawToken !== "string" || !rawToken.trim()) {
+      throw new PublicAppError(400, "refreshToken is required.", "MISSING_REFRESH_TOKEN");
+    }
+    const record = await repository.findByHash(hashRefreshToken(rawToken.trim()));
+    if (!record) {
+      throw refreshTokenError("INVALID_REFRESH_TOKEN", "Invalid refresh token.");
+    }
+    return record;
+  }
+
+  private async revokeAfterReuse(
+    repository: RefreshTokenRepositoryContract,
+    record: RefreshTokenRecord,
+    now: Date
+  ): Promise<void> {
+    const revoked = await repository.revokeAllForWallet(record.stellarAddress, now);
+    this.logger?.warn("auth.refresh_token_reuse_detected", {
+      wallet: this.tryTruncateWallet(record.stellarAddress),
+      session_id: record.sessionId,
+      revoked_tokens: revoked,
+    });
+  }
+
+  private async issueRefreshToken(
+    user: PublicUser,
+    sessionId: string,
+    replaces?: string
+  ): Promise<{ refreshToken: string; refreshTokenExpiresAt: string }> {
+    const repository = this.requireRefreshTokens();
+    const refreshToken = crypto.randomBytes(48).toString("base64url");
+    const ttlMs = this.config.auth.refreshTokenTtlMs ?? DEFAULT_REFRESH_TOKEN_TTL_MS;
+    const expiresAt = new Date(this.now() + ttlMs);
+
+    const created = await repository.create({
+      tokenHash: hashRefreshToken(refreshToken),
+      userId: user.id,
+      stellarAddress: user.stellarAddress,
+      sessionId,
+      expiresAt,
+    });
+    if (replaces) {
+      await repository.setReplacedBy(replaces, created.id);
+    }
+
+    return { refreshToken, refreshTokenExpiresAt: expiresAt.toISOString() };
   }
 
   async cleanupExpiredChallenges(maxAgeMs = 24 * 60 * 60 * 1000): Promise<number> {
@@ -725,6 +945,48 @@ class TypeOrmChallengeRepository implements ChallengeRepositoryContract {
   }
 }
 
+class TypeOrmRefreshTokenRepository implements RefreshTokenRepositoryContract {
+  constructor(private readonly repository: Repository<RefreshToken>) {}
+
+  create(input: CreateRefreshTokenInput): Promise<RefreshTokenRecord> {
+    return this.repository.save(
+      this.repository.create({ ...input, usedAt: null, revokedAt: null, replacedById: null })
+    );
+  }
+
+  findByHash(tokenHash: string): Promise<RefreshTokenRecord | null> {
+    return this.repository.findOne({ where: { tokenHash } });
+  }
+
+  async markUsed(id: string, usedAt: Date): Promise<boolean> {
+    const result = await this.repository.update(
+      { id, usedAt: IsNull(), revokedAt: IsNull() },
+      { usedAt }
+    );
+    return (result.affected ?? 0) > 0;
+  }
+
+  async setReplacedBy(id: string, replacedById: string): Promise<void> {
+    await this.repository.update({ id }, { replacedById });
+  }
+
+  async revokeSession(sessionId: string, revokedAt: Date): Promise<number> {
+    const result = await this.repository.update(
+      { sessionId, revokedAt: IsNull() },
+      { revokedAt }
+    );
+    return result.affected ?? 0;
+  }
+
+  async revokeAllForWallet(stellarAddress: string, revokedAt: Date): Promise<number> {
+    const result = await this.repository.update(
+      { stellarAddress, revokedAt: IsNull() },
+      { revokedAt }
+    );
+    return result.affected ?? 0;
+  }
+}
+
 export function createAuthService(
   dataSource: DataSource,
   config: Pick<AppConfig, "jwt" | "auth" | "stellar">,
@@ -734,6 +996,11 @@ export function createAuthService(
   return new AuthService({
     userRepository: new TypeOrmUserRepository(dataSource.getRepository(User)),
     challengeRepository: new TypeOrmChallengeRepository(dataSource.getRepository(AuthChallenge)),
+    // Only when the entity is registered, so data sources built for a narrow
+    // set of tables (as many tests do) keep working without it.
+    refreshTokenRepository: dataSource.hasMetadata(RefreshToken)
+      ? new TypeOrmRefreshTokenRepository(dataSource.getRepository(RefreshToken))
+      : undefined,
     config,
     logger,
     metrics,
@@ -759,6 +1026,10 @@ export function buildChallengeMessage(input: {
     "",
     "Sign this exact message to authenticate with the StellarSettle API.",
   ].join("\n");
+}
+
+function hashRefreshToken(token: string): string {
+  return crypto.createHash("sha256").update(token, "utf8").digest("hex");
 }
 
 function hashNonce(nonce: string): string {

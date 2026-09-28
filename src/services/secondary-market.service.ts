@@ -6,6 +6,7 @@ import { Investment } from "../models/Investment.model";
 import { ListingStatus, InvoiceStatus, InvestmentStatus } from "../types/enums";
 import { ServiceError } from "../utils/service-error";
 import { logger } from "../observability/logger";
+import { notifyListingSold, type ListingSale } from "../lib/platform-notifications";
 
 export interface CreateListingInput {
   invoiceId: string;
@@ -287,7 +288,11 @@ export class SecondaryMarketService {
    * This would integrate with Soroban for actual fraction transfer.
    */
   async buyListing(input: BuyListingInput): Promise<BuyListingResult> {
-    return this.dataSource.transaction(async (manager: EntityManager) => {
+    // Assigned inside the transaction callback; the cast keeps TypeScript from
+    // narrowing it to `null` for the check after the transaction.
+    let sale = null as ListingSale | null;
+
+    const result = await this.dataSource.transaction(async (manager: EntityManager) => {
       const { listingId, buyerWallet, quantity } = input;
 
       // Get listing
@@ -355,6 +360,18 @@ export class SecondaryMarketService {
         transaction_hash: transactionHash,
       });
 
+      sale = {
+        listingId,
+        invoiceId: listing.invoiceId,
+        invoiceNumber: listing.invoice?.invoiceNumber ?? null,
+        sellerId: listing.sellerId ?? null,
+        sellerWallet: listing.sellerWallet,
+        quantity: buyQuantity.toFixed(4),
+        totalPrice: totalPrice.toFixed(4),
+        remainingQuantity:
+          listing.status === ListingStatus.SOLD ? "0.0000" : new Decimal(listing.quantity).toFixed(4),
+      };
+
       return {
         listingId,
         buyerWallet,
@@ -363,6 +380,13 @@ export class SecondaryMarketService {
         transactionHash,
       };
     });
+
+    // After commit, so a rolled-back purchase never notifies the seller.
+    if (sale) {
+      await notifyListingSold(this.dataSource.manager, sale);
+    }
+
+    return result;
   }
 
   /**

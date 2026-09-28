@@ -389,10 +389,76 @@ export function createInvoiceController(
             next(new HttpError(404, "Invoice not found"));
             return;
           }
+          if (error.statusCode === 409) {
+            // Carries the current and allowed states (issue #565).
+            next(new PublicAppError(409, error.message, error.code.toUpperCase(), error.details));
+            return;
+          }
           next(new HttpError(error.statusCode, error.message));
           return;
         }
 
+        next(error);
+      }
+    },
+
+    /** PATCH /invoices/:id/approve — admin makes a pending invoice live (issue #565). */
+    async approveInvoice(
+      req: PublishInvoiceRequest,
+      res: Response,
+      next: NextFunction
+    ): Promise<void> {
+      try {
+        const result = await invoiceService.approveInvoice({
+          invoiceId: req.params.id,
+          actorId: req.user?.id,
+        });
+
+        if (cacheService) {
+          await cacheService.invalidateInvoice(req.params.id, result.sellerId);
+        }
+
+        res.status(200).json({ success: true, data: result });
+      } catch (error) {
+        if (error instanceof ServiceError) {
+          next(toTransitionError(error) ?? new HttpError(error.statusCode, error.message));
+          return;
+        }
+        next(error);
+      }
+    },
+
+    /**
+     * PATCH /invoices/:id/reject — admin sends a pending invoice back to draft
+     * with a reason (issue #565).
+     */
+    async rejectInvoiceToDraft(
+      req: PublishInvoiceRequest & { body?: { reason?: unknown; rejectionReason?: unknown } },
+      res: Response,
+      next: NextFunction
+    ): Promise<void> {
+      try {
+        const rawReason = req.body?.reason ?? req.body?.rejectionReason;
+        if (typeof rawReason !== "string" || !rawReason.trim()) {
+          throw new PublicAppError(400, "A rejection reason is required.", "INVALID_REJECTION_REASON");
+        }
+
+        const result = await invoiceService.returnInvoiceToDraft({
+          invoiceId: req.params.id,
+          rejectionReason: rawReason,
+          actorId: req.user?.id,
+        });
+
+        if (cacheService) {
+          await cacheService.invalidateInvoice(req.params.id, result.sellerId);
+        }
+
+        res.status(200).json({ success: true, data: result });
+      } catch (error) {
+        if (error instanceof ServiceError) {
+          next(toTransitionError(error) ?? new HttpError(error.statusCode, error.message));
+          return;
+        }
         next(error);
       }
     },

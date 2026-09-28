@@ -14,6 +14,7 @@ import {
   requireSeller,
 } from "../middleware/auth.middleware";
 import { checkContractNotPaused } from "../middleware/contract-pause-guard.middleware";
+import { requireAdminRole } from "../middleware/require-admin-role.middleware";
 import type { AuthService } from "../services/auth.service";
 import type { InvestmentService } from "../services/investment.service";
 import type { InvoiceExtensionService } from "../services/invoice-extension.service";
@@ -208,6 +209,28 @@ function validateQuery(schema: Joi.Schema) {
   };
 }
 
+const requireAdmin = requireAdminRole();
+
+/**
+ * Admin gate for the invoice review endpoints: a valid `x-admin-key`, as the
+ * admin router accepts, or a JWT carrying the admin role.
+ */
+function requireInvoiceAdmin(req: Request, res: Response, next: NextFunction): void {
+  const adminKey = req.headers["x-admin-key"];
+  if (adminKey && process.env.ADMIN_API_KEY && adminKey === process.env.ADMIN_API_KEY) {
+    next();
+    return;
+  }
+
+  authenticateJWT(req, res, (err?: unknown) => {
+    if (err) {
+      next(err);
+      return;
+    }
+    requireAdmin(req, res, next);
+  });
+}
+
 export function createInvoiceRouter({
   invoiceService,
   config,
@@ -346,6 +369,24 @@ export function createInvoiceRouter({
     submitInvoiceRateLimiter,
     controller.submitInvoiceForReview
   );
+
+  // ---- Review workflow (issue #565) ----
+  // Invalid transitions answer 409 with the invoice's current and allowed states.
+
+  // PATCH /api/v1/invoices/:id/submit - Issuer submits a draft for review (draft → pending)
+  router.patch(
+    "/:id/submit",
+    authenticateJWT,
+    kycGating,
+    submitInvoiceRateLimiter,
+    controller.submitInvoiceForReview
+  );
+
+  // PATCH /api/v1/invoices/:id/approve - Admin approves a pending invoice (pending → published)
+  router.patch("/:id/approve", requireInvoiceAdmin, controller.approveInvoice);
+
+  // PATCH /api/v1/invoices/:id/reject - Admin returns a pending invoice to draft with a reason
+  router.patch("/:id/reject", requireInvoiceAdmin, controller.rejectInvoiceToDraft);
 
   // GET /api/v1/invoices/:id/history - Status transition history, oldest first
   router.get("/:id/history", authenticateJWT, controller.getInvoiceStatusHistory);

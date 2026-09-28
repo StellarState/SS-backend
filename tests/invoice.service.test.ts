@@ -380,7 +380,8 @@ describe("InvoiceService", () => {
       await expect(invoiceService.deleteInvoice("invoice-123", "seller-456")).rejects.toMatchObject(
         {
           code: "invalid_invoice_status",
-          statusCode: 400,
+          statusCode: 409,
+          details: { currentState: InvoiceStatus.PUBLISHED, allowedStates: [InvoiceStatus.DRAFT] },
         }
       );
     });

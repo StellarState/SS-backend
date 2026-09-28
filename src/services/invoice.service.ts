@@ -7,6 +7,8 @@ import { InvoiceStatus, KYCStatus } from "../types/enums";
 import { ServiceError } from "../utils/service-error";
 import { validateInvoiceForPublish } from "../lib/validate-invoice-for-publish";
 import {
+  asTransitionConflict,
+  transitionConflict,
   createInvoiceStateMachine,
   entityManagerTransitionStore,
   type InvoiceStateMachine,
@@ -565,12 +567,14 @@ export class InvoiceService {
         );
       }
 
-      // Only draft and cancelled invoices can be deleted
-      if (invoice.status !== InvoiceStatus.DRAFT && invoice.status !== InvoiceStatus.CANCELLED) {
+      // Only drafts can be deleted: anything past draft has been reviewed,
+      // listed or funded and has to stay on record (issue #565).
+      if (invoice.status !== InvoiceStatus.DRAFT) {
         throw new ServiceError(
           "invalid_invoice_status",
-          `Cannot delete invoice in ${invoice.status} status`,
-          400
+          `Cannot delete invoice in ${invoice.status} status. Only draft invoices can be deleted.`,
+          409,
+          { currentState: invoice.status, allowedStates: [InvoiceStatus.DRAFT] }
         );
       }
 
@@ -679,26 +683,75 @@ export class InvoiceService {
     }
 
     const seller = invoice.seller as unknown as User | undefined;
-    const updated = await this.applyTransition(invoice, InvoiceStatus.PENDING, {
-      actor: { role: "seller", id: input.sellerId, wallet: seller?.stellarAddress ?? null },
-      trigger: "seller_submitted",
-    });
-
-    return this.toDTO(updated);
+    try {
+      const updated = await this.applyTransition(invoice, InvoiceStatus.PENDING, {
+        actor: { role: "seller", id: input.sellerId, wallet: seller?.stellarAddress ?? null },
+        trigger: "seller_submitted",
+      });
+      return this.toDTO(updated);
+    } catch (error) {
+      throw asTransitionConflict(error);
+    }
   }
 
   /**
    * Admin approves an invoice under review, making it live (pending → published).
+   * Published invoices are what the marketplace lists, so it is listed as soon
+   * as this returns.
    */
   async approveInvoice(input: ApproveInvoiceInput): Promise<InvoiceDTO> {
     const invoice = await this.findInvoiceWithSeller(input.invoiceId);
 
-    const updated = await this.applyTransition(invoice, InvoiceStatus.PUBLISHED, {
-      actor: { role: "admin", id: input.actorId ?? null },
-      trigger: "admin_approved",
-    });
+    // Approval is only meaningful for an invoice under review. Without this,
+    // approving a draft would surface as a role error, since draft → published
+    // exists as the seller's own self-publish path.
+    if (invoice.status !== InvoiceStatus.PENDING) {
+      throw transitionConflict(
+        invoice.status,
+        InvoiceStatus.PUBLISHED,
+        `Only invoices pending review can be approved; this invoice is ${invoice.status}.`
+      );
+    }
 
-    return this.toDTO(updated);
+    try {
+      const updated = await this.applyTransition(invoice, InvoiceStatus.PUBLISHED, {
+        actor: { role: "admin", id: input.actorId ?? null },
+        trigger: "admin_approved",
+      });
+      return this.toDTO(updated);
+    } catch (error) {
+      throw asTransitionConflict(error);
+    }
+  }
+
+  /**
+   * Admin rejects an invoice under review and hands it back to the seller as
+   * a draft to fix and resubmit (pending → draft, issue #565). The reason is
+   * kept on the invoice and sent to the seller.
+   */
+  async returnInvoiceToDraft(input: RejectInvoiceInput): Promise<InvoiceDTO> {
+    const invoiceId = input.invoiceId?.trim();
+    const rejectionReason = input.rejectionReason?.trim();
+
+    if (!invoiceId) {
+      throw new ServiceError("invalid_invoice_id", "Invoice id is required", 400);
+    }
+    if (!rejectionReason) {
+      throw new ServiceError("invalid_rejection_reason", "Rejection reason is required", 400);
+    }
+
+    const invoice = await this.findInvoiceWithSeller(invoiceId);
+
+    try {
+      const updated = await this.applyTransition(invoice, InvoiceStatus.DRAFT, {
+        actor: { role: "admin", id: input.actorId ?? null },
+        trigger: "admin_rejected",
+        context: { reason: rejectionReason },
+      });
+      return this.toDTO(updated);
+    } catch (error) {
+      throw asTransitionConflict(error);
+    }
   }
 
   /**

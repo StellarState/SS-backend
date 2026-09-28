@@ -46,5 +46,17 @@ export function createAuthController(authService: AuthService) {
 
       res.status(200).json({ user });
     },
+
+    // Exchange a refresh token for a new access + refresh token pair (issue #563)
+    refresh: async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+      const session = await authService.refreshSession(req.body?.refreshToken);
+      res.status(200).json(session);
+    },
+
+    // Revoke the refresh token's login session (issue #563)
+    logout: async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+      await authService.logout(req.body?.refreshToken);
+      res.status(204).send();
+    },
   };
 }

@@ -4,6 +4,7 @@ import { User } from "@/models/User.model";
 import { KYCStatus } from "@/types/enums";
 import { logKYCStatusChange, logKYCReviewFailure } from "@/lib/kyc-status-log";
 import { logger } from "@/observability/logger";
+import { notifyKycStatusChange } from "@/lib/platform-notifications";
 
 interface ApproveKYCBody {
   userId: string;
@@ -61,6 +62,12 @@ export async function approveKYC(
       reviewerWallet: reviewer?.stellarAddress ?? reviewerId,
       reviewerId,
       action: "approve",
+    });
+
+    await notifyKycStatusChange(dataSource.manager, {
+      userId,
+      previousStatus,
+      newStatus: KYCStatus.APPROVED,
     });
 
     return res.json({ success: true });

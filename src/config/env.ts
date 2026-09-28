@@ -15,6 +15,8 @@ export interface AppConfig {
   };
   auth: {
     challengeTtlMs: number;
+    /** Lifetime of a refresh token (issue #563). Defaults to 30 days when unset. */
+    refreshTokenTtlMs?: number;
   };
   observability: {
     metricsEnabled: boolean;
@@ -99,6 +101,7 @@ export interface AppConfig {
 const DEFAULT_PORT = 3000;
 const DEFAULT_JWT_EXPIRES_IN = "15m";
 const DEFAULT_CHALLENGE_TTL_MS = 60 * 1000; // 60 seconds (Issue #463)
+const DEFAULT_REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days (Issue #563)
 const DEFAULT_METRICS_ENABLED = true;
 
 const DEFAULT_CACHE_ENABLED = true;
@@ -214,6 +217,11 @@ export function getConfig(): AppConfig {
         process.env.AUTH_CHALLENGE_TTL_MS,
         DEFAULT_CHALLENGE_TTL_MS,
         "AUTH_CHALLENGE_TTL_MS"
+      ),
+      refreshTokenTtlMs: parsePositiveInteger(
+        process.env.REFRESH_TOKEN_TTL_MS,
+        DEFAULT_REFRESH_TOKEN_TTL_MS,
+        "REFRESH_TOKEN_TTL_MS"
       ),
     },
 
