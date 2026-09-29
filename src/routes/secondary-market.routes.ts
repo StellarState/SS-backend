@@ -1,7 +1,8 @@
 import { Router } from "express";
 import { SecondaryMarketController } from "../controllers/secondary-market.controller";
-import { SecondaryMarketService } from "../services/secondary-market.service";
+import { LISTING_SORT_KEYS, SecondaryMarketService } from "../services/secondary-market.service";
 import { createAuthMiddleware } from "../middleware/auth.middleware";
+import { cursorPagination } from "../middleware/cursor-pagination.middleware";
 import type { AuthService } from "../services/auth.service";
 
 export interface SecondaryMarketRouterDependencies {
@@ -20,8 +21,17 @@ export function createSecondaryMarketRouter({
   // POST /api/v1/secondary/listings - Create a new listing
   router.post("/listings", authMiddleware, controller.createListing);
 
-  // GET /api/v1/secondary/listings - Get active listings with filters
-  router.get("/listings", authMiddleware, controller.getListings);
+  // GET /api/v1/secondary/listings - Cursor-paginated active listings with filters (issue #559)
+  router.get(
+    "/listings",
+    authMiddleware,
+    cursorPagination({
+      scope: "secondary-listings",
+      sortKeys: LISTING_SORT_KEYS,
+      defaultSort: "created_at",
+    }),
+    controller.getListings
+  );
 
   // GET /api/v1/secondary/listings/:id - Get listing details
   router.get("/listings/:id", authMiddleware, controller.getListingById);

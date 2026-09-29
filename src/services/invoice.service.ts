@@ -20,7 +20,14 @@ import { InvoiceStatusHistory } from "../models/InvoiceStatusHistory.model";
 import { logger } from "../observability/logger";
 import { AppError } from "../utils/http-error";
 import type { IPFSService, IPFSUploadResult } from "./ipfs.service";
-import { decodeInvoiceCursor, encodeInvoiceCursor } from "../utils/invoice-cursor.utils";
+import {
+  decodeSecureCursor,
+  encodeSecureCursor,
+  type CursorPosition,
+} from "../utils/secure-cursor";
+
+/** Cursor scope of GET /invoices; must match the route's cursorPagination scope. */
+export const INVOICE_CURSOR_SCOPE = "invoices";
 
 export interface InvoiceRepositoryContract {
   findOne(options: { where: { id: string }; relations?: string[] }): Promise<Invoice | null>;
@@ -174,6 +181,8 @@ export interface GetInvoicesOptions {
   skip?: number;
   take?: number;
   cursor?: string | null;
+  /** Already-decoded cursor position, as set by the cursorPagination middleware. */
+  after?: CursorPosition | null;
   limit?: number;
 }
 
@@ -371,29 +380,19 @@ export class InvoiceService {
         where.status = normalizedStatus;
       }
 
-      // Keyset cursor pagination path
-      if (options.cursor !== undefined) {
-        const limit = Math.max(1, Math.min(options.limit ?? options.take ?? 20, 100));
+      // Keyset cursor pagination path. Cursors are sealed (issue #559): only
+      // one issued by this endpoint is accepted, so a client cannot craft a
+      // position from a raw id or date.
+      if (options.cursor !== undefined || options.after !== undefined) {
+        const limit = Math.max(1, Math.min(options.limit ?? options.take ?? 25, 100));
 
-        let cursorCreatedAt: Date | undefined;
-        let cursorId: string | undefined;
-
-        if (options.cursor && options.cursor.trim()) {
-          const decoded = decodeInvoiceCursor(options.cursor);
-          if (decoded.id && !decoded.createdAt) {
-            const refInvoice = await this.invoiceRepository.findOne({
-              where: { id: decoded.id },
-            });
-            if (!refInvoice) {
-              throw new ServiceError("invalid_cursor", "Invoice referenced by cursor not found", 400);
-            }
-            cursorCreatedAt = refInvoice.createdAt;
-            cursorId = refInvoice.id;
-          } else {
-            cursorCreatedAt = decoded.createdAt;
-            cursorId = decoded.id;
-          }
-        }
+        const after =
+          options.after ??
+          (options.cursor && options.cursor.trim()
+            ? decodeSecureCursor(INVOICE_CURSOR_SCOPE, options.cursor)
+            : null);
+        const cursorCreatedAt = after ? new Date(after.value) : undefined;
+        const cursorId = after?.id;
 
         let invoices: Invoice[];
 
@@ -448,7 +447,13 @@ export class InvoiceService {
 
         let nextCursor: string | null = null;
         if (hasMore && pageItems.length > 0) {
-          nextCursor = encodeInvoiceCursor(pageItems[pageItems.length - 1]);
+          const last = pageItems[pageItems.length - 1];
+          nextCursor = encodeSecureCursor(INVOICE_CURSOR_SCOPE, {
+            sort: "created_at",
+            order: "DESC",
+            value: new Date(last.createdAt),
+            id: last.id,
+          });
         }
 
         return {

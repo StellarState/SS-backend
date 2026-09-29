@@ -137,27 +137,22 @@ export function createInvoiceController(
           throw new HttpError(400, "Cannot use both cursor and page parameters simultaneously");
         }
 
-        const limit = Number(req.query.limit) || 20;
+        // Page size (default 25, capped at 100) and the decoded cursor come
+        // from the cursorPagination middleware (issue #559).
+        const pagination = req.pagination;
+        const limit = pagination?.limit ?? (Number(req.query.limit) || 25);
         const rawStatus = req.query.status;
         const status = rawStatus
           ? (String(rawStatus).trim().toLowerCase() as InvoiceStatus)
           : undefined;
 
-        // Validate limit
-        if (limit < 1 || limit > 100) {
-          throw new HttpError(400, "Invalid pagination parameters: limit must be between 1 and 100");
-        }
-
-        if (isCursorRequest) {
-          const cursor =
-            req.query.cursor === "" || req.query.cursor === "null" || req.query.cursor === "undefined"
-              ? null
-              : req.query.cursor;
-
+        // Cursor pagination is the default; only an explicit `page` falls
+        // back to the deprecated offset mode.
+        if (!isOffsetRequest) {
           const result = await invoiceService.getInvoicesBySellerId({
             sellerId: req.user.id,
             status: status as InvoiceStatus | undefined,
-            cursor,
+            after: pagination?.after ?? null,
             limit,
           });
 
@@ -171,6 +166,11 @@ export function createInvoiceController(
               hasNextPage: Boolean(result.nextCursor),
             },
             nextCursor: result.nextCursor ?? null,
+            pagination: {
+              limit,
+              has_more: Boolean(result.nextCursor),
+              ...(result.nextCursor ? { next_cursor: result.nextCursor } : {}),
+            },
           });
           return;
         }

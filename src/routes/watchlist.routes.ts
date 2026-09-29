@@ -2,6 +2,7 @@ import { Router } from "express";
 import { WatchlistController } from "../controllers/watchlist.controller";
 import { WatchlistService } from "../services/watchlist.service";
 import { createAuthMiddleware } from "../middleware/auth.middleware";
+import { cursorPagination } from "../middleware/cursor-pagination.middleware";
 import type { AuthService } from "../services/auth.service";
 
 export interface WatchlistRouterDependencies {
@@ -23,8 +24,13 @@ export function createWatchlistRouter({
   // DELETE /api/v1/watchlist/:invoiceId - Remove invoice from watchlist
   router.delete("/:invoiceId", authMiddleware, controller.removeFromWatchlist);
 
-  // GET /api/v1/watchlist - Get paginated watchlist with invoice status
-  router.get("/", authMiddleware, controller.getWatchlist);
+  // GET /api/v1/watchlist - Cursor-paginated watchlist with invoice status (issue #559)
+  router.get(
+    "/",
+    authMiddleware,
+    cursorPagination({ scope: "watchlist" }),
+    controller.getWatchlist
+  );
 
   return router;
 }

@@ -7,6 +7,11 @@ import { ListingStatus, InvoiceStatus, InvestmentStatus } from "../types/enums";
 import { ServiceError } from "../utils/service-error";
 import { logger } from "../observability/logger";
 import { notifyListingSold, type ListingSale } from "../lib/platform-notifications";
+import {
+  paginateQuery,
+  paginationMeta,
+  type CursorPagination,
+} from "../middleware/cursor-pagination.middleware";
 
 export interface CreateListingInput {
   invoiceId: string;
@@ -23,13 +28,6 @@ export interface ListingFilters {
   status?: ListingStatus;
   minPrice?: number;
   maxPrice?: number;
-  sortBy?: "price" | "expires_at" | "created_at";
-  sortOrder?: "ASC" | "DESC";
-}
-
-export interface PaginationOptions {
-  page: number;
-  limit: number;
 }
 
 export interface BuyListingInput {
@@ -177,9 +175,9 @@ export class SecondaryMarketService {
    * Expired listings are excluded from results.
    */
   async getListings(
-    filters: ListingFilters = {},
-    pagination: PaginationOptions = { page: 1, limit: 20 }
-  ): Promise<{ data: ListingResult[]; meta: { total: number; page: number; limit: number; totalPages: number } }> {
+    filters: ListingFilters,
+    pagination: CursorPagination
+  ): Promise<{ data: ListingResult[]; pagination: ReturnType<typeof paginationMeta> }> {
     const repository = this.dataSource.getRepository(SecondaryListing);
     const queryBuilder = repository
       .createQueryBuilder("listing")
@@ -211,21 +209,14 @@ export class SecondaryMarketService {
       });
     }
 
-    // Apply sorting
-    const sortColumn = this.getSortColumn(filters.sortBy || "created_at");
-    queryBuilder.orderBy(sortColumn, filters.sortOrder || "DESC");
-    queryBuilder.addOrderBy("listing.id", "ASC");
+    const sort = LISTING_SORTS[pagination.sort as ListingSortKey] ?? LISTING_SORTS.created_at;
+    const page = await paginateQuery(queryBuilder, pagination, {
+      sortColumn: sort.column,
+      idColumn: "listing.id",
+      position: (listing) => ({ value: sort.read(listing), id: listing.id }),
+    });
 
-    // Get total count
-    const total = await queryBuilder.getCount();
-
-    // Apply pagination
-    const offset = (pagination.page - 1) * pagination.limit;
-    queryBuilder.skip(offset).take(pagination.limit);
-
-    const listings = await queryBuilder.getMany();
-
-    const data: ListingResult[] = listings.map((listing) => ({
+    const data: ListingResult[] = page.items.map((listing) => ({
       id: listing.id,
       invoiceId: listing.invoiceId,
       sellerWallet: listing.sellerWallet,
@@ -237,15 +228,7 @@ export class SecondaryMarketService {
       createdAt: listing.createdAt,
     }));
 
-    return {
-      data,
-      meta: {
-        total,
-        page: pagination.page,
-        limit: pagination.limit,
-        totalPages: Math.ceil(total / pagination.limit),
-      },
-    };
+    return { data, pagination: paginationMeta(page, pagination) };
   }
 
   /**
@@ -422,16 +405,20 @@ export class SecondaryMarketService {
     return saved;
   }
 
-  private getSortColumn(sort: string): string {
-    const sortMap: Record<string, string> = {
-      price: "listing.price_per_fraction",
-      expires_at: "listing.expires_at",
-      created_at: "listing.created_at",
-    };
-
-    return sortMap[sort] || "listing.created_at";
-  }
 }
+
+/** Sort keys accepted by GET /secondary/listings. */
+export const LISTING_SORT_KEYS = ["created_at", "price", "expires_at"] as const;
+type ListingSortKey = (typeof LISTING_SORT_KEYS)[number];
+
+const LISTING_SORTS: Record<
+  ListingSortKey,
+  { column: string; read(listing: SecondaryListing): string | Date }
+> = {
+  created_at: { column: "listing.createdAt", read: (listing) => listing.createdAt },
+  price: { column: "listing.pricePerFraction", read: (listing) => listing.pricePerFraction },
+  expires_at: { column: "listing.expiresAt", read: (listing) => listing.expiresAt },
+};
 
 export function createSecondaryMarketService(dataSource: DataSource): SecondaryMarketService {
   return new SecondaryMarketService(dataSource);

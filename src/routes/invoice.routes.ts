@@ -2,7 +2,8 @@ import { Router, Request, Response, NextFunction, type RequestHandler } from "ex
 import multer from "multer";
 import rateLimit from "express-rate-limit";
 import Joi from "joi";
-import type { InvoiceService } from "../services/invoice.service";
+import { INVOICE_CURSOR_SCOPE, type InvoiceService } from "../services/invoice.service";
+import { cursorPagination } from "../middleware/cursor-pagination.middleware";
 import type { AppConfig } from "../config/env";
 import { createInvoiceController } from "../controllers/invoice.controller";
 import { submitInvoice } from "./invoices/submit";
@@ -122,7 +123,8 @@ const batchPublishSchema = Joi.object({
 
 const getInvoicesQuerySchema = Joi.object({
   page: Joi.number().integer().min(1).optional(),
-  limit: Joi.number().integer().min(1).max(100).default(20),
+  // Default (25) and cap (100) are applied by the cursorPagination middleware.
+  limit: Joi.number().integer().min(1).optional(),
   status: Joi.string()
     .trim()
     .lowercase()
@@ -293,7 +295,22 @@ export function createInvoiceRouter({
   // ============ INVOICE CRUD ENDPOINTS ============
 
   // GET /api/v1/invoices - List invoices for authenticated seller
-  router.get("/", authenticateJWT, validateQuery(getInvoicesQuerySchema), controller.getInvoices);
+  router.get(
+    "/",
+    authenticateJWT,
+    validateQuery(getInvoicesQuerySchema),
+    // Checked before the cursor is decoded so mixing the two modes gets the
+    // clearer error.
+    (req: Request, _res: Response, next: NextFunction) => {
+      if (req.query.cursor !== undefined && req.query.page !== undefined) {
+        next(new HttpError(400, "Cannot use both cursor and page parameters simultaneously"));
+        return;
+      }
+      next();
+    },
+    cursorPagination({ scope: INVOICE_CURSOR_SCOPE }),
+    controller.getInvoices
+  );
 
   // POST /api/v1/invoices and POST /invoices - Submit invoice for admin review or create draft invoice
   router.post(
