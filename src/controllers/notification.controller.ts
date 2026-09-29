@@ -102,7 +102,13 @@ export function createNotificationController(notificationService: NotificationSe
     },
 
     markAllRead: async (req: Request, res: Response): Promise<void> => {
-      const result = await notificationService.markAllNotificationsRead(req.user!.id);
+      const user = req.user!;
+      // The wallet is passed too so wallet-keyed events (KYC, investment,
+      // settlement) are cleared along with the user's own notifications.
+      const result = await notificationService.markAllNotificationsRead(
+        user.id,
+        user.stellarAddress || user.id
+      );
 
       res.status(200).json({ data: result });
     },

@@ -1,5 +1,6 @@
 import { Router, type Response, type NextFunction } from "express";
 import { createAuthMiddleware, requireInvestor } from "../middleware/auth.middleware";
+import { cursorPagination, paginationMeta } from "../middleware/cursor-pagination.middleware";
 import type { AuthService } from "../services/auth.service";
 import type { PortfolioService } from "../services/portfolio.service";
 import type { AuthenticatedRequest } from "../types/auth";
@@ -21,22 +22,46 @@ export function createPortfolioRouter({
   const router = Router();
   const auth = createAuthMiddleware(authService);
 
+  // Cursor, page size and sort come from the cursorPagination middleware (issue #559).
   router.get(
     "/",
     auth,
     requireInvestor(),
+    cursorPagination({ scope: "portfolio" }),
     async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
       try {
-        const user = req.user!;
-        const cursor =
-          typeof req.query.cursor === "string" && req.query.cursor.length > 0
-            ? req.query.cursor
-            : null;
-        const limitRaw = typeof req.query.limit === "string" ? Number(req.query.limit) : undefined;
-        const limit = Number.isFinite(limitRaw) ? limitRaw : undefined;
+        const pagination = req.pagination!;
+        const page = await portfolioService.getPortfolio(req.user!.id, pagination);
+        res.status(200).json({
+          success: true,
+          data: page,
+          pagination: paginationMeta(page, pagination),
+        });
+      } catch (error) {
+        if (error instanceof ServiceError) {
+          next(new PublicAppError(error.statusCode, error.message, error.code, error.details));
+          return;
+        }
+        next(error);
+      }
+    }
+  );
 
-        const page = await portfolioService.getPortfolio(user.id, { cursor, limit });
-        res.status(200).json({ success: true, data: page });
+  // GET /portfolio/payouts — settlement payout history, newest first (issue #559).
+  router.get(
+    "/payouts",
+    auth,
+    requireInvestor(),
+    cursorPagination({ scope: "payouts" }),
+    async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+      try {
+        const pagination = req.pagination!;
+        const page = await portfolioService.getPayoutHistory(req.user!.id, pagination);
+        res.status(200).json({
+          success: true,
+          data: page.payouts,
+          pagination: paginationMeta(page, pagination),
+        });
       } catch (error) {
         if (error instanceof ServiceError) {
           next(new PublicAppError(error.statusCode, error.message, error.code, error.details));

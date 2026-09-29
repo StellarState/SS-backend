@@ -4,11 +4,11 @@ import { Invoice } from "../models/Invoice.model";
 import { InvoiceStatus } from "../types/enums";
 import { ServiceError } from "../utils/service-error";
 import { logger } from "../observability/logger";
-
-export interface PaginationOptions {
-  page: number;
-  limit: number;
-}
+import {
+  paginateQuery,
+  paginationMeta,
+  type CursorPagination,
+} from "../middleware/cursor-pagination.middleware";
 
 export interface WatchlistEntry {
   id: string;
@@ -30,12 +30,7 @@ export interface WatchlistEntry {
 
 export interface WatchlistResult {
   data: WatchlistEntry[];
-  meta: {
-    total: number;
-    page: number;
-    limit: number;
-    totalPages: number;
-  };
+  pagination: ReturnType<typeof paginationMeta>;
 }
 
 export class WatchlistService {
@@ -119,26 +114,22 @@ export class WatchlistService {
    */
   async getWatchlist(
     walletAddress: string,
-    pagination: PaginationOptions = { page: 1, limit: 20 }
+    pagination: CursorPagination
   ): Promise<WatchlistResult> {
     const repository = this.dataSource.getRepository(Watchlist);
     const queryBuilder = repository
       .createQueryBuilder("watchlist")
       .leftJoinAndSelect("watchlist.invoice", "invoice")
-      .where("watchlist.wallet_address = :walletAddress", { walletAddress })
-      .andWhere("watchlist.deleted_at IS NULL")
-      .orderBy("watchlist.created_at", "DESC");
+      .where("watchlist.walletAddress = :walletAddress", { walletAddress })
+      .andWhere("watchlist.deletedAt IS NULL");
 
-    // Get total count
-    const total = await queryBuilder.getCount();
+    const page = await paginateQuery(queryBuilder, pagination, {
+      sortColumn: "watchlist.createdAt",
+      idColumn: "watchlist.id",
+      position: (entry) => ({ value: entry.createdAt, id: entry.id }),
+    });
 
-    // Apply pagination
-    const offset = (pagination.page - 1) * pagination.limit;
-    queryBuilder.skip(offset).take(pagination.limit);
-
-    const entries = await queryBuilder.getMany();
-
-    const data: WatchlistEntry[] = entries.map((entry) => ({
+    const data: WatchlistEntry[] = page.items.map((entry) => ({
       id: entry.id,
       invoiceId: entry.invoiceId,
       walletAddress: entry.walletAddress,
@@ -156,15 +147,7 @@ export class WatchlistService {
       },
     }));
 
-    return {
-      data,
-      meta: {
-        total,
-        page: pagination.page,
-        limit: pagination.limit,
-        totalPages: Math.ceil(total / pagination.limit),
-      },
-    };
+    return { data, pagination: paginationMeta(page, pagination) };
   }
 
   /**

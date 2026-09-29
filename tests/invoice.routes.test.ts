@@ -225,15 +225,18 @@ describe("Invoice Routes", () => {
         .set("Authorization", `Bearer ${validToken}`)
         .expect(200);
 
+      // Cursor pagination is the default since issue #559 (page size 25).
       expect(response.body).toEqual({
         success: true,
         data: [mockInvoice],
         meta: {
           total: 1,
-          page: 1,
-          limit: 20,
-          totalPages: 1,
+          limit: 25,
+          nextCursor: null,
+          hasNextPage: false,
         },
+        nextCursor: null,
+        pagination: { limit: 25, has_more: false },
       });
     });
 
@@ -276,8 +279,8 @@ describe("Invoice Routes", () => {
       expect(mockInvoiceService.getInvoicesBySellerId).toHaveBeenCalledWith({
         sellerId,
         status: InvoiceStatus.DRAFT,
-        skip: 0,
-        take: 20,
+        after: null,
+        limit: 25,
       });
     });
 

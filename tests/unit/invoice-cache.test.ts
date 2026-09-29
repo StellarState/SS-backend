@@ -161,7 +161,7 @@ describe("Redis Caching Layer for Invoice Data (#461)", () => {
 
     it("invalidates cache on invoice creation", async () => {
       // Warm list cache
-      await request(app).get("/invoices");
+      await request(app).get("/invoices?page=1");
 
       // Create new invoice
       const createRes = await request(app).post("/invoices").send({
@@ -174,14 +174,14 @@ describe("Redis Caching Layer for Invoice Data (#461)", () => {
       expect(createRes.status).toBe(201);
 
       // Next list request should be MISS
-      const nextRes = await request(app).get("/invoices");
+      const nextRes = await request(app).get("/invoices?page=1");
       expect(nextRes.headers["x-cache"]).toBe("MISS");
     });
 
     it("invalidates cache on invoice update", async () => {
       // Warm caches
       await request(app).get(`/invoices/${mockInvoice.id}`);
-      await request(app).get("/invoices");
+      await request(app).get("/invoices?page=1");
 
       // Update invoice
       await request(app).put(`/invoices/${mockInvoice.id}`).send({ customerName: "Updated Acme" });
@@ -191,7 +191,7 @@ describe("Redis Caching Layer for Invoice Data (#461)", () => {
       expect(detailRes.headers["x-cache"]).toBe("MISS");
 
       // List should be MISS
-      const listRes = await request(app).get("/invoices");
+      const listRes = await request(app).get("/invoices?page=1");
       expect(listRes.headers["x-cache"]).toBe("MISS");
     });
 
@@ -226,7 +226,7 @@ describe("Redis Caching Layer for Invoice Data (#461)", () => {
       });
       testApp.get("/invoices", failingController.getInvoices);
 
-      const res = await request(testApp).get("/invoices");
+      const res = await request(testApp).get("/invoices?page=1");
       expect(res.status).toBe(200);
       expect(res.headers["x-cache"]).toBe("MISS");
       expect(res.body.data).toEqual([mockInvoice]);

@@ -1,8 +1,14 @@
 import { DataSource } from "typeorm";
 import { Decimal } from "decimal.js";
 import { Investment } from "../models/Investment.model";
+import { InvestorReturn } from "../models/InvestorReturn.model";
 import { InvoiceStatus, InvestmentStatus } from "../types/enums";
-import { ServiceError } from "../utils/service-error";
+import {
+  DEFAULT_PAGE_SIZE,
+  MAX_PAGE_SIZE,
+  paginateQuery,
+  type CursorPagination,
+} from "../middleware/cursor-pagination.middleware";
 
 export interface PortfolioPosition {
   investmentId: string;
@@ -28,26 +34,39 @@ export interface PortfolioSummary {
 export interface PortfolioPage {
   summary: PortfolioSummary;
   positions: PortfolioPosition[];
-  nextCursor: string | null;
+  /** Present only when another page exists (issue #559). */
+  nextCursor?: string;
   hasMore: boolean;
 }
 
-function encodeCursor(createdAt: Date, id: string): string {
-  return Buffer.from(`${createdAt.toISOString()}|${id}`).toString("base64");
+export interface PayoutRecord {
+  id: string;
+  invoiceId: string;
+  investmentId: string;
+  /** Amount paid out to the investor at settlement. */
+  amount: string;
+  returnAmount: string;
+  paidAt: string;
 }
 
-function decodeCursor(cursor: string): { createdAt: Date; id: string } {
-  try {
-    const raw = Buffer.from(cursor.trim(), "base64").toString("utf-8");
-    const [iso, id] = raw.split("|");
-    const createdAt = new Date(iso);
-    if (!id || Number.isNaN(createdAt.getTime())) {
-      throw new Error("bad cursor");
-    }
-    return { createdAt, id };
-  } catch {
-    throw new ServiceError("INVALID_CURSOR", "Invalid portfolio cursor", 400);
-  }
+export interface PayoutPage {
+  payouts: PayoutRecord[];
+  nextCursor?: string;
+  hasMore: boolean;
+}
+
+/** Fills in defaults for callers that page without the middleware. */
+function normalizePagination(
+  scope: string,
+  pagination: Partial<CursorPagination> = {}
+): CursorPagination {
+  return {
+    scope,
+    limit: Math.min(Math.max(pagination.limit ?? DEFAULT_PAGE_SIZE, 1), MAX_PAGE_SIZE),
+    sort: pagination.sort ?? "created_at",
+    order: pagination.order ?? "DESC",
+    after: pagination.after ?? null,
+  };
 }
 
 /**
@@ -59,30 +78,21 @@ export class PortfolioService {
 
   async getPortfolio(
     investorId: string,
-    options: { cursor?: string | null; limit?: number } = {}
+    options: Partial<CursorPagination> = {}
   ): Promise<PortfolioPage> {
-    const limit = Math.min(Math.max(options.limit ?? 20, 1), 100);
     const repo = this.dataSource.getRepository(Investment);
 
     const qb = repo
       .createQueryBuilder("investment")
       .leftJoinAndSelect("investment.invoice", "invoice")
-      .where("investment.investorId = :investorId", { investorId })
-      .orderBy("investment.createdAt", "DESC")
-      .addOrderBy("investment.id", "DESC")
-      .take(limit + 1);
+      .where("investment.investorId = :investorId", { investorId });
 
-    if (options.cursor) {
-      const { createdAt, id } = decodeCursor(options.cursor);
-      qb.andWhere(
-        "(investment.createdAt < :createdAt OR (investment.createdAt = :createdAt AND investment.id < :id))",
-        { createdAt, id }
-      );
-    }
-
-    const rows = await qb.getMany();
-    const hasMore = rows.length > limit;
-    const pageRows = hasMore ? rows.slice(0, limit) : rows;
+    const page = await paginateQuery(qb, normalizePagination("portfolio", options), {
+      sortColumn: "investment.createdAt",
+      idColumn: "investment.id",
+      position: (investment) => ({ value: investment.createdAt, id: investment.id }),
+    });
+    const pageRows = page.items;
 
     // Summary aggregates across the full portfolio (not just the page).
     const all = await repo.find({
@@ -158,7 +168,6 @@ export class PortfolioService {
       };
     });
 
-    const last = pageRows[pageRows.length - 1];
     return {
       summary: {
         totalInvested: totalInvested.toFixed(4),
@@ -167,8 +176,41 @@ export class PortfolioService {
         realisedPnl: realisedPnl.toFixed(4),
       },
       positions,
-      nextCursor: hasMore && last ? encodeCursor(last.createdAt, last.id) : null,
-      hasMore,
+      hasMore: page.hasMore,
+      ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+    };
+  }
+
+  /**
+   * Settlement payouts received by the investor, newest first (issue #559).
+   * One row per investment paid out when its invoice settled.
+   */
+  async getPayoutHistory(
+    investorId: string,
+    options: Partial<CursorPagination> = {}
+  ): Promise<PayoutPage> {
+    const qb = this.dataSource
+      .getRepository(InvestorReturn)
+      .createQueryBuilder("payout")
+      .where("payout.investorId = :investorId", { investorId });
+
+    const page = await paginateQuery(qb, normalizePagination("payouts", options), {
+      sortColumn: "payout.createdAt",
+      idColumn: "payout.id",
+      position: (payout) => ({ value: payout.createdAt, id: payout.id }),
+    });
+
+    return {
+      payouts: page.items.map((payout) => ({
+        id: payout.id,
+        invoiceId: payout.invoiceId,
+        investmentId: payout.investmentId,
+        amount: new Decimal(payout.amount).toFixed(4),
+        returnAmount: new Decimal(payout.returnAmount).toFixed(4),
+        paidAt: new Date(payout.createdAt).toISOString(),
+      })),
+      hasMore: page.hasMore,
+      ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
     };
   }
 }

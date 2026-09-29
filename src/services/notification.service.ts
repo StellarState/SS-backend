@@ -21,6 +21,11 @@ export interface NotificationPage {
   };
   nextCursor?: string | null;
   hasMore?: boolean;
+  /**
+   * Unread notifications for the wallet across all pages, regardless of the
+   * `read`/`type` filters applied to this page (issue #564).
+   */
+  unreadCount?: number;
 }
 
 export interface ListNotificationsOptions {
@@ -323,6 +328,8 @@ class TypeOrmNotificationRepository implements NotificationRepositoryContract {
           return item;
         });
 
+        const unreadCount = filtered.filter((n) => !n.read).length;
+
         if (read !== undefined) {
           filtered = filtered.filter((n) => n.read === read);
         }
@@ -359,15 +366,18 @@ class TypeOrmNotificationRepository implements NotificationRepositoryContract {
           },
           nextCursor,
           hasMore,
+          unreadCount,
         };
       } catch {
         // Fallback to basic repository query if aggregation fails
       }
     }
 
+    // Parenthesised so the read/type/cursor filters below apply to both halves
+    // of the OR, keeping the list scoped to the requesting wallet.
     const qb = this.repository
       .createQueryBuilder("n")
-      .where("n.userId = :userId OR n.userId = :wallet", { userId, wallet })
+      .where("(n.userId = :userId OR n.userId = :wallet)", { userId, wallet })
       .orderBy("n.timestamp", sortOrder === "asc" ? "ASC" : "DESC")
       .addOrderBy("n.id", sortOrder === "asc" ? "ASC" : "DESC")
       .take(limit + 1);
@@ -402,7 +412,14 @@ class TypeOrmNotificationRepository implements NotificationRepositoryContract {
       qb.andWhere("n.type = :type", { type });
     }
 
-    const [rows, total] = await qb.getManyAndCount();
+    const [[rows, total], unreadCount] = await Promise.all([
+      qb.getManyAndCount(),
+      this.repository
+        .createQueryBuilder("n")
+        .where("(n.userId = :userId OR n.userId = :wallet)", { userId, wallet })
+        .andWhere("n.read = :unread", { unread: false })
+        .getCount(),
+    ]);
     const hasMore = rows.length > limit;
     const data = rows.slice(0, limit).map((r) => {
       if (!r.createdAt && r.timestamp) {
@@ -426,6 +443,7 @@ class TypeOrmNotificationRepository implements NotificationRepositoryContract {
       },
       nextCursor,
       hasMore,
+      unreadCount,
     };
   }
 }

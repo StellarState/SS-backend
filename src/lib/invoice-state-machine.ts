@@ -111,6 +111,14 @@ const TRANSITION_RULES: readonly TransitionRule[] = Object.freeze([
     roles: ["admin"],
     guard: reasonRequired,
   },
+  // Review rejection that hands the invoice back to the seller to fix and
+  // resubmit (issue #565), as opposed to the terminal `rejected` above.
+  {
+    from: InvoiceStatus.PENDING,
+    to: InvoiceStatus.DRAFT,
+    roles: ["admin"],
+    guard: reasonRequired,
+  },
   {
     from: InvoiceStatus.PUBLISHED,
     to: InvoiceStatus.FUNDED,
@@ -191,6 +199,43 @@ export function assertTransition(
   }
 }
 
+/**
+ * Re-raises an invalid-edge rejection as a 409 Conflict whose details name
+ * the invoice's current state and the states it may move to (issue #565).
+ * The review endpoints use this: the request is well formed, it just
+ * conflicts with where the invoice currently is. Any other error is returned
+ * unchanged.
+ */
+export function asTransitionConflict(error: unknown): unknown {
+  if (!(error instanceof ServiceError) || error.code !== "invalid_status_transition") {
+    return error;
+  }
+  const details = (error.details ?? {}) as { from?: InvoiceStatus; to?: InvoiceStatus };
+  return details.from && details.to
+    ? transitionConflict(details.from, details.to, error.message)
+    : new ServiceError(error.code, error.message, 409, error.details);
+}
+
+/**
+ * The 409 for moving an invoice from `from` to `to` when that move is not
+ * available, e.g. approving an invoice that is not under review.
+ */
+export function transitionConflict(
+  from: InvoiceStatus,
+  to: InvoiceStatus,
+  message = `Cannot transition invoice from ${from} to ${to}.`
+): ServiceError {
+  const allowed = allowedTransitionsFrom(from);
+  return new ServiceError("invalid_status_transition", message, 409, {
+    from,
+    to,
+    allowedTransitions: allowed,
+    currentState: from,
+    requestedState: to,
+    allowedStates: allowed,
+  });
+}
+
 /** A committed status change, handed to side effects. */
 export interface InvoiceTransition {
   invoice: Invoice;
@@ -263,7 +308,7 @@ export class InvoiceStateMachine {
     const reason = context.reason?.trim() || null;
 
     invoice.status = to;
-    if (to === InvoiceStatus.REJECTED) {
+    if (to === InvoiceStatus.REJECTED || (from === InvoiceStatus.PENDING && to === InvoiceStatus.DRAFT)) {
       invoice.rejectionReason = reason;
     }
 
@@ -401,16 +446,48 @@ const SELLER_NOTIFICATION_TYPES: Partial<Record<InvoiceStatus, NotificationType>
   [InvoiceStatus.SETTLED]: NotificationType.INVOICE_SETTLED,
 };
 
+/**
+ * Picks the seller's notification for a transition. Admin review decisions
+ * get their own wording and type (issue #564): approval is reported as such
+ * rather than as a plain publish, and a rejection that sends the invoice back
+ * to draft is still reported as a rejection.
+ */
+function sellerNotificationFor(
+  transition: InvoiceTransition
+): { type: NotificationType; title: string; message: string } | null {
+  const { invoice, reason, trigger, to } = transition;
+
+  if (trigger === "admin_approved" && to === InvoiceStatus.PUBLISHED) {
+    return {
+      type: NotificationType.INVOICE_APPROVED,
+      title: "Invoice Approved",
+      message: `Your invoice ${invoice.invoiceNumber} has been approved and is now live on the marketplace.`,
+    };
+  }
+
+  if (trigger === "admin_rejected" && to === InvoiceStatus.DRAFT) {
+    return {
+      type: NotificationType.INVOICE_REJECTED,
+      title: "Invoice Rejected",
+      message: `Your invoice ${invoice.invoiceNumber} was rejected and returned to draft: ${reason ?? "no reason given"}`,
+    };
+  }
+
+  const build = SELLER_MESSAGES[to];
+  if (!build) return null;
+  const [title, message] = build(invoice, reason);
+  return { type: SELLER_NOTIFICATION_TYPES[to] ?? NotificationType.INVOICE, title, message };
+}
+
 export function createSellerNotificationEffect(sink: NotificationSink): TransitionEffect {
   return async function notifySeller(transition) {
-    const build = SELLER_MESSAGES[transition.to];
-    if (!build) return;
-    const [title, message] = build(transition.invoice, transition.reason);
+    const notification = sellerNotificationFor(transition);
+    if (!notification) return;
     await sink.createNotification(
       transition.invoice.sellerId,
-      SELLER_NOTIFICATION_TYPES[transition.to] ?? NotificationType.INVOICE,
-      title,
-      message
+      notification.type,
+      notification.title,
+      notification.message
     );
   };
 }

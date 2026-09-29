@@ -2,7 +2,8 @@ import { Router, Request, Response, NextFunction, type RequestHandler } from "ex
 import multer from "multer";
 import rateLimit from "express-rate-limit";
 import Joi from "joi";
-import type { InvoiceService } from "../services/invoice.service";
+import { INVOICE_CURSOR_SCOPE, type InvoiceService } from "../services/invoice.service";
+import { cursorPagination } from "../middleware/cursor-pagination.middleware";
 import type { AppConfig } from "../config/env";
 import { createInvoiceController } from "../controllers/invoice.controller";
 import { submitInvoice } from "./invoices/submit";
@@ -14,6 +15,7 @@ import {
   requireSeller,
 } from "../middleware/auth.middleware";
 import { checkContractNotPaused } from "../middleware/contract-pause-guard.middleware";
+import { requireAdminRole } from "../middleware/require-admin-role.middleware";
 import type { AuthService } from "../services/auth.service";
 import type { InvestmentService } from "../services/investment.service";
 import type { InvoiceExtensionService } from "../services/invoice-extension.service";
@@ -121,7 +123,8 @@ const batchPublishSchema = Joi.object({
 
 const getInvoicesQuerySchema = Joi.object({
   page: Joi.number().integer().min(1).optional(),
-  limit: Joi.number().integer().min(1).max(100).default(20),
+  // Default (25) and cap (100) are applied by the cursorPagination middleware.
+  limit: Joi.number().integer().min(1).optional(),
   status: Joi.string()
     .trim()
     .lowercase()
@@ -208,6 +211,28 @@ function validateQuery(schema: Joi.Schema) {
   };
 }
 
+const requireAdmin = requireAdminRole();
+
+/**
+ * Admin gate for the invoice review endpoints: a valid `x-admin-key`, as the
+ * admin router accepts, or a JWT carrying the admin role.
+ */
+function requireInvoiceAdmin(req: Request, res: Response, next: NextFunction): void {
+  const adminKey = req.headers["x-admin-key"];
+  if (adminKey && process.env.ADMIN_API_KEY && adminKey === process.env.ADMIN_API_KEY) {
+    next();
+    return;
+  }
+
+  authenticateJWT(req, res, (err?: unknown) => {
+    if (err) {
+      next(err);
+      return;
+    }
+    requireAdmin(req, res, next);
+  });
+}
+
 export function createInvoiceRouter({
   invoiceService,
   config,
@@ -270,7 +295,22 @@ export function createInvoiceRouter({
   // ============ INVOICE CRUD ENDPOINTS ============
 
   // GET /api/v1/invoices - List invoices for authenticated seller
-  router.get("/", authenticateJWT, validateQuery(getInvoicesQuerySchema), controller.getInvoices);
+  router.get(
+    "/",
+    authenticateJWT,
+    validateQuery(getInvoicesQuerySchema),
+    // Checked before the cursor is decoded so mixing the two modes gets the
+    // clearer error.
+    (req: Request, _res: Response, next: NextFunction) => {
+      if (req.query.cursor !== undefined && req.query.page !== undefined) {
+        next(new HttpError(400, "Cannot use both cursor and page parameters simultaneously"));
+        return;
+      }
+      next();
+    },
+    cursorPagination({ scope: INVOICE_CURSOR_SCOPE }),
+    controller.getInvoices
+  );
 
   // POST /api/v1/invoices and POST /invoices - Submit invoice for admin review or create draft invoice
   router.post(
@@ -346,6 +386,24 @@ export function createInvoiceRouter({
     submitInvoiceRateLimiter,
     controller.submitInvoiceForReview
   );
+
+  // ---- Review workflow (issue #565) ----
+  // Invalid transitions answer 409 with the invoice's current and allowed states.
+
+  // PATCH /api/v1/invoices/:id/submit - Issuer submits a draft for review (draft → pending)
+  router.patch(
+    "/:id/submit",
+    authenticateJWT,
+    kycGating,
+    submitInvoiceRateLimiter,
+    controller.submitInvoiceForReview
+  );
+
+  // PATCH /api/v1/invoices/:id/approve - Admin approves a pending invoice (pending → published)
+  router.patch("/:id/approve", requireInvoiceAdmin, controller.approveInvoice);
+
+  // PATCH /api/v1/invoices/:id/reject - Admin returns a pending invoice to draft with a reason
+  router.patch("/:id/reject", requireInvoiceAdmin, controller.rejectInvoiceToDraft);
 
   // GET /api/v1/invoices/:id/history - Status transition history, oldest first
   router.get("/:id/history", authenticateJWT, controller.getInvoiceStatusHistory);

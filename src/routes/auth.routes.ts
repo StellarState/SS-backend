@@ -185,6 +185,22 @@ export function createAuthRouter(authService: AuthService, logger: AppLogger): R
 
   router.use(markAuthRouteBase());
   router.use(noStoreAuthResponse());
+
+  // Refresh and logout are registered ahead of the idempotency cache: a
+  // replayed Idempotency-Key must never hand back an already issued token
+  // pair, which would sidestep single-use rotation and reuse detection.
+  // They also skip the circuit breaker, since a burst of bad tokens from one
+  // client must not trip it for everyone else.
+  router.post(
+    "/refresh",
+    wrapAuthHandler("auth.refresh", controller.refresh as AsyncRouteHandler, logger)
+  );
+
+  router.post(
+    "/logout",
+    wrapAuthHandler("auth.logout", controller.logout as AsyncRouteHandler, logger)
+  );
+
   router.use(idempotencyMiddleware);
 
   router.get(

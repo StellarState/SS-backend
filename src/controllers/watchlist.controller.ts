@@ -84,22 +84,16 @@ export class WatchlistController {
         return res.status(401).json({ error: "Unauthorized" });
       }
 
-      const { page = "1", limit = "20" } = req.query;
-
-      const pagination = {
-        page: Math.max(1, Number(Array.isArray(page) ? page[0] : page)),
-        limit: Math.min(100, Math.max(1, Number(Array.isArray(limit) ? limit[0] : limit))),
-      };
-
+      // Set by the cursorPagination middleware on the route (issue #559).
       const result = await this.watchlistService.getWatchlist(
         req.user.stellarAddress,
-        pagination
+        req.pagination!
       );
 
       return res.status(200).json({
         success: true,
         data: result.data,
-        meta: result.meta,
+        pagination: result.pagination,
       });
     } catch (err: unknown) {
       const statusCode =

@@ -49,37 +49,23 @@ export class SecondaryMarketController {
 
   getListings = async (req: AuthenticatedRequest, res: Response) => {
     try {
-      const {
-        invoiceId,
-        sellerWallet,
-        minPrice,
-        maxPrice,
-        sortBy = "created_at",
-        sortOrder = "DESC",
-        page = "1",
-        limit = "20",
-      } = req.query;
+      const { invoiceId, sellerWallet, minPrice, maxPrice } = req.query;
 
       const filters = {
         invoiceId: invoiceId as string | undefined,
         sellerWallet: sellerWallet as string | undefined,
         minPrice: minPrice ? Number(Array.isArray(minPrice) ? minPrice[0] : minPrice) : undefined,
         maxPrice: maxPrice ? Number(Array.isArray(maxPrice) ? maxPrice[0] : maxPrice) : undefined,
-        sortBy: (sortBy as string) as "price" | "expires_at" | "created_at",
-        sortOrder: (sortOrder as string) as "ASC" | "DESC",
       };
 
-      const pagination = {
-        page: Math.max(1, Number(Array.isArray(page) ? page[0] : page)),
-        limit: Math.min(100, Math.max(1, Number(Array.isArray(limit) ? limit[0] : limit))),
-      };
-
-      const result = await this.secondaryMarketService.getListings(filters, pagination);
+      // Sort, order, page size and cursor come from the cursorPagination
+      // middleware on the route (issue #559).
+      const result = await this.secondaryMarketService.getListings(filters, req.pagination!);
 
       return res.status(200).json({
         success: true,
         data: result.data,
-        meta: result.meta,
+        pagination: result.pagination,
       });
     } catch (err: unknown) {
       const statusCode =

@@ -75,8 +75,8 @@ export enum NotificationType {
   INVOICE_MATURED = "invoice_matured",
   SETTLEMENT_RECEIVED = "settlement_received",
   REFUND_PROCESSED = "refund_processed",
-  /** Funding deadline extended after admin approval (issue #477). */
-  INVOICE_DEADLINE_EXTENDED = "invoice_deadline_extended",
+  /** A secondary market listing was bought (issue #564). */
+  LISTING_SOLD = "listing_sold",
 }
 
 /** Seller funding-deadline extension request lifecycle (issue #477). */

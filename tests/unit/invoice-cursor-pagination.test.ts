@@ -10,7 +10,8 @@ import {
   encodeInvoiceCursor,
   decodeInvoiceCursor,
 } from "../../src/utils/invoice-cursor.utils";
-import { InvoiceService } from "../../src/services/invoice.service";
+import { INVOICE_CURSOR_SCOPE, InvoiceService } from "../../src/services/invoice.service";
+import { encodeSecureCursor } from "../../src/utils/secure-cursor";
 import type { Invoice } from "../../src/models/Invoice.model";
 
 describe("Invoice Keyset Cursor Pagination", () => {
@@ -258,43 +259,50 @@ describe("Invoice Keyset Cursor Pagination", () => {
       expect(page2.nextCursor).toBeNull();
     });
 
-    it("resolves raw UUID cursor key by querying invoice reference", async () => {
-      const cursorUuid = "550e8400-e29b-41d4-a716-446655440000";
-      const refInvoice = createMockInvoice(
-        cursorUuid,
-        new Date("2026-09-24T05:00:00.000Z"),
-        "INV-REF"
-      );
-
-      mockRepo.findOne.mockResolvedValueOnce(refInvoice);
-      mockRepo.find.mockResolvedValueOnce([]);
-      mockRepo.count.mockResolvedValueOnce(0);
-
-      const result = await service.getInvoicesBySellerId({
-        sellerId,
-        cursor: cursorUuid,
-        limit: 10,
-      });
-
-      expect(mockRepo.findOne).toHaveBeenCalledWith({ where: { id: cursorUuid } });
-      expect(result.invoices).toHaveLength(0);
-      expect(result.nextCursor).toBeNull();
-    });
-
-    it("throws 400 if cursor UUID is not found in database", async () => {
-      const cursorUuid = "550e8400-e29b-41d4-a716-446655440099";
-      mockRepo.findOne.mockResolvedValueOnce(null);
-
+    // Issue #559: cursors are sealed, so a client can no longer position a
+    // page with a raw invoice id or a hand-built base64 cursor.
+    it("rejects a raw UUID cursor with 400", async () => {
       await expect(
         service.getInvoicesBySellerId({
           sellerId,
-          cursor: cursorUuid,
+          cursor: "550e8400-e29b-41d4-a716-446655440000",
           limit: 10,
         })
-      ).rejects.toMatchObject({
-        code: "invalid_cursor",
-        statusCode: 400,
-      });
+      ).rejects.toMatchObject({ code: "invalid_cursor", statusCode: 400 });
+      expect(mockRepo.find).not.toHaveBeenCalled();
+    });
+
+    it("rejects a hand-built legacy cursor with 400", async () => {
+      await expect(
+        service.getInvoicesBySellerId({
+          sellerId,
+          cursor: encodeInvoiceCursor({
+            createdAt: new Date("2026-09-24T05:00:00.000Z"),
+            id: "550e8400-e29b-41d4-a716-446655440099",
+          }),
+          limit: 10,
+        })
+      ).rejects.toMatchObject({ code: "invalid_cursor", statusCode: 400 });
+    });
+
+    it("does not expose the invoice id in the cursor it issues", async () => {
+      const now = Date.now();
+      mockRepo.find.mockResolvedValueOnce([
+        createMockInvoice("id-secret-1", new Date(now - 1000), "INV-001"),
+        createMockInvoice("id-secret-2", new Date(now - 2000), "INV-002"),
+      ]);
+      mockRepo.count.mockResolvedValueOnce(2);
+
+      const page = await service.getInvoicesBySellerId({ sellerId, cursor: null, limit: 1 });
+
+      expect(page.nextCursor).not.toBeNull();
+      expect(page.nextCursor).not.toContain("id-secret-1");
+      expect(Buffer.from(page.nextCursor!, "base64").toString("utf8")).not.toContain(
+        "id-secret-1"
+      );
+      expect(Buffer.from(page.nextCursor!, "base64url").toString("utf8")).not.toContain(
+        "id-secret-1"
+      );
     });
   });
 
@@ -384,8 +392,15 @@ describe("Invoice Keyset Cursor Pagination", () => {
         hasMore: false,
       });
 
+      const cursor = encodeSecureCursor(INVOICE_CURSOR_SCOPE, {
+        sort: "created_at",
+        order: "DESC",
+        value: new Date("2026-09-24T12:00:00.000Z"),
+        id: "inv-000",
+      });
+
       const response = await request(app)
-        .get("/api/v1/invoices?cursor=some-cursor&limit=10")
+        .get(`/api/v1/invoices?cursor=${cursor}&limit=10`)
         .set("Authorization", `Bearer ${validToken}`)
         .expect(200);
 
@@ -393,6 +408,20 @@ describe("Invoice Keyset Cursor Pagination", () => {
       expect(response.body.meta.nextCursor).toBeNull();
       expect(response.body.nextCursor).toBeNull();
       expect(response.body.meta.hasNextPage).toBe(false);
+      expect(response.body.pagination).toEqual({ limit: 10, has_more: false });
+      expect(mockInvoiceService.getInvoicesBySellerId).toHaveBeenCalledWith(
+        expect.objectContaining({ after: expect.objectContaining({ id: "inv-000" }), limit: 10 })
+      );
+    });
+
+    it("rejects an invalid cursor with 400 before reaching the service", async () => {
+      const response = await request(app)
+        .get("/api/v1/invoices?cursor=some-cursor&limit=10")
+        .set("Authorization", `Bearer ${validToken}`)
+        .expect(400);
+
+      expect(response.body.error.code).toBe("INVALID_CURSOR");
+      expect(mockInvoiceService.getInvoicesBySellerId).not.toHaveBeenCalled();
     });
 
     it("sends Deprecation header to offset-based clients using page param", async () => {
@@ -412,10 +441,12 @@ describe("Invoice Keyset Cursor Pagination", () => {
       expect(response.body.meta.totalPages).toBe(1);
     });
 
-    it("sends Deprecation header when client calls without cursor", async () => {
+    it("uses cursor pagination with a page size of 25 when no pagination params are given", async () => {
       mockInvoiceService.getInvoicesBySellerId.mockResolvedValueOnce({
         invoices: [sampleInvoice],
         total: 1,
+        nextCursor: null,
+        hasMore: false,
       });
 
       const response = await request(app)
@@ -423,9 +454,26 @@ describe("Invoice Keyset Cursor Pagination", () => {
         .set("Authorization", `Bearer ${validToken}`)
         .expect(200);
 
-      expect(response.headers.deprecation).toBe("true");
-      expect(response.headers.warning).toContain("Offset-based pagination is deprecated");
-      expect(response.body.meta.page).toBe(1);
+      expect(response.headers.deprecation).toBeUndefined();
+      expect(response.body.pagination).toEqual({ limit: 25, has_more: false });
+      expect(mockInvoiceService.getInvoicesBySellerId).toHaveBeenCalledWith(
+        expect.objectContaining({ after: null, limit: 25 })
+      );
+    });
+
+    it("caps the page size at 100", async () => {
+      mockInvoiceService.getInvoicesBySellerId.mockResolvedValueOnce({
+        invoices: [],
+        total: 0,
+        nextCursor: null,
+      });
+
+      const response = await request(app)
+        .get("/api/v1/invoices?limit=500")
+        .set("Authorization", `Bearer ${validToken}`)
+        .expect(200);
+
+      expect(response.body.pagination.limit).toBe(100);
     });
 
     it("rejects request with 400 when both cursor and page parameters are provided", async () => {

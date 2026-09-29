@@ -95,6 +95,9 @@ function validInputs(
   const system: TransitionActor = { role: "system" };
 
   if (to === InvoiceStatus.REJECTED) return { actor: admin, context: { reason: "Bad docs" } };
+  if (from === InvoiceStatus.PENDING && to === InvoiceStatus.DRAFT) {
+    return { actor: admin, context: { reason: "Bad docs" } };
+  }
   if (to === InvoiceStatus.FUNDED) return { actor: system, context: { fundedAmount: "950" } };
   if (to === InvoiceStatus.SETTLED) return { actor: system, context: {} };
   if (from === InvoiceStatus.PENDING && to === InvoiceStatus.PUBLISHED) {
@@ -116,6 +119,7 @@ const VALID_EDGES: Array<[InvoiceStatus, InvoiceStatus]> = [
   [InvoiceStatus.DRAFT, InvoiceStatus.CANCELLED],
   [InvoiceStatus.PENDING, InvoiceStatus.PUBLISHED],
   [InvoiceStatus.PENDING, InvoiceStatus.REJECTED],
+  [InvoiceStatus.PENDING, InvoiceStatus.DRAFT],
   [InvoiceStatus.PENDING, InvoiceStatus.CANCELLED],
   [InvoiceStatus.PUBLISHED, InvoiceStatus.FUNDED],
   [InvoiceStatus.PUBLISHED, InvoiceStatus.CANCELLED],

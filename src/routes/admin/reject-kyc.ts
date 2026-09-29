@@ -4,6 +4,7 @@ import { User } from "@/models/User.model";
 import { KYCStatus } from "@/types/enums";
 import { logKYCStatusChange, logKYCReviewFailure } from "@/lib/kyc-status-log";
 import { logger } from "@/observability/logger";
+import { notifyKycStatusChange } from "@/lib/platform-notifications";
 
 interface RejectKYCBody {
   userId: string;
@@ -62,6 +63,13 @@ export async function rejectKYC(
       reviewerWallet: reviewer?.stellarAddress ?? reviewerId,
       reviewerId,
       action: "reject",
+      reason: rejectionReason,
+    });
+
+    await notifyKycStatusChange(dataSource.manager, {
+      userId,
+      previousStatus,
+      newStatus: KYCStatus.REJECTED,
       reason: rejectionReason,
     });
 

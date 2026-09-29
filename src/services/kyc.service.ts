@@ -6,6 +6,7 @@ import { User } from "../models/User.model";
 import { KYCStatus, KYCVerificationType } from "../types/enums";
 import { HttpError } from "../utils/http-error";
 import { logger, type AppLogger } from "../observability/logger";
+import { notifyKycStatusChange } from "../lib/platform-notifications";
 
 export interface KycProviderData {
   verificationType?: KYCVerificationType;
@@ -141,12 +142,13 @@ export class KycService {
       throw new HttpError(400, "Webhook status must be approved or rejected.");
     }
 
-    await this.dataSource.transaction(async (manager) => {
+    const change = await this.dataSource.transaction(async (manager) => {
       const userRepository = manager.getRepository(User);
       const verificationRepository = manager.getRepository(KYCVerification);
       const historyRepository = manager.getRepository(KycHistory);
       const user = await userRepository.findOneBy({ id: payload.userId });
       if (!user) throw new HttpError(404, "User not found.");
+      const previousUserStatus = user.kycStatus;
 
       const verification = payload.verificationId
         ? await verificationRepository.findOneBy({ id: payload.verificationId })
@@ -184,7 +186,19 @@ export class KycService {
         status: payload.status,
         reason: payload.reason ?? null,
       });
+
+      return {
+        userId: user.id,
+        previousStatus: previousUserStatus,
+        newStatus: payload.status,
+        reason: payload.reason ?? null,
+      };
     });
+
+    // After commit, so a rolled-back decision never leaves a notification behind.
+    if (change) {
+      await notifyKycStatusChange(this.dataSource.manager, change, this.appLogger);
+    }
   }
 
   /**
