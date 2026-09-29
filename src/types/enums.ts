@@ -70,12 +70,11 @@ export enum NotificationType {
   INVOICE_FUNDED = "invoice_funded",
   INVOICE_SETTLED = "invoice_settled",
   INVESTMENT_CREATED = "investment_created",
+  INVOICE_APPROVED = "invoice_approved",
+  INVOICE_DEADLINE_EXTENDED = "invoice_deadline_extended",
+  INVOICE_MATURED = "invoice_matured",
   SETTLEMENT_RECEIVED = "settlement_received",
   REFUND_PROCESSED = "refund_processed",
-  /** Funding deadline extended after admin approval (issue #477). */
-  INVOICE_DEADLINE_EXTENDED = "invoice_deadline_extended",
-  /** Admin approved an invoice under review and it went live (issue #564). */
-  INVOICE_APPROVED = "invoice_approved",
   /** A secondary market listing was bought (issue #564). */
   LISTING_SOLD = "listing_sold",
 }

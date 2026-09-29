@@ -3,16 +3,16 @@ import { MigrationInterface, QueryRunner } from "typeorm";
 /**
  * Notification types for the platform events of issue #564.
  *
- * `invoice_approved` and `listing_sold` are new. `settlement_received`,
- * `kyc_approved` and `kyc_rejected` were already in the NotificationType enum
- * in code but never added to the database type, so inserting them failed.
+ * `listing_sold` is new. `settlement_received`, `kyc_approved` and
+ * `kyc_rejected` were already in the NotificationType enum in code but never
+ * added to the database type, so inserting them failed. (`invoice_approved`
+ * is added by AddNotificationDispatchDedupe1732900000000.)
  */
 export class AddPlatformEventNotificationTypes1754000000001 implements MigrationInterface {
   name = "AddPlatformEventNotificationTypes1754000000001";
 
   public async up(queryRunner: QueryRunner): Promise<void> {
     for (const value of [
-      "invoice_approved",
       "listing_sold",
       "settlement_received",
       "kyc_approved",

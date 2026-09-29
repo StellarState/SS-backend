@@ -48,6 +48,7 @@ import type { NotificationService } from "./services/notification.service";
 import type { InvoiceService } from "./services/invoice.service";
 import type { InvestmentService } from "./services/investment.service";
 import type { SettlementService } from "./services/settlement.service";
+import type { AdminSettlementService } from "./services/admin-settlement.service";
 import type { MarketplaceService } from "./services/marketplace.service";
 import type { SellerService } from "./services/seller.service";
 import type { KycService } from "./services/kyc.service";
@@ -125,11 +126,20 @@ export interface AppDependencies {
   invoiceService?: InvoiceService;
   investmentService?: InvestmentService;
   settlementService?: SettlementService;
+  adminSettlementService?: AdminSettlementService;
   marketplaceService?: MarketplaceService;
   sellerService?: SellerService;
   kycService?: KycService;
   ratingsLeaderboardService?: RatingsLeaderboardService;
   dividendCycleService?: DividendCycleService;
+  dividendDistributionService?: DividendDistributionService;
+  royaltyEarningsService?: RoyaltyEarningsService;
+  subscriptionStatusService?: SubscriptionStatusService;
+  onboardingService?: OnboardingService;
+  swapService?: AtomicSwapService;
+  aclService?: AclService;
+  creatorKeyService?: CreatorKeyService;
+  curveMigrationService?: CurveMigrationService;
   secondaryMarketService?: SecondaryMarketService;
   watchlistService?: WatchlistService;
   settlementWorker?: SettlementWorker;
@@ -137,14 +147,6 @@ export interface AppDependencies {
   extensionService?: InvoiceExtensionService;
   portfolioService?: PortfolioService;
   adminMetricsService?: AdminMetricsService;
-  aclService?: AclService;
-  creatorKeyService?: CreatorKeyService;
-  curveMigrationService?: CurveMigrationService;
-  dividendDistributionService?: DividendDistributionService;
-  royaltyEarningsService?: RoyaltyEarningsService;
-  subscriptionStatusService?: SubscriptionStatusService;
-  onboardingService?: OnboardingService;
-  swapService?: AtomicSwapService;
   logger?: AppLogger;
   metricsEnabled?: boolean;
   metricsRegistry?: MetricsRegistry;
@@ -169,11 +171,20 @@ export function createApp({
   invoiceService,
   investmentService,
   settlementService,
+  adminSettlementService,
   marketplaceService,
   sellerService,
   kycService,
   ratingsLeaderboardService,
   dividendCycleService,
+  dividendDistributionService,
+  royaltyEarningsService,
+  subscriptionStatusService,
+  onboardingService,
+  swapService,
+  aclService,
+  creatorKeyService,
+  curveMigrationService,
   secondaryMarketService,
   watchlistService,
   settlementWorker,
@@ -181,14 +192,6 @@ export function createApp({
   portfolioService,
   extensionService,
   adminMetricsService,
-  aclService,
-  creatorKeyService,
-  curveMigrationService,
-  dividendDistributionService,
-  royaltyEarningsService,
-  subscriptionStatusService,
-  onboardingService,
-  swapService,
   logger: appLogger = logger,
   metricsEnabled = true,
   metricsRegistry = new MetricsRegistry(),
@@ -448,6 +451,7 @@ export function createApp({
         invoiceService,
         extensionService,
         metricsService: adminMetricsService,
+        adminSettlementService,
       })
     );
   }
