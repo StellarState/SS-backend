@@ -31,6 +31,24 @@ export interface AppConfig {
       max: number;
     };
   };
+  redis: {
+    url: string;
+  };
+  rateLimits: {
+    enabled: boolean;
+    auth: {
+      ip: { windowMs: number; max: number };
+      wallet: { windowMs: number; max: number };
+    };
+    invest: {
+      ip: { windowMs: number; max: number };
+      wallet: { windowMs: number; max: number };
+    };
+    invoiceSubmit: {
+      ip: { windowMs: number; max: number };
+      wallet: { windowMs: number; max: number };
+    };
+  };
   reconciliation: {
     enabled: boolean;
     intervalMs: number;
@@ -67,7 +85,10 @@ export interface AppConfig {
   };
   admin: {
     ipWhitelist: string[];
+    wallets: string[];
   };
+  /** Investor accreditation terms version (issue #473). Bumping forces re-ack. */
+  termsVersion: string;
   cache: {
     redisUrl?: string;
     invoicesListTtlSeconds: number;
@@ -80,7 +101,7 @@ export interface AppConfig {
 
 const DEFAULT_PORT = 3000;
 const DEFAULT_JWT_EXPIRES_IN = "15m";
-const DEFAULT_CHALLENGE_TTL_MS = 5 * 60 * 1000;
+const DEFAULT_CHALLENGE_TTL_MS = 60 * 1000; // 60 seconds (Issue #463)
 const DEFAULT_METRICS_ENABLED = true;
 
 const DEFAULT_CACHE_ENABLED = true;
@@ -234,6 +255,92 @@ export function getConfig(): AppConfig {
       },
     },
 
+    redis: {
+      url: process.env.REDIS_URL ?? "redis://localhost:6379",
+    },
+
+    rateLimits: {
+      enabled: parseBoolean(process.env.RATE_LIMIT_ENABLED, true, "RATE_LIMIT_ENABLED"),
+      auth: {
+        ip: {
+          windowMs: parsePositiveInteger(
+            process.env.RATE_LIMIT_AUTH_IP_WINDOW_MS,
+            60000,
+            "RATE_LIMIT_AUTH_IP_WINDOW_MS"
+          ),
+          max: parsePositiveInteger(
+            process.env.RATE_LIMIT_AUTH_IP_MAX,
+            20,
+            "RATE_LIMIT_AUTH_IP_MAX"
+          ),
+        },
+        wallet: {
+          windowMs: parsePositiveInteger(
+            process.env.RATE_LIMIT_AUTH_WALLET_WINDOW_MS,
+            60000,
+            "RATE_LIMIT_AUTH_WALLET_WINDOW_MS"
+          ),
+          max: parsePositiveInteger(
+            process.env.RATE_LIMIT_AUTH_WALLET_MAX,
+            10,
+            "RATE_LIMIT_AUTH_WALLET_MAX"
+          ),
+        },
+      },
+      invest: {
+        ip: {
+          windowMs: parsePositiveInteger(
+            process.env.RATE_LIMIT_INVEST_IP_WINDOW_MS,
+            60000,
+            "RATE_LIMIT_INVEST_IP_WINDOW_MS"
+          ),
+          max: parsePositiveInteger(
+            process.env.RATE_LIMIT_INVEST_IP_MAX,
+            30,
+            "RATE_LIMIT_INVEST_IP_MAX"
+          ),
+        },
+        wallet: {
+          windowMs: parsePositiveInteger(
+            process.env.RATE_LIMIT_INVEST_WALLET_WINDOW_MS,
+            60000,
+            "RATE_LIMIT_INVEST_WALLET_WINDOW_MS"
+          ),
+          max: parsePositiveInteger(
+            process.env.RATE_LIMIT_INVEST_WALLET_MAX,
+            10,
+            "RATE_LIMIT_INVEST_WALLET_MAX"
+          ),
+        },
+      },
+      invoiceSubmit: {
+        ip: {
+          windowMs: parsePositiveInteger(
+            process.env.RATE_LIMIT_INVOICE_SUBMIT_IP_WINDOW_MS,
+            60000,
+            "RATE_LIMIT_INVOICE_SUBMIT_IP_WINDOW_MS"
+          ),
+          max: parsePositiveInteger(
+            process.env.RATE_LIMIT_INVOICE_SUBMIT_IP_MAX,
+            30,
+            "RATE_LIMIT_INVOICE_SUBMIT_IP_MAX"
+          ),
+        },
+        wallet: {
+          windowMs: parsePositiveInteger(
+            process.env.RATE_LIMIT_INVOICE_SUBMIT_WALLET_WINDOW_MS,
+            60000,
+            "RATE_LIMIT_INVOICE_SUBMIT_WALLET_WINDOW_MS"
+          ),
+          max: parsePositiveInteger(
+            process.env.RATE_LIMIT_INVOICE_SUBMIT_WALLET_MAX,
+            10,
+            "RATE_LIMIT_INVOICE_SUBMIT_WALLET_MAX"
+          ),
+        },
+      },
+    },
+
     reconciliation: {
       enabled: parseBoolean(
         process.env.STELLAR_RECONCILIATION_ENABLED,
@@ -314,7 +421,10 @@ export function getConfig(): AppConfig {
 
     admin: {
       ipWhitelist: parseCsv(process.env.ADMIN_IP_WHITELIST),
+      wallets: parseCsv(process.env.ADMIN_WALLETS),
     },
+
+    termsVersion: (process.env.TERMS_VERSION?.trim() || "1"),
 
     cache: {
       redisUrl: process.env.REDIS_URL || undefined,
