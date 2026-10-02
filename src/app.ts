@@ -467,6 +467,10 @@ export function createApp({
     app.use("/swaps", swapRouter);
   }
 
+  if (transactionService) {
+    app.use("/api/v1/transactions", createTransactionRouter({ transactionService }));
+  }
+
   if (config?.admin?.ipWhitelist?.length) {
     app.use(
       "/api/v1/admin",

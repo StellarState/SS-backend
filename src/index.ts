@@ -33,6 +33,7 @@ import { createMarketplaceService } from "./services/marketplace.service";
 import { createInvoiceSearchService } from "./services/invoice-search.service";
 import { createAdminUserService } from "./services/admin-user.service";
 import { KycService } from "./services/kyc.service";
+import { createTransactionService } from "./services/transaction.service";
 import { PaymentDistributorContractService } from "./services/stellar/payment-distributor-contract.service";
 import { createOnchainProjections } from "./services/onchain-projections.service";
 import { InvoiceEscrowContractService } from "./services/stellar/invoice-escrow-contract.service";
@@ -136,6 +137,7 @@ export async function bootstrap(): Promise<{
 
   const marketplaceService = createMarketplaceService(dataSource);
   const kycService = new KycService(dataSource, config.kyc.webhookSecret ?? "", logger);
+  const transactionService = createTransactionService(dataSource);
 
   // Keep process.env.TERMS_VERSION aligned with resolved config for services
   // that read the env directly (acknowledgement gate in InvestmentService).
