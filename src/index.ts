@@ -33,6 +33,7 @@ import { createMarketplaceService } from "./services/marketplace.service";
 import { createInvoiceSearchService } from "./services/invoice-search.service";
 import { createAdminUserService } from "./services/admin-user.service";
 import { KycService } from "./services/kyc.service";
+import { XlmUsdRateService } from "./services/xlm-usd-rate.service";
 import { PaymentDistributorContractService } from "./services/stellar/payment-distributor-contract.service";
 import { createOnchainProjections } from "./services/onchain-projections.service";
 import { InvoiceEscrowContractService } from "./services/stellar/invoice-escrow-contract.service";
@@ -86,12 +87,25 @@ export async function bootstrap(): Promise<{
     dataSource,
     stateMachine: invoiceStateMachine,
   });
+  const sorobanConfig = getSorobanConfig();
+  const escrowRefundService =
+    sorobanConfig.escrowContractId && sorobanConfig.rpcUrl
+      ? new InvoiceEscrowContractService(
+          {
+            contractId: sorobanConfig.escrowContractId,
+            rpcUrl: sorobanConfig.rpcUrl,
+            networkPassphrase: sorobanConfig.networkPassphrase,
+            platformSecretKey: sorobanConfig.platformSecretKey,
+          },
+          logger
+        )
+      : undefined;
   const investmentService = createInvestmentService(
     dataSource,
     invoiceStateMachine,
-    createInvestmentNotifier(notificationService, logger)
+    createInvestmentNotifier(notificationService, logger),
+    escrowRefundService
   );
-  const sorobanConfig = getSorobanConfig();
 
   const distributor =
     sorobanConfig.paymentDistributorContractId && sorobanConfig.platformSecretKey
@@ -137,7 +151,20 @@ export async function bootstrap(): Promise<{
       : undefined;
 
   const marketplaceService = createMarketplaceService(dataSource);
+  const secondaryMarketService = createSecondaryMarketService(dataSource);
   const kycService = new KycService(dataSource, config.kyc.webhookSecret ?? "", logger);
+  const xlmUsdRateService = new XlmUsdRateService({
+    redisUrl: config.cache.redisUrl,
+    enabled: config.cache.enabled,
+    horizonUrl: config.rates.xlmUsd.horizonUrl,
+    refreshIntervalMs: config.rates.xlmUsd.refreshIntervalMs,
+    cacheTtlSeconds: config.rates.xlmUsd.cacheTtlSeconds,
+    staleAfterMs: config.rates.xlmUsd.staleAfterMs,
+    assetCode: config.rates.xlmUsd.assetCode,
+    assetIssuer: config.rates.xlmUsd.assetIssuer,
+    logger,
+  });
+  xlmUsdRateService.start();
 
   // Keep process.env.TERMS_VERSION aligned with resolved config for services
   // that read the env directly (acknowledgement gate in InvestmentService).
@@ -176,9 +203,6 @@ export async function bootstrap(): Promise<{
       })
     : undefined;
 
-  // ---- Feature: Secondary Market ----
-  const secondaryMarketService = createSecondaryMarketService(dataSource);
-
   // ---- Feature: Watchlist ----
   const watchlistService = createWatchlistService(dataSource);
 
@@ -193,6 +217,7 @@ export async function bootstrap(): Promise<{
     settlementService,
     adminSettlementService,
     marketplaceService,
+    secondaryMarketService,
     kycService,
     invoiceSearchService: createInvoiceSearchService(dataSource),
     adminUserService: createAdminUserService(dataSource, logger),
@@ -206,7 +231,7 @@ export async function bootstrap(): Promise<{
     aclService: projections.aclService,
     creatorKeyService: projections.creatorKeyService,
     curveMigrationService: projections.curveMigrationService,
-    secondaryMarketService,
+    xlmUsdRateService,
     watchlistService,
     settlementWorker,
     invoiceEscrowContractService: invoiceEscrowContract,

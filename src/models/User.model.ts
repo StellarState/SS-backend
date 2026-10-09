@@ -11,6 +11,7 @@ import {
 import { UserType, KYCStatus } from "../types/enums";
 import { logger } from "../observability/logger";
 import { AppError } from "../utils/http-error";
+import { SecondaryMarketListing } from "./SecondaryMarketListing.model";
 
 /**
  * User model validation constraints.
@@ -86,6 +87,9 @@ export class User {
 
   @OneToMany("Investment", "investor")
   investments!: import("./Investment.model").Investment[];
+
+  @OneToMany(() => SecondaryMarketListing, (listing) => listing.seller)
+  secondaryMarketListings?: SecondaryMarketListing[];
 
   @OneToMany("Transaction", "user")
   transactions!: import("./Transaction.model").Transaction[];
@@ -339,6 +343,7 @@ export class User {
         kycVerifications: user.kycVerifications,
         notifications: user.notifications,
         secondaryListings: user.secondaryListings,
+        secondaryMarketListings: user.secondaryMarketListings,
         watchlistEntries: user.watchlistEntries,
         kycHistory: user.kycHistory,
       };

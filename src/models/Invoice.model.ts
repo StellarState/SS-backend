@@ -17,6 +17,7 @@ import Decimal from "decimal.js";
 import { InvoiceStatus } from "../types/enums";
 import { logger } from "../observability/logger";
 import { AppError } from "../utils/http-error";
+import { SecondaryMarketListing } from "./SecondaryMarketListing.model";
 
 /**
  * Frozen state transition map optimized for performance.
@@ -25,12 +26,13 @@ import { AppError } from "../utils/http-error";
 export const VALID_INVOICE_TRANSITIONS: Record<InvoiceStatus, readonly InvoiceStatus[]> = Object.freeze({
   [InvoiceStatus.DRAFT]: Object.freeze([InvoiceStatus.PUBLISHED, InvoiceStatus.CANCELLED, InvoiceStatus.REJECTED]),
   [InvoiceStatus.PENDING]: Object.freeze([InvoiceStatus.PUBLISHED, InvoiceStatus.CANCELLED, InvoiceStatus.REJECTED]),
-  [InvoiceStatus.PUBLISHED]: Object.freeze([InvoiceStatus.FUNDED, InvoiceStatus.CANCELLED, InvoiceStatus.FAILED]),
+  [InvoiceStatus.PUBLISHED]: Object.freeze([InvoiceStatus.FUNDED, InvoiceStatus.CANCELLED, InvoiceStatus.FAILED, InvoiceStatus.EXPIRED]),
   [InvoiceStatus.FUNDED]: Object.freeze([InvoiceStatus.SETTLED, InvoiceStatus.CANCELLED]),
   [InvoiceStatus.SETTLED]: Object.freeze([InvoiceStatus.CANCELLED]),
   [InvoiceStatus.CANCELLED]: Object.freeze([]),
   [InvoiceStatus.REJECTED]: Object.freeze([]),
   [InvoiceStatus.FAILED]: Object.freeze([]),
+  [InvoiceStatus.EXPIRED]: Object.freeze([]),
 });
 
 /**
@@ -191,6 +193,9 @@ export class Invoice {
 
   @OneToMany("Investment", "invoice")
   investments?: import("./Investment.model").Investment[];
+
+  @OneToMany(() => SecondaryMarketListing, (listing) => listing.invoice)
+  secondaryMarketListings?: SecondaryMarketListing[];
 
   @OneToMany("Transaction", "invoice")
   transactions?: import("./Transaction.model").Transaction[];

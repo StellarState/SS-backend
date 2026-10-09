@@ -26,6 +26,7 @@ export enum InvoiceStatus {
   DRAFT = "draft",
   PENDING = "pending",
   PUBLISHED = "published",
+  EXPIRED = "expired",
   FUNDED = "funded",
   SETTLED = "settled",
   CANCELLED = "cancelled",
@@ -94,4 +95,14 @@ export enum ListingStatus {
   SOLD = "sold",
   CANCELLED = "cancelled",
   EXPIRED = "expired",
+}
+
+export enum SecondaryMarketListingStatus {
+  ACTIVE = "active",
+  CANCELLED = "cancelled",
+  SOLD = "sold",
+}
+
+export enum SecondaryMarketPurchaseStatus {
+  COMPLETED = "completed",
 }
