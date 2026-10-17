@@ -14,6 +14,16 @@ export interface CreateAutoInvestRuleInput {
   minWalletBalance?: string;
 }
 
+export interface UpdateAutoInvestRuleInput {
+  category?: string | null;
+  minYield?: string;
+  maxFaceValue?: string;
+  riskTier?: RiskTier | null;
+  maxPerInvoice?: string;
+  minWalletBalance?: string;
+  enabled?: boolean;
+}
+
 /**
  * CRUD for investor-configured `AutoInvestRule`s (issue #596). Evaluating
  * and executing rules against a published invoice is
@@ -58,6 +68,67 @@ export class AutoInvestRulesService {
 
   async listRules(investorId: string): Promise<AutoInvestRule[]> {
     return this.dataSource.getRepository(AutoInvestRule).find({ where: { investorId } });
+  }
+
+  async updateRule(
+    investorId: string,
+    ruleId: string,
+    input: UpdateAutoInvestRuleInput,
+  ): Promise<AutoInvestRule> {
+    const repo = this.dataSource.getRepository(AutoInvestRule);
+    const rule = await repo.findOneBy({ id: ruleId });
+    if (!rule) {
+      throw new ServiceError("RULE_NOT_FOUND", "Auto-invest rule not found", 404);
+    }
+    if (rule.investorId !== investorId) {
+      throw new ServiceError("RULE_FORBIDDEN", "You can only update your own auto-invest rules", 403);
+    }
+
+    if (input.minYield !== undefined) {
+      const minYield = new Decimal(input.minYield);
+      if (minYield.isNegative()) {
+        throw new ServiceError("INVALID_MIN_YIELD", "minYield must not be negative");
+      }
+      rule.minYield = minYield.toFixed(2);
+    }
+
+    if (input.maxFaceValue !== undefined) {
+      const maxFaceValue = new Decimal(input.maxFaceValue);
+      if (maxFaceValue.isNegative() || maxFaceValue.isZero()) {
+        throw new ServiceError("INVALID_MAX_FACE_VALUE", "maxFaceValue must be greater than zero");
+      }
+      rule.maxFaceValue = maxFaceValue.toFixed(4);
+    }
+
+    if (input.maxPerInvoice !== undefined) {
+      const maxPerInvoice = new Decimal(input.maxPerInvoice);
+      if (maxPerInvoice.isNegative() || maxPerInvoice.isZero()) {
+        throw new ServiceError("INVALID_MAX_PER_INVOICE", "maxPerInvoice must be greater than zero");
+      }
+      rule.maxPerInvoice = maxPerInvoice.toFixed(4);
+    }
+
+    if (input.minWalletBalance !== undefined) {
+      const minWalletBalance = new Decimal(input.minWalletBalance);
+      if (minWalletBalance.isNegative()) {
+        throw new ServiceError("INVALID_MIN_WALLET_BALANCE", "minWalletBalance must not be negative");
+      }
+      rule.minWalletBalance = minWalletBalance.toFixed(4);
+    }
+
+    if (input.category !== undefined) {
+      rule.category = input.category ?? null;
+    }
+
+    if (input.riskTier !== undefined) {
+      rule.riskTier = input.riskTier ?? null;
+    }
+
+    if (input.enabled !== undefined) {
+      rule.enabled = input.enabled;
+    }
+
+    return repo.save(rule);
   }
 
   async deleteRule(investorId: string, ruleId: string): Promise<void> {

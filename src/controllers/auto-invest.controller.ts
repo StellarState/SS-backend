@@ -63,6 +63,20 @@ export class AutoInvestController {
     }
   };
 
+  updateRule = async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const user = req.user;
+      if (!user) {
+        return res.status(401).json({ error: { code: "UNAUTHORIZED", message: "Unauthorized" } });
+      }
+
+      const rule = await this.autoInvestRulesService.updateRule(user.id, req.params.ruleId as string, req.body);
+      return res.status(200).json({ success: true, data: rule });
+    } catch (err: unknown) {
+      return respondWithError(res, err);
+    }
+  };
+
   deleteRule = async (req: AuthenticatedRequest, res: Response) => {
     try {
       const user = req.user;

@@ -23,6 +23,9 @@ export function createAutoInvestRouter({
   // GET /api/v1/auto-invest/rules - list my rules
   router.get("/rules", authMiddleware, controller.listRules);
 
+  // PATCH /api/v1/auto-invest/rules/:ruleId - update a rule
+  router.patch("/rules/:ruleId", authMiddleware, controller.updateRule);
+
   // DELETE /api/v1/auto-invest/rules/:ruleId - remove a rule
   router.delete("/rules/:ruleId", authMiddleware, controller.deleteRule);
 
