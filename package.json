@@ -53,6 +53,8 @@
     "delay": "500"
   },
   "dependencies": {
+    "@types/archiver": "^8.0.0",
+    "archiver": "^8.0.0",
     "bcrypt": "^5.1.1",
     "cors": "^2.8.5",
     "decimal.js": "^10.6.0",

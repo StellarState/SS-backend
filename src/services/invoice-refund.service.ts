@@ -81,7 +81,7 @@ export class InvoiceRefundService {
     }
   }
 
-  async getRefundableInvoices(walletAddress: string): Promise<Invoice[]> {
+  async getRefundableInvoices(_walletAddress: string): Promise<Invoice[]> {
     const now = new Date();
 
     return this.invoiceRepo.find({

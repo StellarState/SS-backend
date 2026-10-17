@@ -97,3 +97,17 @@ export enum ListingStatus {
   CANCELLED = "cancelled",
   EXPIRED = "expired",
 }
+
+/** Risk tier for auto-invest rule criteria matching (issue #596). */
+export enum RiskTier {
+  LOW = "LOW",
+  MEDIUM = "MEDIUM",
+  HIGH = "HIGH",
+}
+
+/** Execution outcome for an auto-invest rule run against an invoice (issue #596). */
+export enum AutoInvestExecutionStatus {
+  EXECUTED = "EXECUTED",
+  SKIPPED_INSUFFICIENT_BALANCE = "SKIPPED_INSUFFICIENT_BALANCE",
+  FAILED = "FAILED",
+}

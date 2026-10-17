@@ -1,5 +1,5 @@
 import { Router, type Response, type NextFunction } from "express";
-import { createAuthMiddleware, requireInvestor, requireAdmin } from "../middleware/auth.middleware";
+import { createAuthMiddleware, requireAdmin } from "../middleware/auth.middleware";
 import type { AuthService } from "../services/auth.service";
 import type { InvestorAccreditationService } from "../services/investor-accreditation.service";
 import type { AuthenticatedRequest } from "../types/auth";

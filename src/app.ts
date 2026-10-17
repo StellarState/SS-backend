@@ -49,6 +49,10 @@ import { createRoyaltiesRouter } from "./routes/royalties.routes";
 import { createSubscriptionsRouter } from "./routes/subscriptions.routes";
 import { createOnboardingRouter } from "./routes/onboarding.routes";
 import { createIssuerReputationRouter } from "./routes/issuer-reputation.routes";
+import { createIssuerAnalyticsRouter } from "./routes/issuer-analytics.routes";
+import { createDocumentExportRouter } from "./routes/document-export.routes";
+import { createAutoInvestRouter } from "./routes/auto-invest.routes";
+import { createNetworkContextMiddleware } from "./middleware/network-context.middleware";
 
 import type { AuthService } from "./services/auth.service";
 import type { NotificationService } from "./services/notification.service";
@@ -71,6 +75,10 @@ import type { FeeScheduleService } from "./services/fee-schedule.service";
 import type { IssuerReputationService } from "./services/issuer-reputation.service";
 import type { InvestorRiskProfileService } from "./services/investor-risk-profile.service";
 import type { InvoiceDraftService } from "./services/invoice-draft.service";
+import type { IssuerAnalyticsService } from "./services/issuer-analytics.service";
+import type { DocumentExportService } from "./services/document-export.service";
+import type { AutoInvestRulesService } from "./services/auto-invest-rules.service";
+import type { StellarNetworksConfig } from "./config/stellar-networks";
 
 import dataSource from "./config/database";
 import { getRedisClient } from "./config/redis";
@@ -211,6 +219,10 @@ export interface AppDependencies {
   investorRiskProfileService?: InvestorRiskProfileService;
   draftService?: InvoiceDraftService;
   invoiceEscrowContractService?: import("./services/stellar/invoice-escrow-contract.service").InvoiceEscrowContractService;
+  issuerAnalyticsService?: IssuerAnalyticsService;
+  documentExportService?: DocumentExportService;
+  autoInvestRulesService?: AutoInvestRulesService;
+  stellarNetworksConfig?: StellarNetworksConfig;
   logger?: AppLogger;
   metricsEnabled?: boolean;
   metricsRegistry?: MetricsRegistry;
@@ -265,6 +277,10 @@ export function createApp({
   investorRiskProfileService,
   draftService,
   invoiceEscrowContractService,
+  issuerAnalyticsService,
+  documentExportService,
+  autoInvestRulesService,
+  stellarNetworksConfig,
   logger: appLogger = logger,
   metricsEnabled = true,
   metricsRegistry = new MetricsRegistry(),
@@ -393,6 +409,10 @@ export function createApp({
       res.setHeader("Content-Type", getMetricsContentType());
       res.send(metricsRegistry.renderPrometheusMetrics());
     });
+  }
+
+  if (stellarNetworksConfig) {
+    app.use(createNetworkContextMiddleware(stellarNetworksConfig));
   }
 
   // Every request with a bearer token for a suspended wallet gets a 403,
@@ -550,6 +570,21 @@ export function createApp({
       "/api/v1/onboarding",
       createOnboardingRouter({ onboardingService, authService })
     );
+  }
+
+  // ---- Issuer Analytics (issue #587) ----
+  if (issuerAnalyticsService) {
+    app.use("/api/v1/issuers", createIssuerAnalyticsRouter({ issuerAnalyticsService }));
+  }
+
+  // ---- Document Bulk Export (issue #589) ----
+  if (documentExportService) {
+    app.use("/api/v1/invoices", createDocumentExportRouter({ documentExportService, authService }));
+  }
+
+  // ---- Auto-Invest Rules (issue #596) ----
+  if (autoInvestRulesService) {
+    app.use("/api/v1/auto-invest", createAutoInvestRouter({ autoInvestRulesService, authService }));
   }
 
   // ---- Issuer Reputation (issue #593) ----

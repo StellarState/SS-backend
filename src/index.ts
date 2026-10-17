@@ -25,6 +25,7 @@ import {
 } from "./lib/notification-dispatcher";
 import { createInvestmentNotifier, createInvestorDirectory } from "./lib/invoice-notifications";
 import { Invoice } from "./models/Invoice.model";
+import { InvoiceStatus } from "./types/enums";
 import { createIPFSService } from "./services/ipfs.service";
 import { createInvestmentService } from "./services/investment.service";
 import { createSettlementService } from "./services/settlement.service";
@@ -53,6 +54,13 @@ import { getRedisClient } from "./config/redis";
 import { createIssuerReputationService } from "./services/issuer-reputation.service";
 import { createInvestorRiskProfileService } from "./services/investor-risk-profile.service";
 import { createInvoiceDraftService } from "./services/invoice-draft.service";
+import { createIssuerAnalyticsService } from "./services/issuer-analytics.service";
+import { createDocumentExportService } from "./services/document-export.service";
+import { createAutoInvestRuleEngineService } from "./services/auto-invest-rule-engine.service";
+import { createAutoInvestRulesService } from "./services/auto-invest-rules.service";
+import { HorizonAccountBalanceService } from "./services/stellar/account-balance.service";
+import { getStellarNetworksConfig } from "./config/stellar-networks";
+import { getPaymentVerificationConfig } from "./config/stellar";
 
 export async function bootstrap(): Promise<{
   server: Server;
@@ -79,10 +87,19 @@ export async function bootstrap(): Promise<{
     deadLetters: new InMemoryDeadLetterSink(),
     logger,
   });
+  // Late-bound auto-invest hook: the rule engine needs investmentService which
+  // isn't created yet. We assign the callback after investmentService exists.
+  let autoInvestOnPublish: ((invoice: Invoice) => void) | undefined;
+
   const invoiceStateMachine = createInvoiceStateMachine({
     effects: [
       unlessDispatched(createSellerNotificationEffect(notificationService)),
       createNotificationDispatchEffect(notificationDispatcher),
+      (transition) => {
+        if (transition.to === InvoiceStatus.PUBLISHED) {
+          autoInvestOnPublish?.(transition.invoice);
+        }
+      },
     ],
   });
   const invoiceService = new InvoiceService({
@@ -91,6 +108,26 @@ export async function bootstrap(): Promise<{
     dataSource,
     stateMachine: invoiceStateMachine,
   });
+  // ---- Feature: Issuer Analytics (issue #587) ----
+  const issuerAnalyticsService = createIssuerAnalyticsService(dataSource);
+
+  // ---- Feature: Document Export (issue #589) ----
+  const documentExportService = createDocumentExportService({
+    dataSource,
+    ipfsService,
+    tempDir: config.documentExport.tempDir,
+    signingSecret: config.documentExport.signingSecret,
+    urlTtlMinutes: config.documentExport.urlTtlMinutes,
+  });
+
+  // ---- Feature: Network Selector (issue #588) ----
+  let stellarNetworksConfig;
+  try {
+    stellarNetworksConfig = getStellarNetworksConfig();
+  } catch {
+    logger.warn("Stellar network selector disabled: networks config incomplete.");
+  }
+
   // ---- Feature: Issuer Reputation (issue #593) ----
   const issuerReputationService = createIssuerReputationService(dataSource);
 
@@ -106,6 +143,30 @@ export async function bootstrap(): Promise<{
 
   // ---- Feature: Invoice Draft Autosave (issue #594) ----
   const draftService = createInvoiceDraftService(dataSource);
+
+  const autoInvestRulesService = createAutoInvestRulesService(dataSource);
+
+  // ---- Feature: Auto-Invest Rule Engine (issue #596) ----
+  try {
+    const horizonUrl = stellarNetworksConfig?.mainnet.horizonUrl ?? getPaymentVerificationConfig().horizonUrl;
+    const balanceChecker = new HorizonAccountBalanceService(horizonUrl);
+    const autoInvestRuleEngine = createAutoInvestRuleEngineService({
+      dataSource,
+      investmentService,
+      balanceChecker,
+      logger,
+    });
+    autoInvestOnPublish = (invoice) => {
+      void autoInvestRuleEngine.evaluateInvoice(invoice).catch((error) => {
+        logger.error("Auto-invest evaluation failed", {
+          invoice_id: invoice.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    };
+  } catch {
+    logger.warn("Auto-invest rule engine disabled: no Horizon URL configured.");
+  }
 
   const sorobanConfig = getSorobanConfig();
 
@@ -234,6 +295,10 @@ export async function bootstrap(): Promise<{
     issuerReputationService,
     investorRiskProfileService,
     draftService,
+    issuerAnalyticsService,
+    documentExportService,
+    autoInvestRulesService,
+    stellarNetworksConfig,
     config,
     logger,
     metricsEnabled: config.observability.metricsEnabled,

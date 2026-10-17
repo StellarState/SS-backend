@@ -48,7 +48,7 @@ export class SecondaryMarketPriceService {
 
     const history = this.aggregatePrices(prices);
     const currentListings = await this.listingRepo.find({
-      where: { invoiceId, soldAt: null as any },
+      where: { invoiceId, soldAt: null as unknown as Date },
     });
 
     let currentAvg = new Decimal(0);

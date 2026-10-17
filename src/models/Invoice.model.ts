@@ -136,6 +136,10 @@ export class Invoice {
   @Column({ name: "risk_score", type: "decimal", precision: 5, scale: 2, nullable: true })
   riskScore!: string | null;
 
+  @Column({ name: "category", type: "varchar", length: 64, nullable: true })
+  @Index("idx_invoices_category")
+  category!: string | null;
+
   @Column({
     type: "enum",
     enum: InvoiceStatus,

@@ -1,7 +1,6 @@
 import { DataSource, EntityManager } from "typeorm";
 import { IssuerReputation, IssuerReputationHistory, ReputationTier } from "../models/IssuerReputation.model";
 import { Invoice } from "../models/Invoice.model";
-import { ServiceError } from "../utils/service-error";
 import { logger } from "../observability/logger";
 import Decimal from "decimal.js";
 
@@ -39,7 +38,7 @@ const TIER_THRESHOLDS = {
   POOR: 0,
 };
 
-const TIER_LABELS: Record<number, ReputationTier> = {
+const _TIER_LABELS: Record<number, ReputationTier> = {
   [TIER_THRESHOLDS.EXCELLENT]: "excellent",
   [TIER_THRESHOLDS.GOOD]: "good",
   [TIER_THRESHOLDS.FAIR]: "fair",
@@ -144,8 +143,6 @@ export class IssuerReputationService {
     let totalDaysLate = 0;
     let totalDaysEarly = 0;
     let lastSettledAt: Date | null = null;
-
-    const now = new Date();
 
     for (const invoice of invoices) {
       const dueDate = new Date(invoice.dueDate);

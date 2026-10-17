@@ -99,6 +99,11 @@ export interface AppConfig {
   };
   /** Investor accreditation terms version (issue #473). Bumping forces re-ack. */
   termsVersion: string;
+  documentExport: {
+    tempDir: string;
+    signingSecret: string;
+    urlTtlMinutes: number;
+  };
   cache: {
     redisUrl?: string;
     invoicesListTtlSeconds: number;
@@ -477,6 +482,16 @@ export function getConfig(): AppConfig {
     },
 
     termsVersion: (process.env.TERMS_VERSION?.trim() || "1"),
+
+    documentExport: {
+      tempDir: process.env.DOCUMENT_EXPORT_TEMP_DIR || "/tmp/ss-document-exports",
+      signingSecret: process.env.DOCUMENT_EXPORT_SIGNING_SECRET || "change-me-in-production",
+      urlTtlMinutes: parsePositiveInteger(
+        process.env.DOCUMENT_EXPORT_URL_TTL_MINUTES,
+        60,
+        "DOCUMENT_EXPORT_URL_TTL_MINUTES"
+      ),
+    },
 
     cache: {
       redisUrl: process.env.REDIS_URL || undefined,
