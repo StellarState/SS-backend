@@ -202,10 +202,7 @@ export class IssuerAnalyticsService {
       );
       if (backing.length === 0) continue;
 
-      const fundedAt = backing.reduce(
-        (latest, investment) => (investment.createdAt > latest ? investment.createdAt : latest),
-        backing[0]!.createdAt,
-      );
+      const fundedAt = invoice.updatedAt;
       fundingDurations.push(daysBetween(invoice.createdAt, fundedAt));
     }
     const avgDaysToFullFunding =

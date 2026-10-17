@@ -1,10 +1,11 @@
-import { DataSource } from "typeorm";
+import { DataSource, In } from "typeorm";
 import { Decimal } from "decimal.js";
 import { Invoice } from "../models/Invoice.model";
 import { AutoInvestRule } from "../models/AutoInvestRule.model";
 import { AutoInvestExecution } from "../models/AutoInvestExecution.model";
+import { Investment } from "../models/Investment.model";
 import { User } from "../models/User.model";
-import { AutoInvestExecutionStatus, RiskTier } from "../types/enums";
+import { AutoInvestExecutionStatus, RiskTier, InvestmentStatus } from "../types/enums";
 import { ServiceError } from "../utils/service-error";
 import type { AppLogger } from "../observability/logger";
 import type { InvestmentService } from "./investment.service";
@@ -61,7 +62,17 @@ export class AutoInvestRuleEngineService {
   }
 
   private async executeRule(rule: AutoInvestRule, invoice: Invoice): Promise<void> {
-    const amount = Decimal.min(new Decimal(rule.maxPerInvoice), new Decimal(invoice.netAmount));
+    const existingInvestments = await this.dependencies.dataSource
+      .getRepository(Investment)
+      .find({ where: { invoiceId: invoice.id, status: In([InvestmentStatus.CONFIRMED, InvestmentStatus.SETTLED]) } });
+
+    const investedAmount = existingInvestments.reduce(
+      (sum, inv) => sum.plus(new Decimal(inv.investmentAmount)),
+      new Decimal(0),
+    );
+
+    const availableCapacity = new Decimal(invoice.amount).minus(investedAmount);
+    const amount = Decimal.min(new Decimal(rule.maxPerInvoice), availableCapacity);
 
     try {
       const investor = await this.dependencies.dataSource.getRepository(User).findOneBy({ id: rule.investorId });
