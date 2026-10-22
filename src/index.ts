@@ -110,6 +110,42 @@ export async function bootstrap(): Promise<{ server: Server }> {
     logger.info("Server running", { port: config.port });
   });
 
+  let shuttingDown = false;
+  const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.info("Received shutdown signal; draining HTTP server.", { signal });
+
+    const forceShutdown = setTimeout(() => {
+      logger.error("HTTP server drain timed out; forcing shutdown.", {
+        timeout_ms: config.http.shutdownTimeoutMs,
+      });
+      server.closeAllConnections();
+    }, config.http.shutdownTimeoutMs);
+    forceShutdown.unref();
+
+    server.close(async (error) => {
+      clearTimeout(forceShutdown);
+      if (error) {
+        logger.error("Failed to close HTTP server cleanly.", { error });
+        process.exitCode = 1;
+      }
+
+      try {
+        if (dataSource.isInitialized) await dataSource.destroy();
+        logger.info("Application shutdown complete.");
+      } catch (shutdownError) {
+        logger.error("Failed to close application resources.", {
+          error: shutdownError instanceof Error ? shutdownError.message : String(shutdownError),
+        });
+        process.exitCode = 1;
+      }
+    });
+  };
+
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
+  process.on("SIGINT", () => void shutdown("SIGINT"));
+
   return { server };
 }
 
