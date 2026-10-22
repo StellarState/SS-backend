@@ -2,7 +2,7 @@ import express, { Router, type Request, type Response, type NextFunction } from 
 import Joi from "joi";
 import { KycService } from "../services/kyc.service";
 import { createKycController } from "../controllers/kyc.controller";
-import { createAuthMiddleware, requireSeller } from "../middleware/auth.middleware";
+import { createAuthMiddleware } from "../middleware/auth.middleware";
 import { HttpError } from "../utils/http-error";
 import type { AuthService } from "../services/auth.service";
 
@@ -76,7 +76,6 @@ export function createKycRouter(service: KycService, authService: AuthService): 
   router.post(
     "/",
     createAuthMiddleware(authService),
-    requireSeller(),
     validateKycBody,
     controller.submitDocument
   );
@@ -90,7 +89,6 @@ export function createKycRouter(service: KycService, authService: AuthService): 
   router.post(
     "/resubmit",
     createAuthMiddleware(authService),
-    requireSeller(),
     validateKycBody,
     controller.resubmit
   );
