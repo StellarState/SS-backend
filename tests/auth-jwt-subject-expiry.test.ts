@@ -13,7 +13,7 @@ import { HttpError } from "../src/utils/http-error";
 import request from "supertest";
 import { createApp } from "../src/app";
 
-// ── In-memory repositories (same as auth.routes.test.ts) ──
+// ── In-memory repositories ──
 
 import { User } from "../src/models/User.model";
 
@@ -225,7 +225,7 @@ function createTestApp(ttlString = "15m") {
   };
 }
 
-// ── Unit Tests (AuthService internals) ──
+// ── Unit Tests ──
 
 describe("JWT subject claim", () => {
   it("should have sub equal to the wallet address used in the challenge", async () => {
@@ -233,7 +233,6 @@ describe("JWT subject claim", () => {
     const keypair = Keypair.random();
     const walletAddress = keypair.publicKey();
 
-    // Complete full auth flow
     const challengeRes = await request(app)
       .post("/api/v1/auth/challenge")
       .send({ publicKey: walletAddress })
@@ -253,7 +252,6 @@ describe("JWT subject claim", () => {
 
     const token = verifyRes.body.token;
 
-    // Decode the token without verification to inspect the payload
     const decoded = jwt.decode(token) as jwt.JwtPayload;
     expect(decoded).not.toBeNull();
     expect(decoded!.sub).toBe(walletAddress);
@@ -285,15 +283,13 @@ describe("JWT expiry", () => {
 
     const token = verifyRes.body.token;
 
-    // Decode to inspect exp claim
     const decoded = jwt.decode(token) as jwt.JwtPayload;
     expect(decoded).not.toBeNull();
     expect(decoded!.exp).toBeDefined();
 
     const now = Math.floor(Date.now() / 1000);
-    const expectedExp = now + 3600; // 1h = 3600s
+    const expectedExp = now + 3600;
 
-    // Allow 1 second tolerance
     expect(Math.abs(decoded!.exp! - expectedExp)).toBeLessThanOrEqual(1);
   });
 });
@@ -304,7 +300,6 @@ describe("Tampered JWT", () => {
     const keypair = Keypair.random();
     const walletAddress = keypair.publicKey();
 
-    // Get a valid token first
     const challengeRes = await request(app)
       .post("/api/v1/auth/challenge")
       .send({ publicKey: walletAddress })
@@ -324,7 +319,6 @@ describe("Tampered JWT", () => {
 
     const validToken = verifyRes.body.token;
 
-    // Tamper with the payload by modifying the second part of the JWT
     const parts = validToken.split(".");
     const tamperedPayload = Buffer.from(
       JSON.stringify({
@@ -336,7 +330,6 @@ describe("Tampered JWT", () => {
     ).toString("base64url");
     const tamperedToken = [parts[0], tamperedPayload, parts[2]].join(".");
 
-    // Hit /me with the tampered token
     await request(app)
       .get("/api/v1/auth/me")
       .set("Authorization", `Bearer ${tamperedToken}`)
@@ -346,7 +339,6 @@ describe("Tampered JWT", () => {
 
 describe("Expired JWT", () => {
   it("should be rejected with 401 when TTL is set to -1s in test config", async () => {
-    // Create a service with a -1s TTL (effectively already expired)
     const { app } = createTestApp("-1s");
     const keypair = Keypair.random();
     const walletAddress = keypair.publicKey();
@@ -359,7 +351,6 @@ describe("Expired JWT", () => {
     const { nonce, message } = challengeRes.body.challenge;
     const signature = keypair.sign(Buffer.from(message, "utf8")).toString("base64");
 
-    // The token should have exp in the past
     const verifyRes = await request(app)
       .post("/api/v1/auth/verify")
       .send({
@@ -371,11 +362,59 @@ describe("Expired JWT", () => {
 
     const expiredToken = verifyRes.body.token;
 
-    // The verify endpoint may still issue the token (it just signs it),
-    // so the token itself will be expired. Now try to use it.
     await request(app)
       .get("/api/v1/auth/me")
       .set("Authorization", `Bearer ${expiredToken}`)
       .expect(401);
+  });
+});
+
+describe("Wallet-Bound JWT Claims & Negative Test Matrix (#56)", () => {
+  it("should reject a token with a malformed wallet address format in sub/wallet", async () => {
+    const { app } = createTestApp();
+    
+    const malformedToken = jwt.sign(
+      {
+        sub: "INVALID_STELLAR_OR_EVM_ADDRESS",
+        wallet: "INVALID_STELLAR_OR_EVM_ADDRESS",
+        iat: Math.floor(Date.now() / 1000),
+        exp: Math.floor(Date.now() / 1000) + 3600,
+      },
+      TEST_SECRET
+    );
+
+    await request(app)
+      .get("/api/v1/auth/me")
+      .set("Authorization", `Bearer ${malformedToken}`)
+      .expect(401);
+  });
+
+  it("should reject a token with missing required claims", async () => {
+    const { app } = createTestApp();
+    
+    const incompleteToken = jwt.sign(
+      {
+        iat: Math.floor(Date.now() / 1000),
+        exp: Math.floor(Date.now() / 1000) + 3600,
+      },
+      TEST_SECRET
+    );
+
+    await request(app)
+      .get("/api/v1/auth/me")
+      .set("Authorization", `Bearer ${incompleteToken}`)
+      .expect(401);
+  });
+
+  it("should allow public/unauthenticated routes to remain accessible without tokens", async () => {
+    const { app } = createTestApp();
+
+    const keypair = Keypair.random();
+    const walletAddress = keypair.publicKey();
+
+    await request(app)
+      .post("/api/v1/auth/challenge")
+      .send({ publicKey: walletAddress })
+      .expect(201);
   });
 });
