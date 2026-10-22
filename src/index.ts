@@ -20,6 +20,7 @@ import { HorizonAccountBalanceService } from "./services/stellar/account-balance
 import { getStellarNetworksConfig } from "./config/stellar-networks";
 import { getPaymentVerificationConfig } from "./config/stellar";
 import type { Invoice } from "./models/Invoice.model";
+import { createInvoiceMaturityWorker } from "./workers/invoice-maturity.worker";
 
 export async function bootstrap(): Promise<{ server: Server }> {
   const config = getConfig();
@@ -108,6 +109,17 @@ export async function bootstrap(): Promise<{ server: Server }> {
 
   const server = app.listen(config.port, () => {
     logger.info("Server running", { port: config.port });
+  });
+
+  const maturityWorker = createInvoiceMaturityWorker(
+    dataSource,
+    settlementService,
+    config.maturity,
+    logger
+  );
+  maturityWorker.start();
+  server.on("close", () => {
+    void maturityWorker.stop();
   });
 
   return { server };
