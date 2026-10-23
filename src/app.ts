@@ -338,6 +338,7 @@ export function createApp({
 
   if (kycService) {
     app.use("/api/v1/kyc", createKycWebhookRouter(kycService));
+    app.use("/kyc", createKycWebhookRouter(kycService));
   }
 
   app.use(express.json());
@@ -451,6 +452,7 @@ export function createApp({
 
   if (kycService) {
     app.use("/api/v1/kyc", createKycRouter(kycService, authService));
+    app.use("/kyc", createKycRouter(kycService, authService));
   }
 
   if (notificationService) {
@@ -621,6 +623,7 @@ export function createApp({
         authService,
         aclService,
         invoiceService,
+        kycService,
         adminUserService,
         extensionService,
         metricsService: adminMetricsService,

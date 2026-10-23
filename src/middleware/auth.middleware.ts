@@ -271,20 +271,8 @@ export async function authenticateJWT(req: Request, _res: Response, next: NextFu
   }
 
   const { userId, stellarAddress, wallet, userType, role } = claims as Partial<AuthTokenPayload>;
-  const resolvedAddress = nonEmptyString(wallet) ?? nonEmptyString(stellarAddress) ?? subject;
-
-  // Issue #610: Check wallet suspension status
-  const { isWalletSuspended } = await import("@/middleware/suspended-wallet.middleware");
-  if (isWalletSuspended(resolvedAddress)) {
-    next(
-      new HttpError(
-        403,
-        "Wallet is suspended and cannot perform authenticated actions.",
-        buildAuthFailureDetails(token, "wallet_suspended")
-      )
-    );
-    return;
-  }
+  const claimsRecord = claims as Record<string, unknown>;
+  const rawKycStatus = claimsRecord.kycStatus as KYCStatus | undefined;
 
   (req as AuthenticatedRequest).user = {
     id: nonEmptyString(userId) ?? subject,
@@ -292,8 +280,10 @@ export async function authenticateJWT(req: Request, _res: Response, next: NextFu
     stellarAddress: resolvedAddress,
     email: null,
     userType: userType || role || (null as unknown as UserType),
-    kycStatus: null as unknown as KYCStatus,
-    isKycVerified: false,
+    kycStatus: rawKycStatus ?? (null as unknown as KYCStatus),
+    isKycVerified: Boolean(
+      claimsRecord.isKycVerified || rawKycStatus === KYCStatus.APPROVED
+    ),
     createdAt: new Date(),
     updatedAt: new Date(),
   };
