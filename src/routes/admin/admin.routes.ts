@@ -30,11 +30,13 @@ import { createAnalyticsSnapshotService } from "@/services/analytics-snapshot.se
 import { createAdminAnalyticsTrendsRouter } from "./analytics-trends.routes";
 import { createAdminSettlementRouter } from "./settlement.routes";
 import { createAdminFeesRouter } from "./fees.routes";
+import { createWaitlistRouter } from "./waitlist.routes";
 import { AppError } from "@/utils/http-error";
 import { logger } from "@/observability/logger";
 import type { AuthenticatedRequest } from "@/types/auth";
 import { listInvoices } from "./list-invoices";
 import { reviewInvoice } from "./review-invoice";
+import type { WaitlistService } from "@/services/waitlist.service";
 
 export interface AdminRouterDependencies {
   dataSource: DataSource;
@@ -53,6 +55,9 @@ export interface AdminRouterDependencies {
   kycService?: KycService;
   invoiceEscrowContractService?: InvoiceEscrowContractService;
   feeScheduleService?: FeeScheduleService;
+  /** Optional: enables waitlist management endpoints (issue #599) */
+  waitlistService?: WaitlistService;
+  notificationService?: import("@/services/notification.service").NotificationService;
 }
 
 interface ExtensionReviewBody {
@@ -105,7 +110,9 @@ export function createAdminRouter({
   adminWallets = [],
   kycService,
   invoiceEscrowContractService,
-  feeScheduleService
+  feeScheduleService,
+  waitlistService: _waitlistService,
+  notificationService: _notificationService
 }: AdminRouterDependencies): Router {
   const router = Router();
 
@@ -295,6 +302,14 @@ export function createAdminRouter({
   // ---- Fee schedule management (issue #592) ----
   if (feeScheduleService) {
     router.use("/", createAdminFeesRouter(feeScheduleService));
+  }
+
+  // ---- Waitlist management (issue #599) ----
+  if (_waitlistService) {
+    router.use(
+      "/waitlist",
+      createWaitlistRouter(dataSource, _waitlistService, authService, _notificationService)
+    );
   }
 
   return router;
