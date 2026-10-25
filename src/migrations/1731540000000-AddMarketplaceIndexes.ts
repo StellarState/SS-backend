@@ -1,7 +1,7 @@
 import { MigrationInterface, QueryRunner } from "typeorm";
 
-export class AddMarketplaceIndexes1711100000000 implements MigrationInterface {
-  name = "AddMarketplaceIndexes1711100000000";
+export class AddMarketplaceIndexes1731540000000 implements MigrationInterface {
+  name = "AddMarketplaceIndexes1731540000000";
 
   public async up(queryRunner: QueryRunner): Promise<void> {
     // Composite index on invoices (status, created_at DESC) for marketplace listing with sorting

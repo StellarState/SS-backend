@@ -1,6 +1,6 @@
 import { MigrationInterface, QueryRunner, TableColumn } from "typeorm";
 
-export class AddSorobanEscrowFieldsToInvoice1710000000000 implements MigrationInterface {
+export class AddSorobanEscrowFieldsToInvoice1731520000000 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.addColumn(
       "invoices",

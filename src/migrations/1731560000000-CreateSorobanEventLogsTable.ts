@@ -1,7 +1,7 @@
 import { MigrationInterface, QueryRunner } from "typeorm";
 
-export class CreateSorobanEventLogsTable1713000000000 implements MigrationInterface {
-  name = "CreateSorobanEventLogsTable1713000000000";
+export class CreateSorobanEventLogsTable1731560000000 implements MigrationInterface {
+  name = "CreateSorobanEventLogsTable1731560000000";
 
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`

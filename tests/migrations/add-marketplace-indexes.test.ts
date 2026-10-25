@@ -1,14 +1,14 @@
-import { AddMarketplaceIndexes1711000000000 } from "../../src/migrations/1711000000000-AddMarketplaceIndexes";
+import { AddMarketplaceIndexes1731530000000 } from "../../src/migrations/1731530000000-AddMarketplaceIndexes";
 import { AppError } from "../../src/utils/http-error";
 import { QueryRunner } from "typeorm";
 import { jest } from "@jest/globals";
 
 describe("AddMarketplaceIndexes Migration - Issue #144", () => {
-  let migration: AddMarketplaceIndexes1711000000000;
+  let migration: AddMarketplaceIndexes1731530000000;
   let mockQueryRunner: { query: any };
 
   beforeEach(() => {
-    migration = new AddMarketplaceIndexes1711000000000();
+    migration = new AddMarketplaceIndexes1731530000000();
     mockQueryRunner = {
       query: jest.fn(),
     };

@@ -1,7 +1,7 @@
 import { MigrationInterface, QueryRunner } from "typeorm";
 
-export class AddSorobanEventLogsIndex1714000000000 implements MigrationInterface {
-  name = "AddSorobanEventLogsIndex1714000000000";
+export class AddSorobanEventLogsIndex1731570000000 implements MigrationInterface {
+  name = "AddSorobanEventLogsIndex1731570000000";
 
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`

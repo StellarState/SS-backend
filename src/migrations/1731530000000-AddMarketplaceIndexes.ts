@@ -1,7 +1,7 @@
 import { MigrationInterface, QueryRunner } from "typeorm";
 
-export class AddMarketplaceIndexes1711000000000 implements MigrationInterface {
-  name = "AddMarketplaceIndexes1711000000000";
+export class AddMarketplaceIndexes1731530000000 implements MigrationInterface {
+  name = "AddMarketplaceIndexes1731530000000";
 
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`
