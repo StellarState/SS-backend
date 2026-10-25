@@ -211,7 +211,8 @@ function validateOpenAPIDrift(): boolean {
       route === "/investors" ||
       route === "/portfolio" ||
       route === "/marketplace" ||
-      route === "/seller";
+      route === "/seller" ||
+      route === "/fx";
 
     if (isDocumented) {
       logSuccess(`Registered route has spec: ${route}`);

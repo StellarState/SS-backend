@@ -38,7 +38,10 @@
             "example": "AAAA..."
           }
         },
-        "required": ["status", "contractId"]
+        "required": [
+          "status",
+          "contractId"
+        ]
       },
       "ErrorResponse": {
         "type": "object",
@@ -53,7 +56,9 @@
       },
       "BatchPublishRequest": {
         "type": "object",
-        "required": ["invoiceIds"],
+        "required": [
+          "invoiceIds"
+        ],
         "properties": {
           "invoiceIds": {
             "type": "array",
@@ -94,7 +99,10 @@
       },
       "RevokeKYCRequest": {
         "type": "object",
-        "required": ["userId", "reviewerId"],
+        "required": [
+          "userId",
+          "reviewerId"
+        ],
         "properties": {
           "userId": {
             "type": "string",
@@ -193,7 +201,11 @@
           },
           "status": {
             "type": "string",
-            "enum": ["pending", "executed", "expired"]
+            "enum": [
+              "pending",
+              "executed",
+              "expired"
+            ]
           },
           "proposedParams": {
             "type": "object",
@@ -274,7 +286,10 @@
           },
           "status": {
             "type": "string",
-            "enum": ["active", "removed"]
+            "enum": [
+              "active",
+              "removed"
+            ]
           },
           "addedAt": {
             "type": "string",
@@ -306,7 +321,10 @@
           },
           "action": {
             "type": "string",
-            "enum": ["add", "remove"]
+            "enum": [
+              "add",
+              "remove"
+            ]
           },
           "permittedFunctions": {
             "type": "array",
@@ -441,7 +459,11 @@
             "description": "RFC 3339 payment time."
           }
         },
-        "required": ["id", "keyAddress", "amount"]
+        "required": [
+          "id",
+          "keyAddress",
+          "amount"
+        ]
       },
       "RoyaltyClaim": {
         "type": "object",
@@ -476,7 +498,10 @@
             "description": "RFC 3339 claim time."
           }
         },
-        "required": ["claimId", "amount"]
+        "required": [
+          "claimId",
+          "amount"
+        ]
       },
       "RoyaltyEarnings": {
         "type": "object",
@@ -562,7 +587,12 @@
             "description": "earned - claimed, floored at zero."
           }
         },
-        "required": ["cycleId", "earned", "claimed", "claimable"]
+        "required": [
+          "cycleId",
+          "earned",
+          "claimed",
+          "claimable"
+        ]
       },
       "DividendClaimable": {
         "type": "object",
@@ -648,7 +678,10 @@
             "description": "RFC 3339 claim time."
           }
         },
-        "required": ["claimId", "amount"]
+        "required": [
+          "claimId",
+          "amount"
+        ]
       },
       "DividendSummary": {
         "type": "object",
@@ -763,7 +796,10 @@
             "description": "RFC 3339 time of the last write."
           }
         },
-        "required": ["wallet", "tourCompleted"]
+        "required": [
+          "wallet",
+          "tourCompleted"
+        ]
       }
     }
   },
@@ -924,6 +960,23 @@
         }
       }
     },
+    "/api/v1/admin/onboarding-bonus/pool-balance": {
+      "get": {
+        "summary": "Get onboarding bonus pool balance",
+        "description": "Reads the configured pool balance storage key from the bonus contract. Requires an allow-listed admin IP.",
+        "responses": {
+          "200": {
+            "description": "On-chain pool balance"
+          },
+          "403": {
+            "description": "Client IP is not allow-listed"
+          },
+          "503": {
+            "description": "Pool contract is not configured"
+          }
+        }
+      }
+    },
     "/api/v1/admin/revoke-kyc": {
       "post": {
         "summary": "Revoke a user's KYC approval",
@@ -975,6 +1028,216 @@
         }
       }
     },
+    "/api/v1/auctions/{auctionId}": {
+      "get": {
+        "summary": "Get secondary auction status",
+        "description": "Returns auction status, countdown, highest bid, and reserve price details.",
+        "parameters": [
+          {
+            "name": "auctionId",
+            "in": "path",
+            "required": true,
+            "description": "Auction ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "404": {
+              "description": "Auction not found",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorResponse"
+                  }
+                }
+              }
+            },
+            "description": "Auction details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "auctionId": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string"
+                        },
+                        "seller": {
+                          "type": "string"
+                        },
+                        "invoiceId": {
+                          "type": "string"
+                        },
+                        "highestBid": {
+                          "type": "string",
+                          "nullable": true
+                        },
+                        "highestBidder": {
+                          "type": "string",
+                          "nullable": true
+                        },
+                        "reservePrice": {
+                          "type": "string"
+                        },
+                        "reserveMet": {
+                          "type": "boolean"
+                        },
+                        "bidCount": {
+                          "type": "integer"
+                        },
+                        "countdownSeconds": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auctions/{auctionId}/bids": {
+      "get": {
+        "summary": "Get bids for an auction",
+        "description": "Returns paginated list of bids placed on the auction, newest first.",
+        "parameters": [
+          {
+            "name": "auctionId",
+            "in": "path",
+            "required": true,
+            "description": "Auction ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 1
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated list of bids",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "meta": {
+                      "type": "object"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/benchmarks/{sector}": {
+      "get": {
+        "summary": "Get sector benchmark averages",
+        "description": "Returns sector benchmark averages indexed from on-chain BenchmarkUpdated events.",
+        "parameters": [
+          {
+            "name": "sector",
+            "in": "path",
+            "required": true,
+            "description": "Sector identifier (e.g., logistics, retail)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "404": {
+              "description": "Benchmark not found",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorResponse"
+                  }
+                }
+              }
+            },
+            "description": "Sector benchmark metrics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "sector": {
+                          "type": "string"
+                        },
+                        "avgYield": {
+                          "type": "string"
+                        },
+                        "avgDaysToSettle": {
+                          "type": "string"
+                        },
+                        "defaultRate": {
+                          "type": "string"
+                        },
+                        "sampleCount": {
+                          "type": "integer"
+                        },
+                        "updatedAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/dividends/claimable": {
       "get": {
         "summary": "Claimable dividends per cycle",
@@ -999,7 +1262,10 @@
                       "$ref": "#/components/schemas/DividendClaimable"
                     }
                   },
-                  "required": ["success", "data"]
+                  "required": [
+                    "success",
+                    "data"
+                  ]
                 }
               }
             }
@@ -1121,7 +1387,10 @@
                       "$ref": "#/components/schemas/DividendSummary"
                     }
                   },
-                  "required": ["success", "data"]
+                  "required": [
+                    "success",
+                    "data"
+                  ]
                 }
               }
             }
@@ -1132,6 +1401,126 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/fx/rates": {
+      "get": {
+        "summary": "Get all current FX rates",
+        "description": "Returns current exchange rates for supported currency pairs with staleness info.",
+        "responses": {
+          "200": {
+            "description": "Current exchange rates",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "rates": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "pair": {
+                                "type": "string"
+                              },
+                              "rate": {
+                                "type": "string"
+                              },
+                              "updated_at": {
+                                "type": "string",
+                                "format": "date-time"
+                              },
+                              "age_seconds": {
+                                "type": "integer"
+                              },
+                              "stale": {
+                                "type": "boolean"
+                              }
+                            }
+                          }
+                        },
+                        "timestamp": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/fx/rates/{pair}": {
+      "get": {
+        "summary": "Get rate for a specific currency pair",
+        "parameters": [
+          {
+            "name": "pair",
+            "in": "path",
+            "required": true,
+            "description": "Currency pair (e.g., XLM/USD, EUR/USD)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "404": {
+              "description": "Currency pair not found",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorResponse"
+                  }
+                }
+              }
+            },
+            "description": "Exchange rate record",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "pair": {
+                          "type": "string"
+                        },
+                        "rate": {
+                          "type": "string"
+                        },
+                        "updated_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "age_seconds": {
+                          "type": "integer"
+                        },
+                        "stale": {
+                          "type": "boolean"
+                        }
+                      }
+                    }
+                  }
                 }
               }
             }
@@ -1351,6 +1740,68 @@
         }
       }
     },
+    "/api/v1/investors/{wallet}/alert-preferences": {
+      "get": {
+        "summary": "Get investor alert preferences",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "wallet",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current preferences; missing preference records default to enabled"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Wallet does not match the authenticated user"
+          }
+        }
+      }
+    },
+    "/api/v1/investors/{wallet}/onboarding-bonus": {
+      "get": {
+        "summary": "Get investor onboarding bonus status",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "wallet",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Claim status; unclaimed wallets return is_claimed false"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Wallet does not match the authenticated user"
+          }
+        }
+      }
+    },
     "/api/v1/invoices/batch-publish": {
       "post": {
         "summary": "Batch publish draft invoices",
@@ -1498,6 +1949,227 @@
         }
       }
     },
+    "/api/v1/invoices/{invoiceId}/auctions": {
+      "get": {
+        "summary": "List auctions for an invoice",
+        "description": "Returns all active and settled secondary auctions for the specified invoice.",
+        "parameters": [
+          {
+            "name": "invoiceId",
+            "in": "path",
+            "required": true,
+            "description": "Invoice ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of auctions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/invoices/{invoiceId}/benchmark": {
+      "get": {
+        "summary": "Compare invoice yield against sector benchmark",
+        "description": "Returns invoice metrics compared against sector benchmark averages.",
+        "parameters": [
+          {
+            "name": "invoiceId",
+            "in": "path",
+            "required": true,
+            "description": "Invoice ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "404": {
+              "description": "Invoice or benchmark not found",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorResponse"
+                  }
+                }
+              }
+            },
+            "description": "Benchmark comparison",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "invoiceId": {
+                          "type": "string"
+                        },
+                        "sector": {
+                          "type": "string"
+                        },
+                        "invoice": {
+                          "type": "object"
+                        },
+                        "benchmark": {
+                          "type": "object"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/invoices/{invoiceId}/boost/{wallet}": {
+      "get": {
+        "summary": "Check yield boost eligibility for a wallet on an invoice",
+        "description": "Returns whether the wallet is eligible for loyalty-tier yield boost and resulting boosted yield.",
+        "parameters": [
+          {
+            "name": "invoiceId",
+            "in": "path",
+            "required": true,
+            "description": "Invoice ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "wallet",
+            "in": "path",
+            "required": true,
+            "description": "Investor wallet address",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "404": {
+              "description": "Invoice not found",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorResponse"
+                  }
+                }
+              }
+            },
+            "description": "Yield boost eligibility",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "invoiceId": {
+                          "type": "string"
+                        },
+                        "wallet": {
+                          "type": "string"
+                        },
+                        "isEligible": {
+                          "type": "boolean"
+                        },
+                        "tier": {
+                          "type": "string",
+                          "nullable": true
+                        },
+                        "boostBps": {
+                          "type": "integer"
+                        },
+                        "baseYield": {
+                          "type": "string"
+                        },
+                        "boostedYield": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/invoices/{invoice_id}/yield-adjustment": {
+      "get": {
+        "summary": "Get the latest invoice yield adjustment",
+        "parameters": [
+          {
+            "name": "invoice_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Latest settlement yield adjustment"
+          }
+        }
+      }
+    },
+    "/api/v1/invoices/{invoice_id}/yield-adjustment/history": {
+      "get": {
+        "summary": "Get invoice yield adjustment history",
+        "parameters": [
+          {
+            "name": "invoice_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Per-settlement yield adjustment history"
+          }
+        }
+      }
+    },
     "/api/v1/keys/{id}": {
       "get": {
         "summary": "Get creator key detail",
@@ -1638,7 +2310,11 @@
             "description": "Filter by status; `pending` requires creator access",
             "schema": {
               "type": "string",
-              "enum": ["all", "pending", "executed"],
+              "enum": [
+                "all",
+                "pending",
+                "executed"
+              ],
               "default": "all"
             }
           }
@@ -1811,7 +2487,10 @@
                       "$ref": "#/components/schemas/OnboardingStatus"
                     }
                   },
-                  "required": ["success", "data"]
+                  "required": [
+                    "success",
+                    "data"
+                  ]
                 }
               }
             }
@@ -1853,7 +2532,10 @@
                       "$ref": "#/components/schemas/OnboardingStatus"
                     }
                   },
-                  "required": ["success", "data"]
+                  "required": [
+                    "success",
+                    "data"
+                  ]
                 }
               }
             }
@@ -1896,6 +2578,134 @@
         }
       }
     },
+    "/api/v1/referrals/{wallet}/tier": {
+      "get": {
+        "summary": "Get referral tier and commission rate for a wallet",
+        "description": "Returns current referral tier, commission rate bps, cumulative volume, and next tier progression.",
+        "parameters": [
+          {
+            "name": "wallet",
+            "in": "path",
+            "required": true,
+            "description": "Wallet address",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Referral tier details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "wallet": {
+                          "type": "string"
+                        },
+                        "tier": {
+                          "type": "string"
+                        },
+                        "commissionRateBps": {
+                          "type": "integer"
+                        },
+                        "cumulativeReferredVolume": {
+                          "type": "string"
+                        },
+                        "nextTierThreshold": {
+                          "type": "string",
+                          "nullable": true
+                        },
+                        "nextTier": {
+                          "type": "string",
+                          "nullable": true
+                        },
+                        "isDefault": {
+                          "type": "boolean"
+                        },
+                        "upgradedAt": {
+                          "type": "string",
+                          "nullable": true,
+                          "format": "date-time"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/referrals/{wallet}/tier/history": {
+      "get": {
+        "summary": "Get referral tier upgrade history for a wallet",
+        "description": "Returns paginated history of tier upgrade events for a wallet.",
+        "parameters": [
+          {
+            "name": "wallet",
+            "in": "path",
+            "required": true,
+            "description": "Wallet address",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 1
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tier upgrade history",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "meta": {
+                      "type": "object"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/royalties/earnings": {
       "get": {
         "summary": "Creator royalty earnings",
@@ -1934,7 +2744,10 @@
                       "$ref": "#/components/schemas/RoyaltyEarnings"
                     }
                   },
-                  "required": ["success", "data"]
+                  "required": [
+                    "success",
+                    "data"
+                  ]
                 }
               }
             }
@@ -2142,7 +2955,10 @@
                       "$ref": "#/components/schemas/SubscriptionStatus"
                     }
                   },
-                  "required": ["success", "data"]
+                  "required": [
+                    "success",
+                    "data"
+                  ]
                 }
               }
             }
