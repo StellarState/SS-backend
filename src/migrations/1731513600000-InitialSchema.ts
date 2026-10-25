@@ -106,7 +106,7 @@ export class InitialSchema1731513600000 implements MigrationInterface {
     await queryRunner.query(`
       CREATE TYPE "public"."users_usertype_enum" AS ENUM('seller', 'investor', 'both');
       CREATE TYPE "public"."users_kycstatus_enum" AS ENUM('pending', 'in_review', 'approved', 'rejected');
-      CREATE TYPE "public"."invoices_invoicestatus_enum" AS ENUM('draft', 'pending', 'published', 'funded', 'settled', 'cancelled', 'rejected');
+      CREATE TYPE "public"."invoices_invoicestatus_enum" AS ENUM('draft', 'pending', 'published', 'funded', 'settled', 'cancelled');
       CREATE TYPE "public"."investments_investmentstatus_enum" AS ENUM('pending', 'confirmed', 'settled', 'cancelled');
       CREATE TYPE "public"."transactions_transactiontype_enum" AS ENUM('investment', 'payment', 'withdrawal', 'refund');
       CREATE TYPE "public"."transactions_transactionstatus_enum" AS ENUM('pending', 'completed', 'failed');
@@ -135,7 +135,6 @@ export class InitialSchema1731513600000 implements MigrationInterface {
         "email" character varying(255),
         "userType" "public"."users_usertype_enum" NOT NULL DEFAULT 'investor',
         "kycStatus" "public"."users_kycstatus_enum" NOT NULL DEFAULT 'pending',
-        "is_kyc_verified" boolean NOT NULL DEFAULT false,
         "created_at" TIMESTAMP NOT NULL DEFAULT now(),
         "updated_at" TIMESTAMP NOT NULL DEFAULT now(),
         "deleted_at" TIMESTAMP,
@@ -166,7 +165,6 @@ export class InitialSchema1731513600000 implements MigrationInterface {
         "risk_score" decimal(5,2),
         "status" "public"."invoices_invoicestatus_enum" NOT NULL DEFAULT 'draft',
         "smart_contract_id" character varying(64),
-        "rejection_reason" text,
         "created_at" TIMESTAMP NOT NULL DEFAULT now(),
         "updated_at" TIMESTAMP NOT NULL DEFAULT now(),
         "deleted_at" TIMESTAMP,
@@ -198,7 +196,6 @@ export class InitialSchema1731513600000 implements MigrationInterface {
         "actual_return" decimal(18,4),
         "status" "public"."investments_investmentstatus_enum" NOT NULL DEFAULT 'pending',
         "transaction_hash" character varying(64),
-        "stellar_operation_index" integer,
         "created_at" TIMESTAMP NOT NULL DEFAULT now(),
         "updated_at" TIMESTAMP NOT NULL DEFAULT now(),
         "deleted_at" TIMESTAMP,
@@ -219,22 +216,15 @@ export class InitialSchema1731513600000 implements MigrationInterface {
       CREATE TABLE IF NOT EXISTS "transactions" (
         "id" uuid NOT NULL DEFAULT gen_random_uuid(),
         "user_id" uuid NOT NULL,
-        "investment_id" uuid,
-        "invoice_id" uuid,
         "type" "public"."transactions_transactiontype_enum" NOT NULL,
         "amount" decimal(18,4) NOT NULL,
         "stellar_tx_hash" character varying(64),
-        "stellar_operation_index" integer,
         "status" "public"."transactions_transactionstatus_enum" NOT NULL DEFAULT 'pending',
         "timestamp" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
         CONSTRAINT "PK_transactions" PRIMARY KEY ("id"),
-        CONSTRAINT "FK_transactions_user" FOREIGN KEY ("user_id") REFERENCES "users"("id") ON DELETE CASCADE,
-        CONSTRAINT "FK_transactions_investment" FOREIGN KEY ("investment_id") REFERENCES "investments"("id") ON DELETE SET NULL,
-        CONSTRAINT "FK_transactions_invoice" FOREIGN KEY ("invoice_id") REFERENCES "invoices"("id") ON DELETE SET NULL
+        CONSTRAINT "FK_transactions_user" FOREIGN KEY ("user_id") REFERENCES "users"("id") ON DELETE CASCADE
       );
       CREATE INDEX IF NOT EXISTS "idx_transactions_user_id" ON "transactions" ("user_id");
-      CREATE INDEX IF NOT EXISTS "idx_transactions_investment_id" ON "transactions" ("investment_id");
-      CREATE INDEX IF NOT EXISTS "idx_transactions_invoice_id" ON "transactions" ("invoice_id");
       CREATE INDEX IF NOT EXISTS "idx_transactions_type" ON "transactions" ("type");
       CREATE INDEX IF NOT EXISTS "idx_transactions_status" ON "transactions" ("status");
       CREATE INDEX IF NOT EXISTS "idx_transactions_user_type_status" ON "transactions" ("user_id", "type", "status");
