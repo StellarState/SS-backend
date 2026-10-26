@@ -88,7 +88,7 @@ export class CreateFeeScheduleTables1754000000000 implements MigrationInterface 
 
   private async createFeeSchedulesTable(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`
-      CREATE TABLE "public"."fee_schedules" (
+      CREATE TABLE IF NOT EXISTS "public"."fee_schedules" (
         "id" SERIAL PRIMARY KEY,
         "investment_fee_bps" INTEGER NOT NULL DEFAULT 100 CHECK ("investment_fee_bps" >= 0 AND "investment_fee_bps" <= 1000),
         "settlement_fee_bps" INTEGER NOT NULL DEFAULT 50 CHECK ("settlement_fee_bps" >= 0 AND "settlement_fee_bps" <= 1000),
@@ -98,17 +98,22 @@ export class CreateFeeScheduleTables1754000000000 implements MigrationInterface 
         "effective_from" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
         "effective_until" TIMESTAMP WITH TIME ZONE,
         "created_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-        "updated_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-        CONSTRAINT "only_one_active_schedule" EXCLUDE (USING gist("is_active" WITH =) WHERE ("is_active" = true))
+        "updated_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
       )
     `);
 
     await queryRunner.query(`
-      CREATE INDEX "idx_fee_schedules_is_active" ON "public"."fee_schedules"("is_active")
+      CREATE UNIQUE INDEX IF NOT EXISTS "only_one_active_schedule"
+      ON "public"."fee_schedules" ("is_active")
+      WHERE ("is_active" = true)
     `);
 
     await queryRunner.query(`
-      CREATE INDEX "idx_fee_schedules_effective_dates" ON "public"."fee_schedules"("effective_from", "effective_until")
+      CREATE INDEX IF NOT EXISTS "idx_fee_schedules_is_active" ON "public"."fee_schedules"("is_active")
+    `);
+
+    await queryRunner.query(`
+      CREATE INDEX IF NOT EXISTS "idx_fee_schedules_effective_dates" ON "public"."fee_schedules"("effective_from", "effective_until")
     `);
 
     logger.info("migration.table_created", { table: "fee_schedules" });
@@ -116,7 +121,7 @@ export class CreateFeeScheduleTables1754000000000 implements MigrationInterface 
 
   private async createFeeScheduleHistoryTable(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`
-      CREATE TABLE "public"."fee_schedule_history" (
+      CREATE TABLE IF NOT EXISTS "public"."fee_schedule_history" (
         "id" SERIAL PRIMARY KEY,
         "fee_schedule_id" INTEGER NOT NULL REFERENCES "public"."fee_schedules"("id") ON DELETE CASCADE,
         "actor_wallet" VARCHAR(56) NOT NULL,
@@ -135,15 +140,15 @@ export class CreateFeeScheduleTables1754000000000 implements MigrationInterface 
     `);
 
     await queryRunner.query(`
-      CREATE INDEX "idx_fee_schedule_history_schedule_id" ON "public"."fee_schedule_history"("fee_schedule_id")
+      CREATE INDEX IF NOT EXISTS "idx_fee_schedule_history_schedule_id" ON "public"."fee_schedule_history"("fee_schedule_id")
     `);
 
     await queryRunner.query(`
-      CREATE INDEX "idx_fee_schedule_history_created_at" ON "public"."fee_schedule_history"("created_at" DESC)
+      CREATE INDEX IF NOT EXISTS "idx_fee_schedule_history_created_at" ON "public"."fee_schedule_history"("created_at" DESC)
     `);
 
     await queryRunner.query(`
-      CREATE INDEX "idx_fee_schedule_history_actor" ON "public"."fee_schedule_history"("actor_wallet")
+      CREATE INDEX IF NOT EXISTS "idx_fee_schedule_history_actor" ON "public"."fee_schedule_history"("actor_wallet")
     `);
 
     logger.info("migration.table_created", { table: "fee_schedule_history" });
@@ -158,7 +163,11 @@ export class CreateFeeScheduleTables1754000000000 implements MigrationInterface 
         "secondary_market_fee_bps",
         "is_active",
         "effective_from"
-      ) VALUES (100, 50, 100, 150, true, NOW())
+      )
+      SELECT 100, 50, 100, 150, true, NOW()
+      WHERE NOT EXISTS (
+        SELECT 1 FROM "public"."fee_schedules" WHERE "is_active" = true
+      )
     `);
 
     logger.info("migration.default_data_inserted", { table: "fee_schedules" });
