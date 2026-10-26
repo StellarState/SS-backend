@@ -15,6 +15,7 @@ export class CreateCreatorKeysTable1732800000000 implements MigrationInterface {
       CREATE TABLE IF NOT EXISTS "creator_keys" (
         "id" uuid NOT NULL DEFAULT gen_random_uuid(),
         "creator_id" varchar(128) NOT NULL,
+        "key_address" varchar(128),
         "creator_wallet" varchar(56) NOT NULL,
         "contract_address" varchar(56) NOT NULL,
         "max_buy_per_tx" decimal(30,7) NOT NULL DEFAULT 0,
@@ -27,6 +28,11 @@ export class CreateCreatorKeysTable1732800000000 implements MigrationInterface {
         "updated_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
         CONSTRAINT "PK_creator_keys_id" PRIMARY KEY ("id")
       );
+    `);
+
+    await queryRunner.query(`
+      ALTER TABLE "creator_keys"
+      ADD COLUMN IF NOT EXISTS "key_address" varchar(128);
     `);
 
     await queryRunner.query(`
