@@ -7,25 +7,6 @@ export class AddInvestorOnboardingAlertAndYieldData1732200000000
 
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`
-      CREATE TABLE "soroban_indexer_checkpoints" (
-        "indexer_id" character varying(512) NOT NULL,
-        "ledger_sequence" bigint NOT NULL,
-        "updated_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
-        CONSTRAINT "PK_soroban_indexer_checkpoints" PRIMARY KEY ("indexer_id")
-      )
-    `);
-
-    await queryRunner.query(`
-      ALTER TABLE "soroban_event_logs"
-      ADD COLUMN "event_id" character varying(128)
-    `);
-    await queryRunner.query(`
-      CREATE UNIQUE INDEX "idx_soroban_event_logs_event_id"
-      ON "soroban_event_logs" ("event_id")
-      WHERE "event_id" IS NOT NULL
-    `);
-
-    await queryRunner.query(`
       CREATE TABLE "onboarding_bonuses" (
         "id" uuid NOT NULL DEFAULT gen_random_uuid(),
         "wallet" character varying(56) NOT NULL,
@@ -88,8 +69,5 @@ export class AddInvestorOnboardingAlertAndYieldData1732200000000
     await queryRunner.query(`DROP TABLE "yield_adjustments"`);
     await queryRunner.query(`DROP TABLE "alert_preferences"`);
     await queryRunner.query(`DROP TABLE "onboarding_bonuses"`);
-    await queryRunner.query(`DROP INDEX "idx_soroban_event_logs_event_id"`);
-    await queryRunner.query(`ALTER TABLE "soroban_event_logs" DROP COLUMN "event_id"`);
-    await queryRunner.query(`DROP TABLE "soroban_indexer_checkpoints"`);
   }
 }
