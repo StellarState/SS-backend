@@ -71,6 +71,8 @@ export interface SettleInvoiceInput {
   invoiceId: string;
   proceeds: string;
   actorWallet: string;
+  /** Existing on-chain settlement transaction; prevents redistributing proceeds. */
+  settlementTransactionHash?: string;
   /** Recorded in the status history; defaults to `admin_settled`. */
   trigger?: SettlementTrigger;
   /** Set for automated settlement of a matured invoice by a background job. */
@@ -239,6 +241,7 @@ export class SettlementService {
       invoiceId,
       proceeds: proceedsInput,
       actorWallet,
+      settlementTransactionHash,
       sellerId,
       trigger = "admin_settled",
       systemTrigger,
@@ -444,7 +447,34 @@ export class SettlementService {
             : 0n;
           const distributableScaled = proceedsScaled - feeScaled;
           const settlements: InvestorSettlement[] = [];
-          if (distributionTransactionHash) {
+          let transactionHash = settlementTransactionHash ?? distributionTransactionHash;
+
+          if (this.paymentDistributor && !transactionHash) {
+            if (!this.distributorConfig) {
+              throw new ServiceError(
+                "DISTRIBUTOR_CONFIGURATION_MISSING",
+                "Payment distributor fee configuration is required"
+              );
+            }
+            const distribution = await this.paymentDistributor.distributePayouts({
+              invoiceId: invoice.id,
+              totalAmountStroops: proceedsScaled * DECIMAL_SCALE_TO_STROOP_FACTOR,
+              feeRecipient: this.distributorConfig.feeRecipient,
+              feeBps: this.distributorConfig.feeBps,
+              recipients: investments.map((investment) => ({
+                address: investment.investor?.stellarAddress ?? investment.investorId,
+                amountStroops:
+                  computeInvestorReturn(
+                    decimalStringToScaledBigInt(investment.investmentAmount),
+                    totalFundedScaled,
+                    distributableScaled
+                  ) * DECIMAL_SCALE_TO_STROOP_FACTOR,
+              })),
+            });
+            transactionHash = distribution.transactionHash;
+          }
+
+          if (transactionHash) {
             await transactionalEntityManager.save(
               Transaction,
               transactionalEntityManager.create(Transaction, {
@@ -453,7 +483,7 @@ export class SettlementService {
                 investmentId: null,
                 type: TransactionType.PAYMENT,
                 amount: proceeds.toFixed(4),
-                stellarTxHash: distributionTransactionHash,
+                stellarTxHash: transactionHash,
                 stellarOperationIndex: 0,
                 status: TransactionStatus.COMPLETED,
               })
@@ -533,7 +563,7 @@ export class SettlementService {
             if (
               !completedIntent ||
               completedIntent.status !== SettlementIntentStatus.DISTRIBUTED ||
-              completedIntent.transactionHash !== distributionTransactionHash
+              completedIntent.transactionHash !== transactionHash
             ) {
               throw new ServiceError(
                 "SETTLEMENT_INTENT_INVALID",
@@ -553,7 +583,7 @@ export class SettlementService {
             totalDistributedAmount: totalDistributedStr,
             remainderAmount: remainderStr,
             settledAt: new Date(),
-            distributionTransactionHash: distributionTransactionHash ?? null,
+            distributionTransactionHash: transactionHash ?? null,
             returns: settlements.map((s) => ({
               investmentId: s.investmentId,
               investorId: s.investorId,
@@ -574,7 +604,7 @@ export class SettlementService {
               remainder: remainderStr,
               remainderDust: remainderStr,
               settlements,
-              distributionTransactionHash,
+              distributionTransactionHash: transactionHash,
             },
           };
         });

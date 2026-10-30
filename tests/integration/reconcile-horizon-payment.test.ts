@@ -198,6 +198,7 @@ describe("Horizon Reconciliation Worker Integration Test", () => {
         investmentRepository.create({
           invoiceId: invoice.id,
           investorId: investor.id,
+          investorWallet: investor.stellarAddress,
           investmentAmount: "500.0000",
           expectedReturn: "526.3158",
           status: InvestmentStatus.PENDING,
@@ -227,6 +228,7 @@ describe("Horizon Reconciliation Worker Integration Test", () => {
                   asset_issuer: "GUSDC123",
                   amount: "500.0000",
                   to: "GESCROW123",
+                  source_account: "GINVESTOR123",
                 },
               ],
             },
@@ -272,6 +274,7 @@ describe("Horizon Reconciliation Worker Integration Test", () => {
         investmentRepository.create({
           invoiceId: invoice.id,
           investorId: investor.id,
+          investorWallet: investor.stellarAddress,
           investmentAmount: "300.0000",
           expectedReturn: "315.7895",
           status: InvestmentStatus.CONFIRMED,
@@ -319,6 +322,7 @@ describe("Horizon Reconciliation Worker Integration Test", () => {
         investmentRepository.create({
           invoiceId: invoice.id,
           investorId: investor.id,
+          investorWallet: investor.stellarAddress,
           investmentAmount: "400.0000",
           expectedReturn: "421.0526",
           status: InvestmentStatus.PENDING,
@@ -367,6 +371,7 @@ describe("Horizon Reconciliation Worker Integration Test", () => {
         investmentRepository.create({
           invoiceId: invoice.id,
           investorId: investor.id,
+          investorWallet: investor.stellarAddress,
           investmentAmount: "250.0000",
           expectedReturn: "263.1579",
           status: InvestmentStatus.PENDING,
@@ -396,6 +401,7 @@ describe("Horizon Reconciliation Worker Integration Test", () => {
                   asset_issuer: "GUSDC123",
                   amount: "250.0000",
                   to: "GESCROW123",
+                  source_account: "GINVESTOR123",
                 },
               ],
             },

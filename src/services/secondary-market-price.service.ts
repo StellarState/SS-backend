@@ -1,4 +1,4 @@
-import { Repository, Between, LessThan } from "typeorm";
+import { Repository, Between, LessThan, IsNull } from "typeorm";
 import { SecondaryMarketPriceHistory, PriceHistoryPoint } from "../models/SecondaryMarketPriceHistory.model";
 import { SecondaryListing } from "../models/SecondaryListing.model";
 import { ListingStatus } from "../types/enums";
@@ -49,13 +49,13 @@ export class SecondaryMarketPriceService {
 
     const history = this.aggregatePrices(prices);
     const currentListings = await this.listingRepo.find({
-      where: { invoiceId, status: ListingStatus.ACTIVE },
+      where: { invoiceId, status: ListingStatus.ACTIVE, deletedAt: IsNull() },
     });
 
     let currentAvg = new Decimal(0);
     if (currentListings.length > 0) {
       const sum = currentListings.reduce(
-        (acc, l) => acc.plus(l.pricePerFraction || 0),
+        (acc, listing) => acc.plus(listing.pricePerFraction),
         new Decimal(0)
       );
       currentAvg = sum.dividedBy(currentListings.length);

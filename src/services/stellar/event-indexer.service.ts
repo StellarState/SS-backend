@@ -10,6 +10,8 @@ import { SorobanIndexerCheckpoint } from "../../models/SorobanIndexerCheckpoint.
 import { InvestmentStatus, InvoiceStatus } from "../../types/enums";
 import type { DecodedSorobanEvent } from "../../types/soroban.types";
 import type { ContractEventBus } from "../contract-event-bus.service";
+import type { SettlementService } from "../settlement.service";
+import { scaledBigIntToDecimalString } from "../../lib/decimal-bigint";
 import type { InvestorInsightsService } from "../investor-insights.service";
 
 export interface EventIndexerServiceDependencies {
@@ -25,6 +27,7 @@ export interface EventIndexerServiceDependencies {
   investorInsightsService?: InvestorInsightsService;
   lagAlertThresholdLedgers?: number;
   eventBus?: ContractEventBus;
+  settlementService?: SettlementService;
 }
 
 export interface PollEventsOptions {
@@ -43,6 +46,7 @@ export class EventIndexerService {
   private readonly invoiceRepository?: Repository<Invoice>;
   private readonly investmentRepository?: Repository<Investment>;
   private readonly investorInsightsService?: InvestorInsightsService;
+  private readonly settlementService?: SettlementService;
   private readonly checkpointId: string;
   private readonly lagAlertThresholdLedgers: number;
   private readonly eventBus?: ContractEventBus;
@@ -70,6 +74,7 @@ export class EventIndexerService {
     this.investorInsightsService = dependencies.investorInsightsService;
     this.lagAlertThresholdLedgers = dependencies.lagAlertThresholdLedgers ?? 100;
     this.eventBus = dependencies.eventBus;
+    this.settlementService = dependencies.settlementService;
 
     if (dependencies.server) {
       this.rpcServer = dependencies.server;
@@ -412,17 +417,67 @@ export class EventIndexerService {
     }
 
     if (topic === "investment_funded") {
-      const investmentId = this.extractInvestmentId(event);
-      if (investmentId && this.investmentRepository) {
-        const investment = await this.investmentRepository.findOne({ where: { id: investmentId } });
-        if (investment) {
-          investment.status = InvestmentStatus.CONFIRMED;
-          investment.transactionHash = event.txHash;
-          investment.fundingBlock = String(event.ledger);
-          await this.investmentRepository.save(investment);
-        }
+      const investment = await this.findInvestmentForEvent(event);
+      if (investment) {
+        investment.status = InvestmentStatus.CONFIRMED;
+        investment.transactionHash = event.txHash;
+        investment.fundingBlock = String(event.ledger);
+        await this.investmentRepository?.save(investment);
       }
     }
+  }
+
+  private extractSettlementProceeds(event: DecodedSorobanEvent): string {
+    const data =
+      event.data && typeof event.data === "object" && !Array.isArray(event.data)
+        ? (event.data as Record<string, unknown>)
+        : {};
+    const directProceeds =
+      data.proceeds ??
+      data.proceeds_amount ??
+      data.proceedsAmount ??
+      data.total_proceeds ??
+      data.totalSettlementAmount;
+    if (typeof directProceeds === "string" || typeof directProceeds === "number") {
+      return String(directProceeds);
+    }
+    if (typeof directProceeds === "bigint") {
+      return scaledBigIntToDecimalString(directProceeds / 1000n);
+    }
+
+    const proceedsStroops =
+      data.proceeds_stroops ??
+      data.proceedsStroops ??
+      data.amount_stroops ??
+      data.amountStroops ??
+      data.amount;
+    if (
+      typeof proceedsStroops === "string" ||
+      typeof proceedsStroops === "number" ||
+      typeof proceedsStroops === "bigint"
+    ) {
+      const normalized = String(proceedsStroops);
+      if (!/^\d+$/.test(normalized)) {
+        throw new Error(`Settlement event ${event.id} contains invalid proceeds stroops.`);
+      }
+      return scaledBigIntToDecimalString(BigInt(normalized) / 1000n);
+    }
+
+    throw new Error(
+      `Settlement event ${event.id} does not include proceeds in decimal units or stroops.`
+    );
+  }
+
+  private async findInvestmentForEvent(event: DecodedSorobanEvent): Promise<Investment | null> {
+    if (!this.investmentRepository) return null;
+
+    const investmentId = this.extractInvestmentId(event);
+    if (investmentId) {
+      const byId = await this.investmentRepository.findOne({ where: { id: investmentId } });
+      if (byId) return byId;
+    }
+
+    return null;
   }
 
   private extractInvoiceId(event: DecodedSorobanEvent): string | null {
@@ -441,8 +496,9 @@ export class EventIndexerService {
   private extractInvestmentId(event: DecodedSorobanEvent): string | null {
     if (event.data && typeof event.data === "object") {
       const dataObj = event.data as Record<string, unknown>;
-      if ("investment_id" in dataObj) {
-        return String(dataObj.investment_id);
+      const investmentId = dataObj.investment_id ?? dataObj.investmentId;
+      if (investmentId !== undefined && investmentId !== null) {
+        return String(investmentId);
       }
     }
     return null;
