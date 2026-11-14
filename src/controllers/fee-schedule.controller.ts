@@ -1,8 +1,19 @@
 import { Request, Response, NextFunction } from "express";
-import { FeeScheduleService, UpdateFeeScheduleInput } from "../services/fee-schedule.service";
-import { AppError } from "../utils/http-error";
+import {
+  FeeScheduleService,
+  validateFeeScheduleUpdateInput,
+} from "../services/fee-schedule.service";
+import { AppError, PublicAppError } from "../utils/http-error";
+import { ServiceError } from "../utils/service-error";
 import { logger } from "../observability/logger";
 import type { AuthenticatedRequest } from "../types/auth";
+
+function mapFeeScheduleError(error: unknown): unknown {
+  if (error instanceof ServiceError) {
+    return new PublicAppError(error.statusCode, error.message, error.code, error.details);
+  }
+  return error;
+}
 
 export class FeeScheduleController {
   constructor(private readonly feeScheduleService: FeeScheduleService) {}
@@ -18,28 +29,29 @@ export class FeeScheduleController {
         data: schedule,
       });
     } catch (error) {
-      next(error);
+      next(mapFeeScheduleError(error));
     }
   }
 
   /**
-   * PUT /admin/fees - Updates fee rates, admin only, validates rate bounds.
+   * PUT /admin/fees - Updates fee rates, admin only, validates integer rate bounds.
    */
-  async updateFeeSchedule(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+  async updateFeeSchedule(
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
     try {
-      const body = req.body || {};
+      const rawBody = req.body === undefined ? {} : req.body;
+      const input = validateFeeScheduleUpdateInput(rawBody);
       const actorWallet = req.user?.stellarAddress || "admin";
       const actorRole = req.user?.role || "admin";
 
-      const input: UpdateFeeScheduleInput = {
-        investmentFeeBps: body.investmentFeeBps,
-        settlementFeeBps: body.settlementFeeBps,
-        platformFeeBps: body.platformFeeBps,
-        secondaryMarketFeeBps: body.secondaryMarketFeeBps,
-        changeReason: body.changeReason,
-      };
-
-      const updatedSchedule = await this.feeScheduleService.updateFeeSchedule(input, actorWallet, actorRole);
+      const updatedSchedule = await this.feeScheduleService.updateFeeSchedule(
+        input,
+        actorWallet,
+        actorRole
+      );
 
       logger.info("admin.fee_schedule_updated", {
         actor: actorWallet,
@@ -51,7 +63,7 @@ export class FeeScheduleController {
         data: updatedSchedule,
       });
     } catch (error) {
-      next(error);
+      next(mapFeeScheduleError(error));
     }
   }
 
@@ -83,11 +95,13 @@ export class FeeScheduleController {
         },
       });
     } catch (error) {
-      next(error);
+      next(mapFeeScheduleError(error));
     }
   }
 }
 
-export function createFeeScheduleController(feeScheduleService: FeeScheduleService): FeeScheduleController {
+export function createFeeScheduleController(
+  feeScheduleService: FeeScheduleService
+): FeeScheduleController {
   return new FeeScheduleController(feeScheduleService);
 }

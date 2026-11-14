@@ -8,6 +8,15 @@ export const FEE_SCHEDULE_CACHE_KEY = "fee_schedule:current";
 export const FEE_SCHEDULE_VERSION_KEY = "fee_schedule:version";
 export const FEE_SCHEDULE_CACHE_TTL = 3600; // 1 hour
 
+export const FEE_RATE_FIELDS = [
+  "investmentFeeBps",
+  "settlementFeeBps",
+  "platformFeeBps",
+  "secondaryMarketFeeBps",
+] as const;
+
+export type FeeRateField = (typeof FEE_RATE_FIELDS)[number];
+
 export interface FeeScheduleDTO {
   investmentFeeBps: number;
   settlementFeeBps: number;
@@ -49,6 +58,73 @@ const FEE_BOUNDS = {
   MAX: 1000, // 10% in basis points
 };
 
+/**
+ * Validates that a basis-point fee value is a finite integer within [0, 1000].
+ */
+export function assertValidFeeRateBps(
+  feeBps: unknown,
+  feeName: FeeRateField
+): asserts feeBps is number {
+  if (typeof feeBps !== "number" || !Number.isFinite(feeBps) || !Number.isInteger(feeBps)) {
+    throw new ServiceError(
+      "INVALID_FEE_RATE",
+      `${feeName} must be a finite integer between ${FEE_BOUNDS.MIN} and ${FEE_BOUNDS.MAX} basis points`,
+      400,
+      { field: feeName }
+    );
+  }
+
+  if (feeBps < FEE_BOUNDS.MIN || feeBps > FEE_BOUNDS.MAX) {
+    throw new ServiceError(
+      "INVALID_FEE_RATE",
+      `${feeName} must be between ${FEE_BOUNDS.MIN} and ${FEE_BOUNDS.MAX} basis points`,
+      400,
+      { field: feeName }
+    );
+  }
+}
+
+/**
+ * Validates and normalizes an untrusted fee schedule update payload before any DB work.
+ */
+export function validateFeeScheduleUpdateInput(raw: unknown): UpdateFeeScheduleInput {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ServiceError(
+      "INVALID_FEE_SCHEDULE_INPUT",
+      "Fee schedule update payload must be a JSON object",
+      400
+    );
+  }
+
+  const record = raw as Record<string, unknown>;
+  const normalized: UpdateFeeScheduleInput = {};
+  let hasAtLeastOneFeeField = false;
+
+  for (const field of FEE_RATE_FIELDS) {
+    const value = record[field];
+    if (value !== undefined) {
+      assertValidFeeRateBps(value, field);
+      normalized[field] = value;
+      hasAtLeastOneFeeField = true;
+    }
+  }
+
+  if (record.changeReason !== undefined) {
+    if (typeof record.changeReason !== "string") {
+      throw new ServiceError("INVALID_CHANGE_REASON", "changeReason must be a string", 400, {
+        field: "changeReason",
+      });
+    }
+    normalized.changeReason = record.changeReason;
+  }
+
+  if (!hasAtLeastOneFeeField) {
+    throw new ServiceError("NO_CHANGES", "At least one fee rate must be provided", 400);
+  }
+
+  return normalized;
+}
+
 export class FeeScheduleService {
   constructor(
     private readonly dataSource: DataSource,
@@ -56,23 +132,19 @@ export class FeeScheduleService {
   ) {}
 
   /**
-   * Validates fee rates are within allowed bounds.
+   * Validates fee rates are finite integers within allowed bounds.
    */
-  private validateFeeRate(feeBps: number, feeName: string): void {
-    if (feeBps < FEE_BOUNDS.MIN || feeBps > FEE_BOUNDS.MAX) {
-      throw new ServiceError(
-        "INVALID_FEE_RATE",
-        `${feeName} must be between ${FEE_BOUNDS.MIN} and ${FEE_BOUNDS.MAX} basis points`,
-        400
-      );
-    }
+  private validateFeeRate(feeBps: unknown, feeName: FeeRateField): asserts feeBps is number {
+    assertValidFeeRateBps(feeBps, feeName);
   }
 
   /**
    * Parses and validates cached schedule payload.
    * Safely returns null on corrupt, malformed, or invalid entries to trigger fallback to DB.
    */
-  private parseCachedSchedule(cached: string): { version?: number; data: FeeScheduleWithMeta } | null {
+  private parseCachedSchedule(
+    cached: string
+  ): { version?: number; data: FeeScheduleWithMeta } | null {
     try {
       const parsed = JSON.parse(cached);
       if (!parsed || typeof parsed !== "object") {
@@ -108,7 +180,9 @@ export class FeeScheduleService {
         return null;
       }
 
-      const effectiveUntil = rawData.effectiveUntil ? new Date(rawData.effectiveUntil as string | number | Date) : null;
+      const effectiveUntil = rawData.effectiveUntil
+        ? new Date(rawData.effectiveUntil as string | number | Date)
+        : null;
       if (rawData.effectiveUntil && isNaN(effectiveUntil!.getTime())) {
         return null;
       }
@@ -135,10 +209,7 @@ export class FeeScheduleService {
    * Ensures an older reader (e.g. delayed by event-loop or network lag)
    * cannot overwrite a newer schedule or repopulate after invalidation.
    */
-  async guardedCacheRefill(
-    version: number,
-    dto: FeeScheduleWithMeta
-  ): Promise<boolean> {
+  async guardedCacheRefill(version: number, dto: FeeScheduleWithMeta): Promise<boolean> {
     if (!this.redisClient) {
       return false;
     }
@@ -245,31 +316,29 @@ return 1
     actorWallet: string,
     actorRole: string = "admin"
   ): Promise<FeeScheduleWithMeta> {
-    const { investmentFeeBps, settlementFeeBps, platformFeeBps, secondaryMarketFeeBps, changeReason } = input;
-
-    // Validate provided fee rates
-    if (investmentFeeBps !== undefined) {
-      this.validateFeeRate(investmentFeeBps, "investmentFeeBps");
-    }
-    if (settlementFeeBps !== undefined) {
-      this.validateFeeRate(settlementFeeBps, "settlementFeeBps");
-    }
-    if (platformFeeBps !== undefined) {
-      this.validateFeeRate(platformFeeBps, "platformFeeBps");
-    }
-    if (secondaryMarketFeeBps !== undefined) {
-      this.validateFeeRate(secondaryMarketFeeBps, "secondaryMarketFeeBps");
+    if (!input || typeof input !== "object" || Array.isArray(input)) {
+      throw new ServiceError(
+        "INVALID_FEE_SCHEDULE_INPUT",
+        "Fee schedule update payload must be a JSON object",
+        400
+      );
     }
 
-    // At least one fee must be updated
-    if (
-      investmentFeeBps === undefined &&
-      settlementFeeBps === undefined &&
-      platformFeeBps === undefined &&
-      secondaryMarketFeeBps === undefined
-    ) {
-      throw new ServiceError("NO_CHANGES", "At least one fee rate must be provided", 400);
+    const record = input as Record<string, unknown>;
+    for (const field of FEE_RATE_FIELDS) {
+      if (record[field] !== undefined) {
+        this.validateFeeRate(record[field], field);
+      }
     }
+
+    const validated = validateFeeScheduleUpdateInput(input);
+    const {
+      investmentFeeBps,
+      settlementFeeBps,
+      platformFeeBps,
+      secondaryMarketFeeBps,
+      changeReason,
+    } = validated;
 
     const result = await this.dataSource.transaction(async (manager: EntityManager) => {
       const repository = manager.getRepository(FeeSchedule);
@@ -296,7 +365,8 @@ return 1
       const newInvestmentFeeBps = investmentFeeBps ?? currentSchedule.investmentFeeBps;
       const newSettlementFeeBps = settlementFeeBps ?? currentSchedule.settlementFeeBps;
       const newPlatformFeeBps = platformFeeBps ?? currentSchedule.platformFeeBps;
-      const newSecondaryMarketFeeBps = secondaryMarketFeeBps ?? currentSchedule.secondaryMarketFeeBps;
+      const newSecondaryMarketFeeBps =
+        secondaryMarketFeeBps ?? currentSchedule.secondaryMarketFeeBps;
 
       // Deactivate old schedule
       currentSchedule.isActive = false;
@@ -443,6 +513,9 @@ return 1
   }
 }
 
-export function createFeeScheduleService(dataSource: DataSource, redisClient?: Redis): FeeScheduleService {
+export function createFeeScheduleService(
+  dataSource: DataSource,
+  redisClient?: Redis
+): FeeScheduleService {
   return new FeeScheduleService(dataSource, redisClient);
 }
