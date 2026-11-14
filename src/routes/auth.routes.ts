@@ -10,7 +10,7 @@ import { createAuthController } from "../controllers/auth.controller";
 import { createAuthMiddleware } from "../middleware/auth.middleware";
 import { validateBody } from "../middleware/validate.middleware";
 import { createAuthRateLimiter } from "../middleware/redis-rate-limit.middleware";
-import { createCircuitBreaker } from "../lib/circuit-breaker";
+import { createCircuitBreaker, type CircuitBreaker } from "../lib/circuit-breaker";
 import type { AuthService } from "../services/auth.service";
 import type { AppLogger } from "../observability/logger";
 import { HttpError } from "../utils/http-error";
@@ -27,7 +27,9 @@ const publicKeySchema = Joi.string().trim();
 const challengeSchema = Joi.object({
   publicKey: publicKeySchema,
   wallet: publicKeySchema,
-}).or("publicKey", "wallet").unknown(true);
+})
+  .or("publicKey", "wallet")
+  .unknown(true);
 
 const verifySchema = Joi.object({
   publicKey: publicKeySchema,
@@ -35,7 +37,10 @@ const verifySchema = Joi.object({
   nonce: Joi.string().trim(),
   challenge: Joi.string().trim(),
   signature: Joi.string().trim().required(),
-}).or("publicKey", "wallet").or("nonce", "challenge").unknown(true);
+})
+  .or("publicKey", "wallet")
+  .or("nonce", "challenge")
+  .unknown(true);
 
 function wrapAuthHandler(
   routeName: string,
@@ -146,7 +151,15 @@ function validateQuery(schema: Joi.Schema): RequestHandler {
   };
 }
 
-export function createAuthRouter(authService: AuthService, logger: AppLogger): Router {
+export interface CreateAuthRouterOptions {
+  circuitBreaker?: CircuitBreaker;
+}
+
+export function createAuthRouter(
+  authService: AuthService,
+  logger: AppLogger,
+  options?: CreateAuthRouterOptions
+): Router {
   const router = Router();
   const controller = createAuthController(authService);
   const authMiddleware = createAuthMiddleware(authService);
@@ -154,16 +167,105 @@ export function createAuthRouter(authService: AuthService, logger: AppLogger): R
   const challengeRateLimiter = createAuthRateLimiter("challenge", { logger });
   const verifyRateLimiter = createAuthRateLimiter("verify", { logger });
   const idempotencyMiddleware = createIdempotencyMiddleware();
-  const circuitBreaker = createCircuitBreaker({ failureThreshold: 5, timeout: 30000 });
+  const circuitBreaker =
+    options?.circuitBreaker ?? createCircuitBreaker({ failureThreshold: 5, timeout: 30000 });
 
   const withCircuitBreaker = (handler: RequestHandler): RequestHandler => {
     return async (req, res, next) => {
+      let forwardedViaNext = false;
+
       try {
-        await circuitBreaker.execute(async () => {
-          await new Promise<void>((resolve, reject) => {
-            handler(req, res, (err) => (err ? reject(err) : resolve()));
-          });
-        });
+        await circuitBreaker.execute(
+          () =>
+            new Promise<void>((resolve, reject) => {
+              let settled = false;
+              let handlerPending = false;
+
+              const cleanup = () => {
+                if (typeof res.off === "function") {
+                  res.off("finish", onFinish);
+                  res.off("close", onClose);
+                } else if (typeof res.removeListener === "function") {
+                  res.removeListener("finish", onFinish);
+                  res.removeListener("close", onClose);
+                }
+              };
+
+              const settleResolve = () => {
+                if (settled) {
+                  return;
+                }
+                settled = true;
+                cleanup();
+                resolve();
+              };
+
+              const settleReject = (err: unknown) => {
+                if (settled) {
+                  return;
+                }
+                settled = true;
+                cleanup();
+                reject(err);
+              };
+
+              const onFinish = () => {
+                settleResolve();
+              };
+
+              const onClose = () => {
+                if (res.writableEnded || !handlerPending) {
+                  settleResolve();
+                }
+              };
+
+              if (typeof res.on === "function") {
+                res.on("finish", onFinish);
+                res.on("close", onClose);
+              }
+
+              const wrappedNext: NextFunction = (err?: unknown) => {
+                if (err !== undefined && err !== null) {
+                  settleReject(err);
+                  return;
+                }
+                forwardedViaNext = true;
+                settleResolve();
+              };
+
+              try {
+                const result = handler(req, res, wrappedNext) as Promise<unknown> | void;
+                if (result && typeof (result as Promise<unknown>).then === "function") {
+                  handlerPending = true;
+                  (result as Promise<unknown>).then(
+                    () => {
+                      handlerPending = false;
+                      if (
+                        res.writableEnded ||
+                        res.headersSent ||
+                        res.destroyed ||
+                        typeof res.on !== "function"
+                      ) {
+                        settleResolve();
+                      }
+                    },
+                    (err) => {
+                      handlerPending = false;
+                      settleReject(err);
+                    }
+                  );
+                } else if (res.writableEnded) {
+                  settleResolve();
+                }
+              } catch (err) {
+                settleReject(err);
+              }
+            })
+        );
+
+        if (forwardedViaNext) {
+          next();
+        }
       } catch (error) {
         if (error instanceof Error && error.message === "Circuit breaker is open") {
           logger.warn("Circuit breaker open for auth route", { route: req.path });
