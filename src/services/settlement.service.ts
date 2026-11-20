@@ -4,6 +4,11 @@ import { Invoice } from "../models/Invoice.model";
 import { Investment } from "../models/Investment.model";
 import { InvoiceStatus, InvestmentStatus } from "../types/enums";
 import { ServiceError } from "../utils/service-error";
+import {
+  recordSettlementCompleted,
+  recordSettlementFailed,
+  recordSettlementStarted,
+} from "../lib/settlement-metrics";
 
 export interface SettleInvoiceInput {
   invoiceId: string;
@@ -46,7 +51,9 @@ export class SettlementService {
       );
     }
 
-    return await this.dataSource.transaction(async (transactionalEntityManager: EntityManager) => {
+    recordSettlementStarted();
+    try {
+      const result = await this.dataSource.transaction(async (transactionalEntityManager: EntityManager) => {
       // 1. Lock the invoice row for update
       const invoice = await transactionalEntityManager
         .createQueryBuilder(Invoice, "invoice")
@@ -113,6 +120,12 @@ export class SettlementService {
         settlements,
       };
     });
+      recordSettlementCompleted();
+      return result;
+    } catch (error) {
+      recordSettlementFailed();
+      throw error;
+    }
   }
 }
 

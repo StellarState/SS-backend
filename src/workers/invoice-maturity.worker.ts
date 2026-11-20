@@ -4,6 +4,11 @@ import { Invoice } from "../models/Invoice.model";
 import { InvoiceStatus } from "../types/enums";
 import type { SettlementService } from "../services/settlement.service";
 import type { AppLogger } from "../observability/logger";
+import {
+  recordPendingSettlementBacklog,
+  recordSettlementQueueLatency,
+  recordSettlementRetry,
+} from "../lib/settlement-metrics";
 
 type IntervalHandle = ReturnType<typeof setInterval>;
 
@@ -59,13 +64,22 @@ export class InvoiceMaturityWorker {
         take: this.config.batchSize,
       });
 
+      const now = Date.now();
+      const oldestDueAt = invoices[0]?.dueDate?.getTime();
+      recordPendingSettlementBacklog({
+        count: invoices.length,
+        oldestAgeSeconds: oldestDueAt === undefined ? 0 : (now - oldestDueAt) / 1000,
+      });
+
       for (const invoice of invoices) {
+        recordSettlementQueueLatency((now - invoice.dueDate.getTime()) / 1000);
         try {
           await this.settlementService.settleInvoice({
             invoiceId: invoice.id,
             proceeds: invoice.amount,
           });
         } catch (error) {
+          recordSettlementRetry();
           this.logger.error("Failed to settle matured invoice.", {
             invoice_id: invoice.id,
             error: error instanceof Error ? error.message : String(error),

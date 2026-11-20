@@ -99,6 +99,17 @@ class InMemoryChallengeRepository implements ChallengeRepositoryContract {
     challenge.consumedAt = consumedAt;
     return true;
   }
+
+  async supersedeActive(stellarAddress: string, at: Date) {
+    let count = 0;
+    for (const challenge of this.challenges.values()) {
+      if (challenge.stellarAddress === stellarAddress && !challenge.consumedAt) {
+        challenge.consumedAt = at;
+        count += 1;
+      }
+    }
+    return count;
+  }
 }
 
 function createTestServer() {
@@ -165,6 +176,44 @@ describe("Auth routes", () => {
       .expect(200);
 
     expect(meResponse.body.user.stellarAddress).toBe(keypair.publicKey());
+  });
+
+  it("invalidates the previous challenge when a new one is issued", async () => {
+    const { app } = createTestServer();
+    const keypair = Keypair.random();
+
+    const first = await request(app)
+      .post("/api/v1/auth/challenge")
+      .send({ publicKey: keypair.publicKey() })
+      .expect(201);
+    const second = await request(app)
+      .post("/api/v1/auth/challenge")
+      .send({ publicKey: keypair.publicKey() })
+      .expect(201);
+
+    const oldSignature = keypair
+      .sign(Buffer.from(first.body.challenge.message, "utf8"))
+      .toString("base64");
+    await request(app)
+      .post("/api/v1/auth/verify")
+      .send({
+        publicKey: keypair.publicKey(),
+        nonce: first.body.challenge.nonce,
+        signature: oldSignature,
+      })
+      .expect(401);
+
+    const newSignature = keypair
+      .sign(Buffer.from(second.body.challenge.message, "utf8"))
+      .toString("base64");
+    await request(app)
+      .post("/api/v1/auth/verify")
+      .send({
+        publicKey: keypair.publicKey(),
+        nonce: second.body.challenge.nonce,
+        signature: newSignature,
+      })
+      .expect(200);
   });
 
   it("rejects invalid signatures and reused nonces", async () => {

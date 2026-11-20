@@ -9,6 +9,7 @@ import { createNetworkContextMiddleware } from "./middleware/network-context.mid
 
 import { logger, type AppLogger } from "./observability/logger";
 import { getMetricsContentType, MetricsRegistry } from "./observability/metrics";
+import { setSettlementMetricsRegistry } from "./lib/settlement-metrics";
 
 import { createAuthRouter } from "./routes/auth.routes";
 import { createNotificationRouter } from "./routes/notification.routes";
@@ -102,6 +103,7 @@ export function createApp({
   stellarNetworksConfig,
 }: AppDependencies) {
   const app = express();
+  setSettlementMetricsRegistry(metricsRegistry);
 
   // ✅ FIX TRUST PROXY
   if (http?.trustProxy !== undefined) {
