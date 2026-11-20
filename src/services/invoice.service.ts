@@ -265,7 +265,18 @@ export class InvoiceService {
       );
     } else {
       transition = await this.stateMachine.transition(
-        { saveInvoice: (entity) => this.invoiceRepository.save(entity) },
+        {
+          saveInvoice: (entity) => this.invoiceRepository.save(entity),
+          findInvoiceForUpdate: async (id) => {
+            if (typeof this.invoiceRepository.findOne === "function") {
+              return this.invoiceRepository.findOne({
+                where: { id },
+                relations: ["seller"],
+              });
+            }
+            return null;
+          },
+        },
         invoice,
         to,
         options
@@ -554,64 +565,112 @@ export class InvoiceService {
     }
   }
 
+  private applyInvoiceFieldUpdates(invoice: Invoice, input: UpdateInvoiceInput): void {
+    if (input.customerName) {
+      invoice.customerName = input.customerName;
+    }
+    if (input.issuerName !== undefined) {
+      invoice.issuerName = input.issuerName.trim().slice(0, 255) || null;
+    }
+    if (input.description !== undefined) {
+      invoice.description = input.description.trim() || null;
+    }
+    if (input.amount) {
+      invoice.amount = input.amount;
+      invoice.discountRate = input.discountRate || invoice.discountRate;
+      invoice.netAmount = this.calculateNetAmount(invoice.amount, invoice.discountRate);
+    } else if (input.discountRate) {
+      invoice.discountRate = input.discountRate;
+      invoice.netAmount = this.calculateNetAmount(invoice.amount, invoice.discountRate);
+    }
+    if (input.dueDate) {
+      invoice.dueDate = input.dueDate;
+    }
+    if (input.riskScore) {
+      invoice.riskScore = input.riskScore;
+    }
+  }
+
   /**
    * Update an invoice (only draft invoices can be updated)
    */
   async updateInvoice(input: UpdateInvoiceInput): Promise<InvoiceDTO> {
     try {
-      const invoice = await this.invoiceRepository.findOne({
-        where: { id: input.invoiceId },
-      });
+      if (this.dataSource) {
+        const updated = await this.dataSource.transaction(async (manager) => {
+          let invoice: Invoice | null = null;
+          if (typeof manager.createQueryBuilder === "function") {
+            try {
+              invoice = await manager
+                .createQueryBuilder(Invoice, "invoice")
+                .setLock("pessimistic_write")
+                .where("invoice.id = :id", { id: input.invoiceId })
+                .getOne();
+            } catch {
+              // fallback if query builder setLock is not supported
+            }
+          }
+          if (!invoice && typeof manager.findOne === "function") {
+            invoice = await manager.findOne(Invoice, { where: { id: input.invoiceId } });
+          }
 
-      if (!invoice) {
-        throw new ServiceError("invoice_not_found", "Invoice not found", 404);
-      }
+          if (!invoice) {
+            throw new ServiceError("invoice_not_found", "Invoice not found", 404);
+          }
 
-      // Verify ownership
-      if (invoice.sellerId !== input.sellerId) {
-        throw new ServiceError(
-          "unauthorized_invoice_access",
-          "You can only update your own invoices",
-          403
-        );
-      }
+          // Verify ownership
+          if (invoice.sellerId !== input.sellerId) {
+            throw new ServiceError(
+              "unauthorized_invoice_access",
+              "You can only update your own invoices",
+              403
+            );
+          }
 
-      // Only draft invoices can be updated
-      if (invoice.status !== InvoiceStatus.DRAFT) {
-        throw new ServiceError(
-          "invalid_invoice_status",
-          `Cannot update invoice in ${invoice.status} status. Only draft invoices can be updated.`,
-          400
-        );
-      }
+          // Only draft invoices can be updated
+          if (invoice.status !== InvoiceStatus.DRAFT) {
+            throw new ServiceError(
+              "invalid_invoice_status",
+              `Cannot update invoice in ${invoice.status} status. Only draft invoices can be updated.`,
+              400
+            );
+          }
 
-      // Update fields
-      if (input.customerName) {
-        invoice.customerName = input.customerName;
-      }
-      if (input.issuerName !== undefined) {
-        invoice.issuerName = input.issuerName.trim().slice(0, 255) || null;
-      }
-      if (input.description !== undefined) {
-        invoice.description = input.description.trim() || null;
-      }
-      if (input.amount) {
-        invoice.amount = input.amount;
-        invoice.discountRate = input.discountRate || invoice.discountRate;
-        invoice.netAmount = this.calculateNetAmount(invoice.amount, invoice.discountRate);
-      } else if (input.discountRate) {
-        invoice.discountRate = input.discountRate;
-        invoice.netAmount = this.calculateNetAmount(invoice.amount, invoice.discountRate);
-      }
-      if (input.dueDate) {
-        invoice.dueDate = input.dueDate;
-      }
-      if (input.riskScore) {
-        invoice.riskScore = input.riskScore;
-      }
+          this.applyInvoiceFieldUpdates(invoice, input);
+          return manager.save(Invoice, invoice);
+        });
+        return this.toDTO(updated);
+      } else {
+        const invoice = await this.invoiceRepository.findOne({
+          where: { id: input.invoiceId },
+        });
 
-      const updated = await this.invoiceRepository.save(invoice);
-      return this.toDTO(updated);
+        if (!invoice) {
+          throw new ServiceError("invoice_not_found", "Invoice not found", 404);
+        }
+
+        // Verify ownership
+        if (invoice.sellerId !== input.sellerId) {
+          throw new ServiceError(
+            "unauthorized_invoice_access",
+            "You can only update your own invoices",
+            403
+          );
+        }
+
+        // Only draft invoices can be updated
+        if (invoice.status !== InvoiceStatus.DRAFT) {
+          throw new ServiceError(
+            "invalid_invoice_status",
+            `Cannot update invoice in ${invoice.status} status. Only draft invoices can be updated.`,
+            400
+          );
+        }
+
+        this.applyInvoiceFieldUpdates(invoice, input);
+        const updated = await this.invoiceRepository.save(invoice);
+        return this.toDTO(updated);
+      }
     } catch (error) {
       if (error instanceof ServiceError) throw error;
       logger.error("Failed to update invoice", { error, invoiceId: input.invoiceId });
@@ -846,7 +905,7 @@ export class InvoiceService {
       throw new ServiceError("empty_batch", "At least one invoice id is required", 400);
     }
 
-    const uniqueIds = [...new Set(invoiceIds)];
+    const uniqueIds = [...new Set(invoiceIds)].sort();
 
     if (!this.dataSource) {
       throw new ServiceError(

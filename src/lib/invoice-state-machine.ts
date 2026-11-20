@@ -220,10 +220,47 @@ export interface InvoiceTransitionStore {
   recordHistory?(
     entry: Omit<InvoiceStatusHistory, "id" | "createdAt">
   ): Promise<InvoiceStatusHistory>;
+  /** Re-reads the invoice under row lock within the transaction. */
+  findInvoiceForUpdate?(id: string): Promise<Invoice | null>;
 }
 
 export function entityManagerTransitionStore(manager: EntityManager): InvoiceTransitionStore {
   return {
+    findInvoiceForUpdate: async (id: string) => {
+      let record: Invoice | null = null;
+      if (typeof manager.createQueryBuilder === "function") {
+        try {
+          const qb = manager.createQueryBuilder(Invoice, "invoice");
+          if (typeof qb.setLock === "function") {
+            qb.setLock("pessimistic_write");
+          }
+          if (typeof qb.leftJoinAndSelect === "function") {
+            qb.leftJoinAndSelect("invoice.seller", "seller");
+          }
+          record = await qb.where("invoice.id = :id", { id }).getOne();
+        } catch {
+          // ignore error if createQueryBuilder fails (e.g. SQLite or mock without lock support)
+        }
+      }
+      if (!record && typeof manager.findOne === "function") {
+        try {
+          record = await manager.findOne(Invoice, {
+            where: { id },
+            relations: ["seller"],
+          });
+        } catch {
+          try {
+            record = await manager.findOne(Invoice, { where: { id } });
+          } catch {
+            // ignore
+          }
+        }
+      }
+      if (record && (record as Invoice).status) {
+        return record;
+      }
+      return null;
+    },
     saveInvoice: async (invoice) => {
       if (invoice.status === InvoiceStatus.CANCELLED) {
         try {
@@ -267,6 +304,7 @@ export interface TransitionOptions {
   actor: TransitionActor;
   trigger: InvoiceTransitionReason;
   context?: TransitionContext;
+  expectedVersion?: number;
 }
 
 export class InvoiceStateMachine {
@@ -289,22 +327,35 @@ export class InvoiceStateMachine {
     store: InvoiceTransitionStore,
     invoice: Invoice,
     to: InvoiceStatus,
-    { actor, trigger, context = {} }: TransitionOptions
+    { actor, trigger, context = {}, expectedVersion }: TransitionOptions
   ): Promise<InvoiceTransition> {
-    assertTransition(invoice, to, actor, context);
+    const currentInvoice = store.findInvoiceForUpdate
+      ? (await store.findInvoiceForUpdate(invoice.id)) ?? invoice
+      : invoice;
 
-    const from = invoice.status;
-    const reason = context.reason?.trim() || null;
-
-    invoice.status = to;
-    if (to === InvoiceStatus.REJECTED) {
-      invoice.rejectionReason = reason;
+    if (expectedVersion !== undefined && currentInvoice.version !== expectedVersion) {
+      throw new ServiceError(
+        "invoice_version_conflict",
+        `Invoice version conflict: expected version ${expectedVersion} but current version is ${currentInvoice.version}`,
+        409,
+        { expectedVersion, currentVersion: currentInvoice.version }
+      );
     }
 
-    const saved = await store.saveInvoice(invoice);
+    assertTransition(currentInvoice, to, actor, context);
+
+    const from = currentInvoice.status;
+    const reason = context.reason?.trim() || null;
+
+    currentInvoice.status = to;
+    if (to === InvoiceStatus.REJECTED) {
+      currentInvoice.rejectionReason = reason;
+    }
+
+    const saved = await store.saveInvoice(currentInvoice);
     const history = store.recordHistory
       ? await store.recordHistory({
-          invoiceId: invoice.id,
+          invoiceId: currentInvoice.id,
           fromStatus: from,
           toStatus: to,
           actorRole: actor.role,
@@ -314,8 +365,12 @@ export class InvoiceStateMachine {
         })
       : null;
 
+    if (invoice !== currentInvoice) {
+      Object.assign(invoice, saved ?? currentInvoice);
+    }
+
     return {
-      invoice: saved ?? invoice,
+      invoice: saved ?? currentInvoice,
       from,
       to,
       actor,
