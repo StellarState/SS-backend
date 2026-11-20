@@ -41,6 +41,7 @@ export interface ChallengeRepositoryContract {
     nonceHash: string,
   ): Promise<ChallengeRecord | null>;
   consume(id: string, consumedAt: Date): Promise<boolean>;
+  supersedeActive(stellarAddress: string, at: Date): Promise<number>;
 }
 
 interface AuthTokenPayload extends JwtPayload {
@@ -102,6 +103,7 @@ export class AuthService {
       expiresAt,
     });
 
+    await this.challengeRepository.supersedeActive(publicKey, issuedAt);
     await this.challengeRepository.create({
       stellarAddress: publicKey,
       nonceHash: hashNonce(nonce),
@@ -293,6 +295,20 @@ class TypeOrmChallengeRepository implements ChallengeRepositoryContract {
     );
 
     return (result.affected ?? 0) > 0;
+  }
+
+  async supersedeActive(stellarAddress: string, at: Date): Promise<number> {
+    const result = await this.repository.update(
+      {
+        stellarAddress,
+        consumedAt: IsNull(),
+      },
+      {
+        consumedAt: at,
+      },
+    );
+
+    return result.affected ?? 0;
   }
 }
 

@@ -14,7 +14,8 @@ const baseConfig = {
   entities: [entitiesPath],
   migrations: [migrationsPath],
   migrationsTableName: "migrations",
-  migrationsRun: !isDevelopment,
+  // Run explicitly through ensureDatabaseReady so preflight checks precede migrations.
+  migrationsRun: false,
 };
 
 export const dataSource = isDevelopment
