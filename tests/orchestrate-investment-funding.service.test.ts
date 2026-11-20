@@ -166,4 +166,53 @@ describe("OrchestrateInvestmentFundingService", () => {
     });
     expect(saveTransaction).not.toHaveBeenCalled();
   });
+
+  it("persists submission hashes on transaction and investment records for worker restart recovery", async () => {
+    const investment = createInvestment();
+    const transactions = new Map<string, Transaction>();
+    let savedInvestment: Investment | null = null;
+    const prepareInvestmentFunding = jest.fn().mockResolvedValue({
+      contractId: "CESCROW123",
+      xdr: "AAAA-wallet-xdr",
+      expiresAt: "2026-03-27T22:00:00.000Z",
+      txHash: "tx-hash-submission-persisted",
+      ledger: 100,
+    });
+    const service = new OrchestrateInvestmentFundingService({
+      investmentReader: {
+        findById: async () => investment,
+      },
+      transactionRunner: {
+        runInTransaction: async (callback) =>
+          callback({
+            findInvestmentByIdForUpdate: async () => investment,
+            findTransactionByInvestmentIdForUpdate: async () =>
+              transactions.get(investment.id) ?? null,
+            saveInvestment: async (inv) => {
+              savedInvestment = inv;
+              return inv;
+            },
+            saveTransaction: async (transaction) => {
+              transactions.set(investment.id, transaction);
+              return transaction;
+            },
+            createTransaction: (input) => createTransaction(input),
+          }),
+      },
+      sorobanEscrowClient: {
+        prepareInvestmentFunding,
+      },
+      config: {
+        enabled: true,
+        contractId: "CESCROW123",
+        fundingMode: "wallet_xdr",
+      },
+    });
+
+    const result = await service.orchestrateFunding(investment.id);
+
+    expect(result.txHash).toBe("tx-hash-submission-persisted");
+    expect(transactions.get(investment.id)?.stellarTxHash).toBe("tx-hash-submission-persisted");
+    expect(savedInvestment?.transactionHash).toBe("tx-hash-submission-persisted");
+  });
 });

@@ -29,6 +29,7 @@ export interface SorobanEscrowClient {
 interface FundingUnitOfWork {
   findInvestmentByIdForUpdate(investmentId: string): Promise<Investment | null>;
   findTransactionByInvestmentIdForUpdate(investmentId: string): Promise<Transaction | null>;
+  saveInvestment?(investment: Investment): Promise<Investment>;
   saveTransaction(transaction: Transaction): Promise<Transaction>;
   createTransaction(input: Partial<Transaction>): Transaction;
 }
@@ -189,6 +190,13 @@ export class OrchestrateInvestmentFundingService {
       transaction.type = TransactionType.INVESTMENT;
       transaction.amount = lockedInvestment.investmentAmount;
       transaction.status = TransactionStatus.PENDING;
+      if (draft.txHash) {
+        transaction.stellarTxHash = draft.txHash;
+        lockedInvestment.transactionHash = draft.txHash;
+        if (unitOfWork.saveInvestment) {
+          await unitOfWork.saveInvestment(lockedInvestment);
+        }
+      }
 
       const savedTransaction = await unitOfWork.saveTransaction(transaction);
 
@@ -237,6 +245,8 @@ class TypeOrmFundingTransactionRunner implements FundingTransactionRunner {
               timestamp: "DESC",
             },
           }),
+        saveInvestment: (investment: Investment) =>
+          manager.getRepository(Investment).save(investment),
         saveTransaction: (transaction: Transaction) =>
           manager.getRepository(Transaction).save(transaction),
         createTransaction: (input: Partial<Transaction>) =>
