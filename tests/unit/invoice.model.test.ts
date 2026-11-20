@@ -103,6 +103,7 @@ describe("Invoice Model", () => {
 
   describe("State machine transitions (Invoice.isValidTransition & Invoice.transitionTo)", () => {
     it("correctly identifies valid transitions from DRAFT", () => {
+      expect(Invoice.isValidTransition(InvoiceStatus.DRAFT, InvoiceStatus.PENDING)).toBe(true);
       expect(Invoice.isValidTransition(InvoiceStatus.DRAFT, InvoiceStatus.PUBLISHED)).toBe(true);
       expect(Invoice.isValidTransition(InvoiceStatus.DRAFT, InvoiceStatus.CANCELLED)).toBe(true);
       expect(Invoice.isValidTransition(InvoiceStatus.DRAFT, InvoiceStatus.REJECTED)).toBe(true);
@@ -130,11 +131,18 @@ describe("Invoice Model", () => {
       expect(Invoice.isValidTransition(InvoiceStatus.FUNDED, InvoiceStatus.PUBLISHED)).toBe(false);
     });
 
-    it("correctly identifies valid transitions from SETTLED (terminal except cancel)", () => {
-      expect(Invoice.isValidTransition(InvoiceStatus.SETTLED, InvoiceStatus.CANCELLED)).toBe(true);
+    it("correctly identifies SETTLED as a terminal state", () => {
+      expect(Invoice.isValidTransition(InvoiceStatus.SETTLED, InvoiceStatus.CANCELLED)).toBe(false);
       expect(Invoice.isValidTransition(InvoiceStatus.SETTLED, InvoiceStatus.DRAFT)).toBe(false);
       expect(Invoice.isValidTransition(InvoiceStatus.SETTLED, InvoiceStatus.PUBLISHED)).toBe(false);
       expect(Invoice.isValidTransition(InvoiceStatus.SETTLED, InvoiceStatus.FUNDED)).toBe(false);
+    });
+
+    it("rejects transition from SETTLED to CANCELLED via Invoice.transitionTo", () => {
+      const invoice = new Invoice();
+      invoice.status = InvoiceStatus.SETTLED;
+
+      expect(() => Invoice.transitionTo(invoice, InvoiceStatus.CANCELLED)).toThrow(AppError);
     });
 
     it("correctly identifies terminal state for CANCELLED and REJECTED", () => {
