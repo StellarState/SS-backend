@@ -3,6 +3,7 @@ import { InvoiceDraft } from "../models/InvoiceDraft.model";
 import { ServiceError } from "../utils/service-error";
 import { logger } from "../observability/logger";
 import { randomUUID } from "crypto";
+import { assertValidDraftPayload } from "../lib/invoice-draft-validation";
 
 const DRAFT_EXPIRY_DAYS = 30;
 
@@ -57,6 +58,7 @@ export class InvoiceDraftService {
     draftId: string | null,
     draftData: DraftData
   ): Promise<InvoiceDraft> {
+    const validatedData = (assertValidDraftPayload(draftData) as DraftData) || draftData;
     const repository = this.dataSource.getRepository(InvoiceDraft);
 
     // Clean up expired drafts for this seller
@@ -75,7 +77,7 @@ export class InvoiceDraftService {
       }
 
       // Update existing draft
-      existingDraft.draftData = draftData;
+      existingDraft.draftData = validatedData;
       existingDraft.lastSavedAt = new Date();
       existingDraft.expiresAt = expiresAt;
       const saved = await repository.save(existingDraft);
@@ -93,7 +95,7 @@ export class InvoiceDraftService {
         id,
         sellerId,
         sellerWallet,
-        draftData,
+        draftData: validatedData,
         lastSavedAt: new Date(),
         expiresAt,
       });
