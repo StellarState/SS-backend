@@ -34,6 +34,8 @@ export class SettlementService {
     private readonly dataSource: DataSource,
     /** Notified with the invoice's `sellerId` once it settles, so cached issuer analytics can be invalidated (issue #587). */
     private readonly onInvoiceChanged?: (sellerId: string) => void,
+    /** Notified with the `investorId` and settlement calendar year, so cached tax statements can be invalidated (#873). */
+    private readonly onPayoutSettled?: (investorId: string, year: number) => void | Promise<void>,
   ) {}
 
   /**
@@ -106,6 +108,15 @@ export class SettlementService {
           investmentAmount: investment.investmentAmount,
           actualReturn: investment.actualReturn,
         });
+
+        const settlementYear = investment.updatedAt
+          ? new Date(investment.updatedAt).getFullYear()
+          : new Date().getFullYear();
+        try {
+          this.onPayoutSettled?.(investment.investorId, settlementYear);
+        } catch {
+          // Ignore invalidation errors during settlement
+        }
       }
 
       // 5. Transition invoice to SETTLED
@@ -132,6 +143,7 @@ export class SettlementService {
 export function createSettlementService(
   dataSource: DataSource,
   onInvoiceChanged?: (sellerId: string) => void,
+  onPayoutSettled?: (investorId: string, year: number) => void | Promise<void>,
 ): SettlementService {
-  return new SettlementService(dataSource, onInvoiceChanged);
+  return new SettlementService(dataSource, onInvoiceChanged, onPayoutSettled);
 }

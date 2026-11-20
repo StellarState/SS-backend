@@ -11,6 +11,7 @@ module.exports = {
   verbose: true,
   moduleNameMapper: {
     "^@/(.*)$": "<rootDir>/src/$1", // map @/ paths to src
+    "^pdfkit$": "<rootDir>/node_modules/pdfkit/js/pdfkit.standalone.js",
   },
   setupFiles: ["tsconfig-paths/register"], // ensures TS path aliases work
 };

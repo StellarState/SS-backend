@@ -13,6 +13,7 @@ import { createInvoiceService } from "./services/invoice.service";
 import { createIPFSService } from "./services/ipfs.service";
 import { createInvestmentService } from "./services/investment.service";
 import { createSettlementService } from "./services/settlement.service";
+import { createTaxStatementService } from "./services/tax-statement.service";
 import { createIssuerAnalyticsService } from "./services/issuer-analytics.service";
 import { createDocumentExportService } from "./services/document-export.service";
 import { createAutoInvestRuleEngineService } from "./services/auto-invest-rule-engine.service";
@@ -35,8 +36,13 @@ export async function bootstrap(): Promise<{ server: Server }> {
   const issuerAnalyticsService = createIssuerAnalyticsService(dataSource);
   const invalidateIssuerAnalytics = (sellerId: string) => issuerAnalyticsService.invalidate(sellerId);
 
+  const taxStatementService = createTaxStatementService(dataSource);
   const investmentService = createInvestmentService(dataSource, invalidateIssuerAnalytics);
-  const settlementService = createSettlementService(dataSource, invalidateIssuerAnalytics);
+  const settlementService = createSettlementService(
+    dataSource,
+    invalidateIssuerAnalytics,
+    (investorId, year) => void taxStatementService.invalidate(investorId, year),
+  );
 
   const documentExportService = createDocumentExportService({
     dataSource,
@@ -100,6 +106,7 @@ export async function bootstrap(): Promise<{ server: Server }> {
     issuerAnalyticsService,
     documentExportService,
     autoInvestRulesService,
+    taxStatementService,
     stellarNetworksConfig,
     config,
     logger,
