@@ -1,6 +1,7 @@
 import cors from "cors";
 import helmet from "helmet";
 import express, { Request } from "express";
+import type { DataSource } from "typeorm";
 
 import { createErrorMiddleware, notFoundMiddleware } from "./middleware/error.middleware";
 import { applyRateLimiters } from "./middleware/rate-limit.middleware";
@@ -29,7 +30,8 @@ import type { IssuerAnalyticsService } from "./services/issuer-analytics.service
 import type { DocumentExportService } from "./services/document-export.service";
 import type { AutoInvestRulesService } from "./services/auto-invest-rules.service";
 
-import dataSource from "./config/database";
+import defaultDataSource from "./config/database";
+import { checkMigrationCompatibility } from "./config/migration-preflight";
 import type { StellarNetworksConfig } from "./config/stellar-networks";
 
 //  REQUIRED
@@ -72,6 +74,7 @@ export interface AppDependencies {
   metricsRegistry?: MetricsRegistry;
   config?: import("./config/env").AppConfig;
   stellarNetworksConfig?: StellarNetworksConfig;
+  dataSource?: DataSource;
 
   http?: {
     trustProxy?: boolean | number | string;
@@ -101,6 +104,7 @@ export function createApp({
   config,
   http,
   stellarNetworksConfig,
+  dataSource: healthDataSource = defaultDataSource,
 }: AppDependencies) {
   const app = express();
   setSettlementMetricsRegistry(metricsRegistry);
@@ -164,8 +168,57 @@ export function createApp({
     });
   });
 
+  app.get("/ready", async (_req, res) => {
+    if (!healthDataSource.isInitialized) {
+      return res.status(503).json({
+        success: false,
+        error: {
+          code: "DATABASE_UNAVAILABLE",
+          message: "Database connection is not initialized.",
+        },
+        data: {
+          status: "not_ready",
+          database: { status: "unhealthy" },
+          migrations: { status: "unavailable", pending: [], unknown: [] },
+        },
+      });
+    }
+
+    const compatibility = await checkMigrationCompatibility(healthDataSource);
+    const code =
+      compatibility.status === "unavailable"
+        ? "DATABASE_UNAVAILABLE"
+        : compatibility.status === "unknown"
+          ? "UNKNOWN_MIGRATIONS"
+          : "MIGRATIONS_PENDING";
+
+    return res.status(compatibility.ok ? 200 : 503).json({
+      success: compatibility.ok,
+      ...(compatibility.ok
+        ? {}
+        : {
+            error: {
+              code,
+              message: compatibility.message,
+            },
+          }),
+      data: {
+        status: compatibility.ok ? "ready" : "not_ready",
+        database: {
+          status: compatibility.status === "unavailable" ? "unhealthy" : "ok",
+        },
+        migrations: {
+          status: compatibility.status,
+          pending: compatibility.pending,
+          unknown: compatibility.unknown,
+          message: compatibility.message,
+        },
+      },
+    });
+  });
+
   app.get("/health/db", async (_req, res) => {
-    if (!dataSource.isInitialized) {
+    if (!healthDataSource.isInitialized) {
       return res.status(503).json({
         success: false,
         error: {

@@ -221,7 +221,8 @@ npm run test:e2e
 
 ## 📊 Monitoring
 
-- Health check: `GET /health` (includes process uptime and request ID)
+- Liveness: `GET /health` (process-only; remains healthy during database outages)
+- Readiness: `GET /ready` (fails when the database is unavailable, migrations are pending, or the database contains unknown migrations)
 - Metrics: `GET /metrics` (Prometheus format)
 - Metrics labels are intentionally low-cardinality: `method`, normalized route template, and `status_class`
 - Logs: Winston JSON logs with `X-Request-Id` correlation IDs
