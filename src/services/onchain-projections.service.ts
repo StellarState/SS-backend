@@ -40,6 +40,12 @@ import {
   createRoyaltyEarningsService,
   type RoyaltyEarningsService,
 } from "./royalty-earnings.service";
+import {
+  createReferralEarningsRepository,
+  createReferralEarningsService,
+  type ReferralEarningsService,
+} from "./referral-earnings.service";
+import type { ReferralBalanceReader } from "./stellar/soroban-referral-reader";
 
 export interface OnchainProjections {
   creatorKeyService: CreatorKeyService;
@@ -51,6 +57,8 @@ export interface OnchainProjections {
   royaltyEarningsService: RoyaltyEarningsService;
   /** Issue #538 — holder dividend cycles, claimable balances and claim history. */
   dividendDistributionService: DividendDistributionService;
+  /** Referral reward earnings indexed from ReferralRewardPaid events. */
+  referralEarningsService: ReferralEarningsService;
   /** Handed to `EventIndexerService` so polled events feed the projections. */
   eventBus: ContractEventBus;
   /** Direct entry point for replaying already-decoded events. */
@@ -65,6 +73,7 @@ export interface OnchainProjectionsDependencies {
   royaltyCache?: TtlCache;
   dividendCache?: TtlCache;
   adminNotifier?: AdminNotifier;
+  referralBalanceReader?: ReferralBalanceReader;
 }
 
 /**
@@ -80,6 +89,7 @@ export function createOnchainProjections({
   royaltyCache,
   dividendCache,
   adminNotifier,
+  referralBalanceReader,
 }: OnchainProjectionsDependencies): OnchainProjections {
   const creatorKeyService = createCreatorKeyService({
     creatorKeyRepository: createCreatorKeyRepository(dataSource),
@@ -134,6 +144,12 @@ export function createOnchainProjections({
       }),
   });
 
+  const referralEarningsService = createReferralEarningsService({
+    referralEarningsRepository: createReferralEarningsRepository(dataSource),
+    balanceReader: referralBalanceReader,
+    logger,
+  });
+
   const handlers: ContractEventHandler[] = [
     creatorKeyService,
     aclService,
@@ -142,6 +158,7 @@ export function createOnchainProjections({
     swapService,
     royaltyEarningsService,
     dividendDistributionService,
+    referralEarningsService,
   ];
   const eventBus = new ContractEventBus({ handlers, logger });
 
@@ -153,6 +170,7 @@ export function createOnchainProjections({
     swapService,
     royaltyEarningsService,
     dividendDistributionService,
+    referralEarningsService,
     eventBus,
     async syncEvents(events) {
       let handled = 0;
