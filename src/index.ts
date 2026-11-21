@@ -26,10 +26,10 @@ import {
 } from "./lib/invoice-state-machine";
 import {
   createNotificationDispatchEffect,
-  InMemoryDeadLetterSink,
   NotificationDispatcher,
   unlessDispatched,
 } from "./lib/notification-dispatcher";
+import { createNotificationJobStore } from "./services/notification-job-store.service";
 import { createInvestmentNotifier, createInvestorDirectory } from "./lib/invoice-notifications";
 import { Invoice } from "./models/Invoice.model";
 import { createIPFSService } from "./services/ipfs.service";
@@ -100,8 +100,16 @@ export async function bootstrap(): Promise<{
   const notificationDispatcher = new NotificationDispatcher({
     store: createDedupedNotificationStore(dataSource),
     investors: createInvestorDirectory(dataSource),
-    deadLetters: new InMemoryDeadLetterSink(),
+    // #772: jobs, retry state and dead letters survive a process restart.
+    jobs: createNotificationJobStore(dataSource),
     logger,
+  });
+  // Resume jobs persisted by a previous process (including retries that were
+  // scheduled before it stopped) without delaying HTTP startup.
+  void notificationDispatcher.recover().catch((error) => {
+    logger.error("Failed to recover persisted notification jobs", {
+      error: error instanceof Error ? error.message : String(error),
+    });
   });
   // Issue #779 — issuer profile; its settlement history view is refreshed
   // whenever an invoice transitions to settled.
