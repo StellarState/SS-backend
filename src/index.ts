@@ -5,6 +5,7 @@ import { DividendReconciliationService } from "./services/dividend-reconciliatio
 import { RoyaltyStatementsService } from "./services/royalty-statements.service";
 import { createInvoiceCacheService } from "./services/invoice-cache.service";
 import type { Server } from "http";
+import path from "path";
 
 import { createApp } from "./app";
 
@@ -78,6 +79,7 @@ import { createIssuerProfileService } from "./services/issuer-profile.service";
 import { SecondaryDepthService, DEPTH_SWEEP_INTERVAL_MS } from "./services/secondary-depth.service";
 import { InvoiceUploadService } from "./services/invoice-upload.service";
 import { createInvoiceDocumentService } from "./services/invoice-document.service";
+import { createDocumentExportService } from "./services/document-export.service";
 import { PendingStellarConfirmationWorker } from "./workers/reconcile-pending-stellar-state.worker";
 
 export async function bootstrap(): Promise<{
@@ -93,6 +95,21 @@ export async function bootstrap(): Promise<{
   const authService = createAuthService(dataSource, config, logger, metricsRegistry);
   const notificationService = createNotificationService(dataSource);
   const ipfsService = createIPFSService(config.ipfs, logger);
+  const documentExportService = createDocumentExportService({
+    dataSource,
+    ipfsService,
+    tempDir: path.resolve(
+      process.env.DOCUMENT_EXPORT_SHARED_DIR ??
+        path.join(process.cwd(), "tmp", "document-exports"),
+    ),
+    signingSecret: config.jwt.secret,
+    urlTtlMinutes: 60,
+    retentionMs: parsePositiveIntegerEnv("DOCUMENT_EXPORT_RETENTION_HOURS", 24) * 60 * 60 * 1000,
+    logger,
+  });
+  const documentExportCleanup = documentExportService.startCleanupSchedule(
+    parsePositiveIntegerEnv("DOCUMENT_EXPORT_CLEANUP_INTERVAL_MS", 60 * 60 * 1000),
+  );
   // One state machine shared by every service that changes invoice status,
   // so transitions are validated, recorded and notified the same way.
   // Funded, settled, rejected and approved events fan out through the queued
@@ -352,6 +369,7 @@ export async function bootstrap(): Promise<{
     yieldBoostService,
     secondaryAuctionService,
     accreditationService,
+    documentExportService,
     config,
     logger,
     metricsEnabled: config.observability.metricsEnabled,
@@ -431,10 +449,21 @@ export async function bootstrap(): Promise<{
   if (eventIndexer) {
     eventIndexer.start(config.sorobanIndexer.intervalMs);
   }
+
+  function parsePositiveIntegerEnv(name: string, defaultValue: number): number {
+    const configured = process.env[name];
+    if (configured === undefined || configured.trim() === "") return defaultValue;
+    const value = Number(configured);
+    if (!Number.isSafeInteger(value) || value <= 0) {
+      throw new Error(`${name} must be a positive safe integer`);
+    }
+    return value;
+  }
   pendingStellarConfirmationWorker?.start();
 
   server.on("close", () => {
     void invoiceCacheService.disconnect();
+    documentExportCleanup.stop();
     if (eventIndexer) {
       eventIndexer.stop();
     }

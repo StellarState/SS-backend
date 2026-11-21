@@ -63,6 +63,7 @@ import type { SecondaryDepthService } from "./services/secondary-depth.service";
 import { createInvoiceUploadsRouter } from "./routes/invoice-uploads.routes";
 import type { InvoiceUploadService } from "./services/invoice-upload.service";
 import { createInvoiceDocumentsRouter } from "./routes/invoice-documents.routes";
+import { createDocumentExportRouter } from "./routes/document-export.routes";
 import { createOnchainEventViewsRouter } from "./routes/onchain-event-views.routes";
 import { createFxRouter } from "./routes/fx.routes";
 import { createBenchmarkRouter, createInvoiceBenchmarkRouter } from "./routes/benchmark.routes";
@@ -95,6 +96,7 @@ import type { FeeScheduleService } from "./services/fee-schedule.service";
 import type { IssuerReputationService } from "./services/issuer-reputation.service";
 import type { IssuerProfileService } from "./services/issuer-profile.service";
 import type { InvoiceDocumentService } from "./services/invoice-document.service";
+import type { DocumentExportService } from "./services/document-export.service";
 import type { InvestorRiskProfileService } from "./services/investor-risk-profile.service";
 import type { InvoiceDraftService } from "./services/invoice-draft.service";
 import type { BenchmarkService } from "./services/benchmark.service";
@@ -252,6 +254,8 @@ export interface AppDependencies {
   issuerProfileService?: IssuerProfileService;
   /** Issue #781 — invoice document registration by IPFS CID. */
   invoiceDocumentService?: InvoiceDocumentService;
+  /** Shared-database document export jobs and archives. */
+  documentExportService?: DocumentExportService;
   invoiceUploadService?: InvoiceUploadService;
   investorRiskProfileService?: InvestorRiskProfileService;
   draftService?: InvoiceDraftService;
@@ -323,6 +327,7 @@ export function createApp({
   issuerReputationService,
   issuerProfileService,
   invoiceDocumentService,
+  documentExportService,
   invoiceUploadService,
   investorRiskProfileService,
   draftService,
@@ -537,6 +542,15 @@ export function createApp({
     });
     app.use("/api/v1/invoices", invoiceDocumentsRouter);
     app.use("/invoices", invoiceDocumentsRouter);
+  }
+
+  if (documentExportService) {
+    const documentExportRouter = createDocumentExportRouter({
+      documentExportService,
+      authService,
+    });
+    app.use("/api/v1/invoices", documentExportRouter);
+    app.use("/invoices", documentExportRouter);
   }
 
   if (investmentService) {
