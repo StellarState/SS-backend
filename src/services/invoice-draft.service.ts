@@ -1,4 +1,4 @@
-import { DataSource } from "typeorm";
+import { DataSource, OptimisticLockVersionMismatchError } from "typeorm";
 import { InvoiceDraft } from "../models/InvoiceDraft.model";
 import { ServiceError } from "../utils/service-error";
 import { logger } from "../observability/logger";
@@ -20,11 +20,21 @@ export interface DraftData {
   fundingTarget?: string;
   yieldBps?: number;
   fundingDeadline?: string;
+  revision?: number;
+  expectedRevision?: number;
   [key: string]: unknown;
 }
 
 export interface DraftListItem {
   id: string;
+  revision: number;
+  lastSavedAt: Date;
+  expiresAt: Date;
+}
+
+export interface DraftResumeData extends DraftData {
+  id: string;
+  revision: number;
   lastSavedAt: Date;
   expiresAt: Date;
 }
@@ -50,12 +60,14 @@ export class InvoiceDraftService {
 
   /**
    * Upserts a draft with full form field state.
+   * If updating an existing draft, requires a revision precondition and performs atomic update.
    */
   async saveDraft(
     sellerId: string,
     sellerWallet: string,
     draftId: string | null,
-    draftData: DraftData
+    draftData: DraftData,
+    expectedRevision?: number | null
   ): Promise<InvoiceDraft> {
     const repository = this.dataSource.getRepository(InvoiceDraft);
 
@@ -68,44 +80,140 @@ export class InvoiceDraftService {
     // Check if draft exists
     const existingDraft = await repository.findOne({ where: { id } });
 
+    const rawExpectedRevision =
+      expectedRevision !== undefined && expectedRevision !== null
+        ? expectedRevision
+        : draftData.expectedRevision !== undefined && draftData.expectedRevision !== null
+        ? draftData.expectedRevision
+        : draftData.revision !== undefined && draftData.revision !== null
+        ? draftData.revision
+        : undefined;
+
+    const parsedExpectedRevision =
+      rawExpectedRevision !== undefined && rawExpectedRevision !== null
+        ? Number(rawExpectedRevision)
+        : undefined;
+
+    const { revision: _r, expectedRevision: _er, ...cleanedDraftData } = draftData;
+
     if (existingDraft) {
-      // Verify ownership
+      // Verify ownership first
       if (existingDraft.sellerId !== sellerId) {
         throw new ServiceError("FORBIDDEN", "Cannot modify another seller's draft", 403);
       }
 
-      // Update existing draft
-      existingDraft.draftData = draftData;
+      if (parsedExpectedRevision === undefined || Number.isNaN(parsedExpectedRevision)) {
+        throw new ServiceError(
+          "REVISION_REQUIRED",
+          "Revision precondition is required when updating an existing draft",
+          400,
+          {
+            currentRevision: existingDraft.revision,
+            revision: existingDraft.revision,
+            lastSavedAt: existingDraft.lastSavedAt,
+          }
+        );
+      }
+
+      if (existingDraft.revision !== parsedExpectedRevision) {
+        throw new ServiceError(
+          "REVISION_CONFLICT",
+          `Draft revision conflict: expected revision ${parsedExpectedRevision}, but current revision is ${existingDraft.revision}`,
+          409,
+          {
+            currentRevision: existingDraft.revision,
+            revision: existingDraft.revision,
+            lastSavedAt: existingDraft.lastSavedAt,
+            draftData: existingDraft.draftData,
+          }
+        );
+      }
+
+      // Update existing draft atomically
+      existingDraft.draftData = cleanedDraftData;
       existingDraft.lastSavedAt = new Date();
       existingDraft.expiresAt = expiresAt;
-      const saved = await repository.save(existingDraft);
 
-      logger.info("invoice_draft.updated", {
-        draftId: id,
-        sellerId,
-        sellerWallet,
-      });
+      try {
+        const saved = await repository.save(existingDraft);
 
-      return saved;
+        logger.info("invoice_draft.updated", {
+          draftId: id,
+          sellerId,
+          sellerWallet,
+          revision: saved.revision,
+        });
+
+        return saved;
+      } catch (err: any) {
+        if (
+          err instanceof OptimisticLockVersionMismatchError ||
+          err?.name === "OptimisticLockVersionMismatchError"
+        ) {
+          const current = await repository.findOne({ where: { id } });
+          throw new ServiceError(
+            "REVISION_CONFLICT",
+            `Draft revision conflict: expected revision ${parsedExpectedRevision}, but current revision is ${current?.revision}`,
+            409,
+            {
+              currentRevision: current?.revision,
+              revision: current?.revision,
+              lastSavedAt: current?.lastSavedAt,
+              draftData: current?.draftData,
+            }
+          );
+        }
+        throw err;
+      }
     } else {
-      // Create new draft
+      // Create new draft with revision 1
       const draft = repository.create({
         id,
         sellerId,
         sellerWallet,
-        draftData,
+        draftData: cleanedDraftData,
+        revision: 1,
         lastSavedAt: new Date(),
         expiresAt,
       });
-      const saved = await repository.save(draft);
 
-      logger.info("invoice_draft.created", {
-        draftId: id,
-        sellerId,
-        sellerWallet,
-      });
+      try {
+        const saved = await repository.save(draft);
 
-      return saved;
+        logger.info("invoice_draft.created", {
+          draftId: id,
+          sellerId,
+          sellerWallet,
+          revision: saved.revision,
+        });
+
+        return saved;
+      } catch (err: any) {
+        if (
+          err?.code === "23505" ||
+          String(err?.message).includes("UNIQUE") ||
+          String(err?.message).includes("duplicate key")
+        ) {
+          const current = await repository.findOne({ where: { id } });
+          if (current) {
+            if (current.sellerId !== sellerId) {
+              throw new ServiceError("FORBIDDEN", "Cannot modify another seller's draft", 403);
+            }
+            throw new ServiceError(
+              "REVISION_CONFLICT",
+              `Draft revision conflict: expected revision ${parsedExpectedRevision ?? 1}, but current revision is ${current.revision}`,
+              409,
+              {
+                currentRevision: current.revision,
+                revision: current.revision,
+                lastSavedAt: current.lastSavedAt,
+                draftData: current.draftData,
+              }
+            );
+          }
+        }
+        throw err;
+      }
     }
   }
 
@@ -125,15 +233,16 @@ export class InvoiceDraftService {
 
     return drafts.map((draft) => ({
       id: draft.id,
+      revision: draft.revision,
       lastSavedAt: draft.lastSavedAt,
       expiresAt: draft.expiresAt,
     }));
   }
 
   /**
-   * Returns full draft field data for resume.
+   * Returns full draft field data for resume with revision and timestamps.
    */
-  async getDraft(draftId: string, sellerId: string): Promise<DraftData> {
+  async getDraft(draftId: string, sellerId: string): Promise<DraftResumeData> {
     const repository = this.dataSource.getRepository(InvoiceDraft);
 
     const draft = await repository.findOne({ where: { id: draftId } });
@@ -153,7 +262,13 @@ export class InvoiceDraftService {
       throw new ServiceError("DRAFT_EXPIRED", "Draft has expired", 410);
     }
 
-    return draft.draftData as DraftData;
+    return {
+      ...(draft.draftData as DraftData),
+      id: draft.id,
+      revision: draft.revision,
+      lastSavedAt: draft.lastSavedAt,
+      expiresAt: draft.expiresAt,
+    };
   }
 
   /**
