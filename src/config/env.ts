@@ -1,6 +1,7 @@
 import { config } from "dotenv";
 import "dotenv/config";
 import { Networks } from "@stellar/stellar-sdk";
+import { loadJwtKeyRing, type JwtKeyRing } from "../lib/jwt-keyring";
 
 config();
 
@@ -12,6 +13,7 @@ export interface AppConfig {
   jwt: {
     secret: string;
     expiresIn: string;
+    keyRing?: JwtKeyRing;
   };
   auth: {
     challengeTtlMs: number;
@@ -244,6 +246,7 @@ export function getConfig(): AppConfig {
     jwt: {
       secret: requireString(process.env.JWT_SECRET, "JWT_SECRET"),
       expiresIn: process.env.JWT_EXPIRES_IN ?? DEFAULT_JWT_EXPIRES_IN,
+      keyRing: loadJwtKeyRing(process.env),
     },
 
     auth: {

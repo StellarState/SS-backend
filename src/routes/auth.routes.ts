@@ -7,7 +7,9 @@ import {
 } from "express";
 import Joi from "joi";
 import { createAuthController } from "../controllers/auth.controller";
-import { createAuthMiddleware } from "../middleware/auth.middleware";
+import jwt from "jsonwebtoken";
+import { createAuthMiddleware, extractBearerToken } from "../middleware/auth.middleware";
+import type { AuthenticatedRequest } from "../types/auth";
 import { validateBody } from "../middleware/validate.middleware";
 import { createAuthRateLimiter } from "../middleware/redis-rate-limit.middleware";
 import { createCircuitBreaker } from "../lib/circuit-breaker";
@@ -72,6 +74,13 @@ function noStoreAuthResponse(): RequestHandler {
     res.setHeader("X-Frame-Options", "DENY");
     next();
   };
+}
+
+function currentSessionId(req: Request): string | undefined {
+  const extracted = extractBearerToken(req.headers.authorization);
+  if (!extracted.ok) return undefined;
+  const claims = jwt.decode(extracted.token) as { jti?: unknown } | null;
+  return typeof claims?.jti === "string" ? claims.jti : undefined;
 }
 
 function extractIdempotencyKey(req: Request): string | null {
@@ -212,6 +221,40 @@ export function createAuthRouter(authService: AuthService, logger: AppLogger): R
     "/me",
     authMiddleware,
     wrapAuthHandler("auth.me", controller.me as AsyncRouteHandler, logger)
+  );
+
+  router.get(
+    "/sessions",
+    authMiddleware,
+    wrapAuthHandler(
+      "auth.sessions.list",
+      async (req, res) => {
+        const user = (req as AuthenticatedRequest).user;
+        if (!user) throw new HttpError(401, "Unauthorized");
+        const sessions = await authService.listSessions(
+          user.stellarAddress,
+          currentSessionId(req)
+        );
+        res.status(200).json({ success: true, data: { sessions } });
+      },
+      logger
+    )
+  );
+
+  router.delete(
+    "/sessions/:id",
+    authMiddleware,
+    wrapAuthHandler(
+      "auth.sessions.revoke",
+      async (req, res) => {
+        const user = (req as AuthenticatedRequest).user;
+        if (!user) throw new HttpError(401, "Unauthorized");
+        const revoked = await authService.revokeSession(user.stellarAddress, String(req.params.id));
+        if (!revoked) throw new HttpError(404, "Session not found.");
+        res.status(200).json({ success: true, data: { revoked: true } });
+      },
+      logger
+    )
   );
 
   return router;
