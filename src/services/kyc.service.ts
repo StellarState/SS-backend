@@ -20,6 +20,7 @@ export interface KycWebhookPayload {
   status: KYCStatus;
   verificationId?: string;
   providerReference?: string;
+  wallet?: string;
   reason?: string;
 }
 
@@ -179,26 +180,83 @@ export class KycService {
   }
 
   async processWebhook(payload: KycWebhookPayload): Promise<void> {
-    if (!payload || typeof payload.userId !== "string") {
+    if (!payload || typeof payload.userId !== "string" || !payload.userId.trim()) {
       throw new HttpError(400, "Webhook userId is required.");
     }
     if (![KYCStatus.APPROVED, KYCStatus.REJECTED].includes(payload.status)) {
       throw new HttpError(400, "Webhook status must be approved or rejected.");
     }
+    if (
+      payload.verificationId !== undefined &&
+      (typeof payload.verificationId !== "string" || !payload.verificationId.trim())
+    ) {
+      throw new HttpError(400, "Webhook verificationId must be a non-empty string.");
+    }
+    if (
+      payload.wallet !== undefined &&
+      (typeof payload.wallet !== "string" || !payload.wallet.trim())
+    ) {
+      throw new HttpError(400, "Webhook wallet must be a non-empty string.");
+    }
+    if (
+      payload.providerReference !== undefined &&
+      (typeof payload.providerReference !== "string" || !payload.providerReference.trim())
+    ) {
+      throw new HttpError(400, "Webhook providerReference must be a non-empty string.");
+    }
+
+    const userId = payload.userId.trim();
+    const verificationId = payload.verificationId?.trim();
+    const suppliedWallet = payload.wallet?.trim();
+    const suppliedProviderReference = payload.providerReference?.trim();
 
     await this.dataSource.transaction(async (manager) => {
       const userRepository = manager.getRepository(User);
       const verificationRepository = manager.getRepository(KYCVerification);
       const historyRepository = manager.getRepository(KycHistory);
-      const user = await userRepository.findOneBy({ id: payload.userId });
+      const user = await userRepository.findOneBy({ id: userId });
       if (!user) throw new HttpError(404, "User not found.");
 
-      const verification = payload.verificationId
-        ? await verificationRepository.findOneBy({ id: payload.verificationId })
+      const verification = verificationId
+        ? await verificationRepository.findOneBy({ id: verificationId, userId: user.id })
         : await verificationRepository.findOne({
-            where: { userId: payload.userId, status: KYCStatus.PENDING },
+            where: { userId: user.id, status: KYCStatus.PENDING },
           });
       if (!verification) throw new HttpError(404, "KYC verification not found.");
+
+      if (verification.userId !== user.id) {
+        throw new HttpError(409, "KYC verification does not belong to the specified user.");
+      }
+
+      if (
+        verification.wallet &&
+        user.stellarAddress &&
+        verification.wallet !== user.stellarAddress
+      ) {
+        throw new HttpError(409, "KYC verification wallet does not match user.");
+      }
+
+      if (suppliedWallet) {
+        if (user.stellarAddress && suppliedWallet !== user.stellarAddress) {
+          throw new HttpError(409, "Webhook wallet does not match user.");
+        }
+        if (verification.wallet && suppliedWallet !== verification.wallet) {
+          throw new HttpError(409, "Webhook wallet does not match KYC verification.");
+        }
+      }
+
+      const rawProviderRef = (verification.documents as { providerReference?: unknown } | null)
+        ?.providerReference;
+      const storedProviderReference =
+        typeof rawProviderRef === "string" ? rawProviderRef.trim() || null : null;
+
+      if (
+        suppliedProviderReference &&
+        storedProviderReference &&
+        suppliedProviderReference !== storedProviderReference
+      ) {
+        throw new HttpError(409, "Webhook providerReference does not match KYC verification.");
+      }
 
       const previousStatus = verification.status;
       verification.status = payload.status;
@@ -213,18 +271,18 @@ export class KycService {
         status: previousStatus,
         documents: verification.documents,
         rejectionReason: payload.status === KYCStatus.REJECTED ? payload.reason : null,
-        providerReference: (verification.documents as { providerReference?: string })?.providerReference || null,
+        providerReference: storedProviderReference,
         isArchived: true,
         archivedAt: new Date(),
       });
       await historyRepository.save(historyEntry);
 
-      await userRepository.update(payload.userId, {
+      await userRepository.update(user.id, {
         kycStatus: payload.status,
         isKycVerified: payload.status === KYCStatus.APPROVED,
       });
       this.appLogger.info("kyc.webhook.processed", {
-        user_id: payload.userId,
+        user_id: user.id,
         verification_id: verification.id,
         status: payload.status,
         reason: payload.reason ?? null,
