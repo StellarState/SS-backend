@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { AuthenticatedRequest } from "../types/auth";
 import { DocumentExportService, type ExportJob } from "../services/document-export.service";
+import { canOfferExportDownload } from "../services/export-job-state";
 
 export class DocumentExportController {
   constructor(private readonly documentExportService: DocumentExportService) {}
@@ -89,9 +90,15 @@ function serializeJob(job: ExportJob): Record<string, unknown> {
     totalDocuments: job.totalDocuments,
     createdAt: new Date(job.createdAt).toISOString(),
   };
-  if (job.status === "completed" && job.downloadToken) {
+  // Only advertise a URL while the export itself is still downloadable: the
+  // status endpoint must not hand out links for deleted or expired exports
+  // (#809). `downloadToken` is cleared by cleanup, so both checks matter.
+  if (job.downloadToken && canOfferExportDownload(job, Date.now())) {
     data.downloadUrl = `/api/v1/invoices/${job.invoiceId}/documents/export/${job.id}/download?token=${job.downloadToken}`;
     data.expiresAt = new Date(job.downloadTokenExpiresAt!).toISOString();
+  }
+  if (job.deletedAt !== undefined) {
+    data.deletedAt = new Date(job.deletedAt).toISOString();
   }
   if (job.status === "failed") {
     data.error = job.error;

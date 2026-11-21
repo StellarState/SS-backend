@@ -1,5 +1,5 @@
 import { DataSource } from "typeorm";
-import { createWriteStream, promises as fs } from "fs";
+import { createWriteStream, existsSync, promises as fs } from "fs";
 import path from "path";
 import archiver from "archiver";
 import { Invoice } from "../models/Invoice.model";
@@ -12,8 +12,13 @@ import type { IPFSService } from "./ipfs.service";
 import { createSignedDownloadToken, verifySignedDownloadToken } from "../lib/signed-url";
 import {
   advanceProgress,
+  boundExportUrlExpiry,
   canTransitionExportState,
+  DEFAULT_EXPORT_RETENTION_MINUTES,
+  exportRetentionExpiry,
+  isExportRetentionExpired,
   isTerminalExportState,
+  needsExportObjectCleanup,
   progressForDocuments,
   type ExportJobState,
 } from "./export-job-state";
@@ -33,6 +38,15 @@ export interface ExportJob {
   zipPath?: string;
   downloadToken?: string;
   downloadTokenExpiresAt?: number;
+  /** Absolute time after which the ZIP is no longer downloadable (#809). */
+  retentionExpiresAt?: number;
+  /**
+   * Set once the stored object has been deleted. A job marked deleted never
+   * becomes downloadable again, and cleanup retries never clear this.
+   */
+  deletedAt?: number;
+  /** Last object-cleanup failure, kept so a retry can finish the delete. */
+  cleanupError?: string;
   error?: string;
   createdAt: number;
   completedAt?: number;
@@ -45,6 +59,13 @@ export interface DocumentExportServiceDependencies {
   tempDir: string;
   signingSecret: string;
   urlTtlMinutes: number;
+  /**
+   * How long a completed export stays downloadable (and its ZIP retained).
+   * Defaults to 24 hours. Signed URLs are never issued past this window.
+   */
+  retentionMinutes?: number;
+  /** Clock override, so retention/cleanup races can be tested deterministically. */
+  now?: () => number;
 }
 
 /** Characters outside `[A-Za-z0-9._-]` are not safe in a ZIP entry/file name across platforms. */
@@ -79,8 +100,13 @@ function extensionFor(filename: string | null, mimeType: string | null): string 
  */
 export class DocumentExportService {
   private readonly jobs = new Map<string, ExportJob>();
+  private readonly now: () => number;
+  private readonly retentionMinutes: number;
 
-  constructor(private readonly dependencies: DocumentExportServiceDependencies) {}
+  constructor(private readonly dependencies: DocumentExportServiceDependencies) {
+    this.now = dependencies.now ?? Date.now;
+    this.retentionMinutes = dependencies.retentionMinutes ?? DEFAULT_EXPORT_RETENTION_MINUTES;
+  }
 
   /** Starts generating the ZIP in the background and returns a job id immediately. */
   async requestExport(invoiceId: string, requestingUserId: string): Promise<{ jobId: string }> {
@@ -178,23 +204,96 @@ export class DocumentExportService {
    * the signed URL issued when the job completed. Returns the file path on
    * success; throws on an unknown job, a job that is not done, or an
    * invalid/expired token.
+   *
+   * The export's metadata is revalidated on every download (#809): a token's
+   * signature is not authority to read a file that has since been deleted or
+   * whose retention window has elapsed. Only after both checks pass is the
+   * object inspected, which also catches a storage backend that removed the
+   * ZIP before the metadata was updated.
    */
   getDownloadPath(jobId: string, token: string): string {
     const job = this.jobs.get(jobId);
-    if (!job || job.status !== "completed" || !job.zipPath) {
+    if (!job) {
       throw new ServiceError("export_not_ready", "Export job is not ready for download", 404);
     }
 
+    const now = this.now();
+    if (job.deletedAt !== undefined) {
+      throw new ServiceError("export_deleted", "This export has been deleted", 410);
+    }
+    if (isExportRetentionExpired(job, now)) {
+      throw new ServiceError("export_expired", "This export has expired", 410);
+    }
+    if (job.status !== "completed" || !job.zipPath) {
+      throw new ServiceError("export_not_ready", "Export job is not ready for download", 404);
+    }
+
+    // Verify against the same clock used for the retention check, so the
+    // token cannot outlive the metadata decision above.
     const valid = verifySignedDownloadToken(
       this.dependencies.signingSecret,
       jobId,
       token,
+      new Date(now),
     );
     if (!valid) {
       throw new ServiceError("invalid_download_token", "Download link is invalid or has expired", 403);
     }
 
+    if (!existsSync(job.zipPath)) {
+      throw new ServiceError("export_file_missing", "Export file is no longer available", 410);
+    }
+
     return job.zipPath;
+  }
+
+  /**
+   * Coordinates object cleanup with the export's metadata (#809).
+   *
+   * Removes the stored ZIP once retention has elapsed, then marks the job
+   * deleted and drops its download token. Only a completed, not-yet-deleted
+   * job whose retention has passed does any work, so retrying cleanup after a
+   * successful delete is a no-op: it cannot resurrect the token, the ZIP path
+   * or an older status. A failed delete leaves the metadata untouched so a
+   * later retry can finish the job; downloads stay blocked by the retention
+   * check in the meantime.
+   */
+  async cleanupExport(jobId: string, now: number = this.now()): Promise<ExportJob | undefined> {
+    const job = this.jobs.get(jobId);
+    if (!job || !job.zipPath || !needsExportObjectCleanup(job, now)) return job;
+
+    try {
+      await fs.rm(job.zipPath, { force: true });
+    } catch (error) {
+      job.cleanupError = error instanceof Error ? error.message : "Unknown cleanup error";
+      return job;
+    }
+
+    // A concurrent cleanup may have finished while this delete was in flight;
+    // never re-apply the metadata transition over an already-deleted job.
+    if (job.deletedAt !== undefined) return job;
+
+    job.deletedAt = now;
+    delete job.zipPath;
+    delete job.downloadToken;
+    delete job.downloadTokenExpiresAt;
+    delete job.cleanupError;
+    return job;
+  }
+
+  /**
+   * Deletes every exported object whose retention window has elapsed.
+   * Returns the ids that were cleaned; jobs whose delete failed stay around
+   * (with `cleanupError`) for the next sweep.
+   */
+  async cleanupExpiredExports(now: number = this.now()): Promise<string[]> {
+    const expired = [...this.jobs.values()].filter((job) => needsExportObjectCleanup(job, now));
+    const cleaned: string[] = [];
+    for (const job of expired) {
+      const updated = await this.cleanupExport(job.id, now);
+      if (updated?.deletedAt !== undefined) cleaned.push(job.id);
+    }
+    return cleaned;
   }
 
   private async assertEligible(invoice: Invoice, requestingUserId: string): Promise<void> {
@@ -250,18 +349,32 @@ export class DocumentExportService {
         return;
       }
 
-      const { token, expiresAt } = createSignedDownloadToken(
-        this.dependencies.signingSecret,
-        job.id,
+      const completedAt = this.now();
+      const retentionExpiresAt = exportRetentionExpiry(completedAt, this.retentionMinutes);
+      // The URL TTL may not exceed the retention window: a signed link must
+      // never be usable after its file has been deleted (#809).
+      const urlExpiresAt = boundExportUrlExpiry(
+        completedAt,
         this.dependencies.urlTtlMinutes,
+        retentionExpiresAt,
       );
 
       if (!this.transition(job, "completed")) return;
       job.progress = 100;
       job.zipPath = zipPath;
-      job.downloadToken = token;
-      job.downloadTokenExpiresAt = expiresAt;
-      job.completedAt = Date.now();
+      job.completedAt = completedAt;
+      job.retentionExpiresAt = retentionExpiresAt;
+
+      if (urlExpiresAt !== null) {
+        const { token, expiresAt } = createSignedDownloadToken(
+          this.dependencies.signingSecret,
+          job.id,
+          (urlExpiresAt - completedAt) / (60 * 1000),
+          new Date(completedAt),
+        );
+        job.downloadToken = token;
+        job.downloadTokenExpiresAt = expiresAt;
+      }
     } catch (error) {
       if (!this.transition(job, "failed")) return;
       job.error = error instanceof Error ? error.message : "Unknown error";
