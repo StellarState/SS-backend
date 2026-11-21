@@ -375,6 +375,7 @@ export async function bootstrap(): Promise<{
     config.sorobanEscrow.rpcUrl
       ? new EventIndexerService({
           contractIds: sorobanEventContractIds,
+          network: config.stellar.network,
           rpcUrl: config.sorobanEscrow.rpcUrl,
           dataSource,
           logger,

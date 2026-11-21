@@ -120,6 +120,20 @@ To ensure no events are missed and to prevent processing duplicate events, the i
 3. **Checkpointing**: After every returned page has been handled, the indexer stores the latest observed ledger in `soroban_indexer_checkpoints`, including when a ledger contains no matching events.
 4. **Resume**: On restart, polling resumes at `last_synced_ledger + 1`. Duplicate event delivery is skipped using the unique contract/event key.
 
+### Checkpoint Identity and Backfill Policy
+
+Each indexer stream derives a deterministic, order-independent checkpoint key from the normalized (trimmed, deduplicated, sorted) contract set and explicit Stellar network identifier:
+
+`soroban:<network>:<sha256(network + "\0" + sortedContractIds.join(","))>`
+
+- **Order independence**: Reordering the same contract IDs resolves to the same checkpoint key.
+- **Stream isolation**: Different contract sets (even when sharing their first contract ID) use independent checkpoint rows.
+- **Network isolation**: `testnet`, `mainnet`, and `futurenet` streams cannot consume each other's checkpoints.
+- **Legacy migration & backfill policy (`newStreamBackfillPolicy`)**:
+  - When a single-contract stream has no canonical checkpoint yet, any existing legacy checkpoint keyed by that contract ID is migrated to the canonical key and resumed (`action: "migrated_legacy_checkpoint"`).
+  - When a multi-contract (expanded) stream encounters a legacy single-contract checkpoint, the default policy `backfill_from_genesis` starts from ledger `0` (`action: "backfill_expanded_stream"`) so historical events for newly added contracts are preserved while already-indexed events are deduplicated via `soroban_event_logs`.
+  - Operators may explicitly opt into `resume_from_legacy` to migrate and resume from the legacy ledger instead. The resolved decision is logged and inspectable via `getLastResumeDecision()`.
+
 ## Runtime Configuration
 
 - `SOROBAN_EVENT_INDEXER_ENABLED`: enable the background poller (default `false`).
