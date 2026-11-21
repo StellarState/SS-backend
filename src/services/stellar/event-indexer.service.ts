@@ -335,15 +335,9 @@ export class EventIndexerService {
       }
     }
 
-    this.lastIndexedLedger = highestProcessedLedger;
     const checkpointLedger = Math.max(highestProcessedLedger, this.latestObservedLedger);
-    if (checkpointLedger > 0 && this.checkpointRepository) {
-      const checkpoint = this.checkpointRepository.create({
-        checkpointKey: this.getCheckpointKey(),
-        ledgerSequence: checkpointLedger.toString(),
-      });
-      await this.checkpointRepository.save(checkpoint);
-      this.lastIndexedLedger = checkpointLedger;
+    if (checkpointLedger > 0) {
+      await this.saveCheckpoint(checkpointLedger);
     }
 
     return processedCount;
@@ -355,20 +349,55 @@ export class EventIndexerService {
     }
 
     if (this.checkpointRepository) {
-      const checkpoint = await this.checkpointRepository.findOne({
-        where: { checkpointKey: this.getCheckpointKey() },
-      });
+      const checkpointKey = this.getCheckpointKey();
 
-      const durableLedger = Number(checkpoint?.ledgerSequence ?? 0);
-      if (ledgerSequence <= durableLedger) return;
+      if (typeof this.checkpointRepository.query === "function") {
+        const driverType =
+          this.dataSource?.options.type ??
+          this.checkpointRepository.manager?.connection?.options?.type;
 
-      await this.checkpointRepository.save(
-        this.checkpointRepository.create({
-          ...(checkpoint ?? {}),
-          checkpointKey: this.getCheckpointKey(),
-          ledgerSequence: ledgerSequence.toString(),
-        }),
-      );
+        if (driverType === "sqlite" || driverType === "better-sqlite3") {
+          await this.checkpointRepository.query(
+            `INSERT INTO "soroban_indexer_checkpoints" ("checkpoint_key", "ledger_sequence", "updated_at")
+             VALUES (?, ?, CURRENT_TIMESTAMP)
+             ON CONFLICT ("checkpoint_key")
+             DO UPDATE SET
+               "ledger_sequence" = excluded."ledger_sequence",
+               "updated_at" = CURRENT_TIMESTAMP
+             WHERE CAST("soroban_indexer_checkpoints"."ledger_sequence" AS INTEGER) < CAST(excluded."ledger_sequence" AS INTEGER)`,
+            [checkpointKey, ledgerSequence.toString()],
+          );
+        } else {
+          await this.checkpointRepository.query(
+            `INSERT INTO "soroban_indexer_checkpoints" ("checkpoint_key", "ledger_sequence", "updated_at")
+             VALUES ($1, $2, CURRENT_TIMESTAMP)
+             ON CONFLICT ("checkpoint_key")
+             DO UPDATE SET
+               "ledger_sequence" = EXCLUDED."ledger_sequence",
+               "updated_at" = CURRENT_TIMESTAMP
+             WHERE "soroban_indexer_checkpoints"."ledger_sequence" < EXCLUDED."ledger_sequence"`,
+            [checkpointKey, ledgerSequence.toString()],
+          );
+        }
+      } else {
+        const checkpoint = await this.checkpointRepository.findOne({
+          where: { checkpointKey },
+        });
+
+        const durableLedger = Number(checkpoint?.ledgerSequence ?? 0);
+        if (ledgerSequence <= durableLedger) {
+          this.lastIndexedLedger = Math.max(this.lastIndexedLedger, durableLedger);
+          return;
+        }
+
+        await this.checkpointRepository.save(
+          this.checkpointRepository.create({
+            ...(checkpoint ?? {}),
+            checkpointKey,
+            ledgerSequence: ledgerSequence.toString(),
+          }),
+        );
+      }
     }
 
     this.lastIndexedLedger = Math.max(this.lastIndexedLedger, ledgerSequence);
