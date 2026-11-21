@@ -24,10 +24,13 @@ export interface ReconciliationCandidate {
   operationIndex?: number;
   source: "investment" | "transaction";
   queuedAt: Date;
+  attempts?: number;
 }
 
 export interface ReconciliationCandidateRepository {
   findPendingCandidates(olderThan: Date, limit: number): Promise<ReconciliationCandidate[]>;
+  terminallyFailCandidate?(candidate: ReconciliationCandidate, reason: string): Promise<void>;
+  recordAttempt?(candidate: ReconciliationCandidate, attempt: number): Promise<void>;
 }
 
 export interface PaymentVerifier {
@@ -40,6 +43,7 @@ export interface ReconciliationTickResult {
   verified: number;
   alreadyVerified: number;
   failed: number;
+  terminallyFailed?: number;
   deferredDueToRuntime: number;
   durationMs: number;
 }
@@ -50,7 +54,10 @@ export interface ReconcilePendingStellarStateWorkerDependencies {
   repository: ReconciliationCandidateRepository;
   paymentVerifier: PaymentVerifier;
   eventIndexer?: EventIndexerService;
-  config: AppConfig["reconciliation"];
+  config: AppConfig["reconciliation"] & {
+    maxAttempts?: number;
+    timeoutMs?: number;
+  };
   logger: AppLogger;
   now?: () => Date;
   yieldControl?: YieldControl;
@@ -78,6 +85,7 @@ export class ReconcilePendingStellarStateWorker {
   private readonly yieldControl: YieldControl;
   private readonly setIntervalFn: typeof setInterval;
   private readonly clearIntervalFn: typeof clearInterval;
+  private readonly maxAttempts: number;
   private intervalHandle: IntervalHandle | null = null;
   private inFlightTick: Promise<ReconciliationTickResult> | null = null;
   private readonly attemptTracker = new Map<string, number>();
@@ -87,6 +95,7 @@ export class ReconcilePendingStellarStateWorker {
     this.paymentVerifier = dependencies.paymentVerifier;
     this.eventIndexer = dependencies.eventIndexer;
     this.config = dependencies.config;
+    this.maxAttempts = (dependencies.config as { maxAttempts?: number }).maxAttempts ?? 3;
     this.logger = dependencies.logger.child({
       component: "stellar-reconciliation-worker",
     });
@@ -137,8 +146,6 @@ export class ReconcilePendingStellarStateWorker {
     try {
       const candidates = await this.repository.findPendingCandidates(cutoff, this.config.batchSize);
 
-      this.attemptTracker.clear();
-
       const cycleId = randomUUID();
       this.logger.info("Started Stellar reconciliation tick.", {
         cycle_id: cycleId,
@@ -179,8 +186,15 @@ export class ReconcilePendingStellarStateWorker {
           result.processed += 1;
           result.failed += 1;
 
-          const attempt = (this.attemptTracker.get(candidateKey) ?? 0) + 1;
+          const attempt = (candidate.attempts ?? this.attemptTracker.get(candidateKey) ?? 0) + 1;
           this.attemptTracker.set(candidateKey, attempt);
+          if (this.repository.recordAttempt) {
+            try {
+              await this.repository.recordAttempt(candidate, attempt);
+            } catch {
+              // Ignore attempt persistence error
+            }
+          }
 
           const classification = classifyReconciliationError(error, attempt);
 
@@ -196,6 +210,46 @@ export class ReconcilePendingStellarStateWorker {
             attempt: classification.attempt,
             error: error instanceof Error ? error.message : "Unknown error",
           });
+
+          const isTerminal = !classification.retryable || attempt >= this.maxAttempts;
+
+          if (isTerminal) {
+            this.attemptTracker.delete(candidateKey);
+            result.terminallyFailed = (result.terminallyFailed ?? 0) + 1;
+
+            const terminalReason = !classification.retryable
+              ? classification.reason
+              : `Reconciliation timed out after exceeding max attempts (${this.maxAttempts}): ${classification.reason}`;
+
+            if (this.repository.terminallyFailCandidate) {
+              try {
+                await this.repository.terminallyFailCandidate(candidate, terminalReason);
+              } catch (repoError) {
+                this.logger.error("Failed to terminally reconcile candidate in repository.", {
+                  investment_id: candidate.investmentId,
+                  stellar_tx_hash: candidate.stellarTxHash,
+                  error: repoError instanceof Error ? repoError.message : "Unknown error",
+                });
+              }
+            }
+
+            this.logger.error(
+              "Pending Stellar investment funding transaction terminally failed reconciliation.",
+              {
+                event: "investment_funding_terminally_failed",
+                investment_id: candidate.investmentId,
+                stellar_tx_hash: candidate.stellarTxHash,
+                operation_index: candidate.operationIndex,
+                source: candidate.source,
+                failureKind: classification.kind,
+                reason: terminalReason,
+                attempt,
+                errorCode: error instanceof ServiceError ? error.code : undefined,
+                error: error instanceof Error ? error.message : "Unknown error",
+                action: "Investment marked as CANCELLED and transaction marked as FAILED.",
+              }
+            );
+          }
         }
 
         await this.yieldControl();
@@ -261,7 +315,8 @@ export class ReconcilePendingStellarStateWorker {
 class TypeOrmReconciliationCandidateRepository implements ReconciliationCandidateRepository {
   constructor(
     private readonly investmentRepository: Repository<Investment>,
-    private readonly transactionRepository: Repository<Transaction>
+    private readonly transactionRepository: Repository<Transaction>,
+    private readonly pendingTransactionRepository?: Repository<PendingStellarTransaction>
   ) {}
 
   async findPendingCandidates(olderThan: Date, limit: number): Promise<ReconciliationCandidate[]> {
@@ -328,6 +383,39 @@ class TypeOrmReconciliationCandidateRepository implements ReconciliationCandidat
       .sort((left, right) => left.queuedAt.getTime() - right.queuedAt.getTime())
       .slice(0, limit);
   }
+
+  async terminallyFailCandidate(
+    candidate: ReconciliationCandidate,
+    reason: string
+  ): Promise<void> {
+    if (candidate.investmentId) {
+      await this.investmentRepository.update(
+        { id: candidate.investmentId, status: InvestmentStatus.PENDING },
+        { status: InvestmentStatus.CANCELLED }
+      );
+      await this.transactionRepository.update(
+        { investmentId: candidate.investmentId, status: TransactionStatus.PENDING },
+        { status: TransactionStatus.FAILED }
+      );
+    }
+
+    if (candidate.stellarTxHash) {
+      await this.transactionRepository.update(
+        { stellarTxHash: candidate.stellarTxHash, status: TransactionStatus.PENDING },
+        { status: TransactionStatus.FAILED }
+      );
+      if (this.pendingTransactionRepository) {
+        await this.pendingTransactionRepository.update(
+          { stellarTxHash: candidate.stellarTxHash, status: "PENDING_CONFIRMATION" },
+          {
+            status: "FAILED",
+            failureReason: reason,
+            lastCheckedAt: new Date(),
+          }
+        );
+      }
+    }
+  }
 }
 
 export function createReconcilePendingStellarStateWorker(
@@ -339,7 +427,8 @@ export function createReconcilePendingStellarStateWorker(
   return new ReconcilePendingStellarStateWorker({
     repository: new TypeOrmReconciliationCandidateRepository(
       dataSource.getRepository(Investment),
-      dataSource.getRepository(Transaction)
+      dataSource.getRepository(Transaction),
+      dataSource.getRepository(PendingStellarTransaction)
     ),
     paymentVerifier,
     config,
@@ -359,6 +448,7 @@ export class PendingStellarConfirmationWorker {
   private readonly logger: AppLogger;
   private readonly intervalMs: number;
   private readonly batchSize: number;
+  private readonly timeoutMs: number;
   private intervalHandle: ReturnType<typeof setInterval> | null = null;
   private inFlightTick: Promise<void> | null = null;
 
@@ -367,13 +457,15 @@ export class PendingStellarConfirmationWorker {
     statusReader: PendingTransactionStatusReader,
     logger: AppLogger,
     intervalMs: number,
-    batchSize: number
+    batchSize: number,
+    timeoutMs = 300_000
   ) {
     this.repository = dataSource.getRepository(PendingStellarTransaction);
     this.statusReader = statusReader;
     this.logger = logger.child({ component: "pending-stellar-confirmation-worker" });
     this.intervalMs = intervalMs;
     this.batchSize = batchSize;
+    this.timeoutMs = timeoutMs;
   }
 
   start(): void {
@@ -429,6 +521,11 @@ export class PendingStellarConfirmationWorker {
           lastCheckedAt: new Date(),
         };
 
+        const isTimedOut =
+          this.timeoutMs > 0 &&
+          transaction.submittedAt &&
+          Date.now() - new Date(transaction.submittedAt).getTime() >= this.timeoutMs;
+
         if (confirmation.status === "SUCCESS") {
           update.status = "COMPLETED";
           update.confirmedLedger =
@@ -436,6 +533,14 @@ export class PendingStellarConfirmationWorker {
         } else if (confirmation.status === "FAILED") {
           update.status = "FAILED";
           update.failureReason = "Soroban RPC reported that the transaction failed.";
+        } else if (isTimedOut) {
+          update.status = "FAILED";
+          update.failureReason = "Transaction confirmation timed out.";
+          this.logger.error("Pending Soroban transaction timed out during confirmation.", {
+            txHash: transaction.stellarTxHash,
+            submittedAt: transaction.submittedAt,
+            timeoutMs: this.timeoutMs,
+          });
         }
 
         await this.repository.update(

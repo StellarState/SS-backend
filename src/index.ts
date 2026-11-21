@@ -78,7 +78,13 @@ import { createIssuerProfileService } from "./services/issuer-profile.service";
 import { SecondaryDepthService, DEPTH_SWEEP_INTERVAL_MS } from "./services/secondary-depth.service";
 import { InvoiceUploadService } from "./services/invoice-upload.service";
 import { createInvoiceDocumentService } from "./services/invoice-document.service";
-import { PendingStellarConfirmationWorker } from "./workers/reconcile-pending-stellar-state.worker";
+import {
+  PendingStellarConfirmationWorker,
+  createReconcilePendingStellarStateWorker,
+  ReconcilePendingStellarStateWorker,
+} from "./workers/reconcile-pending-stellar-state.worker";
+import { createVerifyPaymentService } from "./services/stellar/verify-payment.service";
+import { getPaymentVerificationConfig } from "./config/stellar";
 
 export async function bootstrap(): Promise<{
   server: Server;
@@ -274,6 +280,22 @@ export async function bootstrap(): Promise<{
       )
     : undefined;
 
+  let reconcilePendingStellarStateWorker: ReconcilePendingStellarStateWorker | undefined;
+  if (config.reconciliation.enabled) {
+    try {
+      const paymentConfig = getPaymentVerificationConfig();
+      const verifyPaymentService = createVerifyPaymentService(dataSource, paymentConfig);
+      reconcilePendingStellarStateWorker = createReconcilePendingStellarStateWorker(
+        dataSource,
+        verifyPaymentService,
+        config.reconciliation,
+        logger
+      );
+    } catch (err) {
+      logger.warn("Could not configure Stellar reconciliation worker.", { error: err });
+    }
+  }
+
   // ---- Feature: Fee Schedule Management (issue #592) ----
   const feeScheduleService = createFeeScheduleService(dataSource, getRedisClient());
 
@@ -432,6 +454,7 @@ export async function bootstrap(): Promise<{
     eventIndexer.start(config.sorobanIndexer.intervalMs);
   }
   pendingStellarConfirmationWorker?.start();
+  reconcilePendingStellarStateWorker?.start();
 
   server.on("close", () => {
     void invoiceCacheService.disconnect();
@@ -445,6 +468,9 @@ export async function bootstrap(): Promise<{
     settlementWorker.stop();
     if (pendingStellarConfirmationWorker) {
       void pendingStellarConfirmationWorker.stop();
+    }
+    if (reconcilePendingStellarStateWorker) {
+      void reconcilePendingStellarStateWorker.stop();
     }
   });
 

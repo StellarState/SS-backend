@@ -1,9 +1,10 @@
 import {
   ReconcilePendingStellarStateWorker,
+  createReconcilePendingStellarStateWorker,
   type ReconciliationCandidate,
 } from "../src/workers/reconcile-pending-stellar-state.worker";
 import type { AppLogger, LogMetadata } from "../src/observability/logger";
-import { InvestmentStatus } from "../src/types/enums";
+import { InvestmentStatus, TransactionStatus } from "../src/types/enums";
 import { ServiceError } from "../src/utils/service-error";
 import type { PaymentVerificationResult } from "../src/services/stellar/verify-payment.service";
 
@@ -439,6 +440,383 @@ describe("ReconcilePendingStellarStateWorker", () => {
     expect(completionLog?.metadata).toMatchObject({
       confirmed_count: 2,
       skipped_count: 1,
+    });
+  });
+
+  describe("worker restart resilience", () => {
+    it("resumes reconciliation after worker restart using persisted submission hashes", async () => {
+      const now = new Date("2026-01-01T00:10:00.000Z");
+      const logger1 = new CaptureLogger();
+      const logger2 = new CaptureLogger();
+      const persistedCandidate = createCandidate("inv-restart-1", "hash-persisted-123");
+
+      const repository = {
+        findPendingCandidates: jest.fn().mockResolvedValue([persistedCandidate]),
+        terminallyFailCandidate: jest.fn().mockResolvedValue(undefined),
+      };
+
+      const paymentVerifier = {
+        verifyPayment: jest.fn().mockResolvedValue(createVerifiedResult("inv-restart-1", "verified")),
+      };
+
+      // Worker 1 runs and stops (simulating service restart)
+      const worker1 = new ReconcilePendingStellarStateWorker({
+        repository,
+        paymentVerifier,
+        config: {
+          enabled: true,
+          intervalMs: 1_000,
+          batchSize: 10,
+          gracePeriodMs: 60_000,
+          maxRuntimeMs: 10_000,
+        },
+        logger: logger1,
+        now: () => now,
+        yieldControl: async () => undefined,
+      });
+
+      worker1.start();
+      await worker1.stop();
+
+      // Worker 2 starts fresh (after restart) with same repository and resumes
+      const worker2 = new ReconcilePendingStellarStateWorker({
+        repository,
+        paymentVerifier,
+        config: {
+          enabled: true,
+          intervalMs: 1_000,
+          batchSize: 10,
+          gracePeriodMs: 60_000,
+          maxRuntimeMs: 10_000,
+        },
+        logger: logger2,
+        now: () => now,
+        yieldControl: async () => undefined,
+      });
+
+      const tickResult = await worker2.runTick();
+
+      expect(paymentVerifier.verifyPayment).toHaveBeenCalledTimes(1);
+      expect(paymentVerifier.verifyPayment).toHaveBeenCalledWith({
+        investmentId: "inv-restart-1",
+        stellarTxHash: "hash-persisted-123",
+        operationIndex: undefined,
+      });
+      expect(tickResult.verified).toBe(1);
+      expect(tickResult.failed).toBe(0);
+    });
+
+    it("resumes bounded reconciliation after restart and safely retries transient failures", async () => {
+      const now = new Date("2026-01-01T00:10:00.000Z");
+      const logger = new CaptureLogger();
+      const candidate = createCandidate("inv-restart-retry", "hash-transient-456", {
+        attempts: 1,
+      });
+
+      const repository = {
+        findPendingCandidates: jest.fn().mockResolvedValue([candidate]),
+        terminallyFailCandidate: jest.fn().mockResolvedValue(undefined),
+        recordAttempt: jest.fn().mockResolvedValue(undefined),
+      };
+
+      // On restart, verifyPayment succeeds on the retry attempt
+      const paymentVerifier = {
+        verifyPayment: jest.fn().mockResolvedValueOnce(createVerifiedResult("inv-restart-retry", "verified")),
+      };
+
+      const restartedWorker = new ReconcilePendingStellarStateWorker({
+        repository,
+        paymentVerifier,
+        config: {
+          enabled: true,
+          intervalMs: 1_000,
+          batchSize: 5,
+          gracePeriodMs: 60_000,
+          maxRuntimeMs: 10_000,
+          maxAttempts: 3,
+        },
+        logger,
+        now: () => now,
+        yieldControl: async () => undefined,
+      });
+
+      const result = await restartedWorker.runTick();
+
+      expect(result.verified).toBe(1);
+      expect(result.failed).toBe(0);
+      expect(paymentVerifier.verifyPayment).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("duplicate-hash handling", () => {
+    it("terminally fails candidate when transaction hash is already used by another payment", async () => {
+      const now = new Date("2026-01-01T00:10:00.000Z");
+      const logger = new CaptureLogger();
+      const candidate = createCandidate("inv-dup-1", "hash-already-credited");
+
+      const repository = {
+        findPendingCandidates: jest.fn().mockResolvedValue([candidate]),
+        terminallyFailCandidate: jest.fn().mockResolvedValue(undefined),
+      };
+
+      const paymentVerifier = {
+        verifyPayment: jest.fn().mockRejectedValue(
+          new ServiceError(
+            "stellar_payment_already_used",
+            "This Stellar payment operation has already been credited to another investment.",
+            409
+          )
+        ),
+      };
+
+      const worker = new ReconcilePendingStellarStateWorker({
+        repository,
+        paymentVerifier,
+        config: {
+          enabled: true,
+          intervalMs: 1_000,
+          batchSize: 5,
+          gracePeriodMs: 60_000,
+          maxRuntimeMs: 10_000,
+        },
+        logger,
+        now: () => now,
+        yieldControl: async () => undefined,
+      });
+
+      const result = await worker.runTick();
+
+      expect(result.verified).toBe(0);
+      expect(result.failed).toBe(1);
+      expect(result.terminallyFailed).toBe(1);
+      expect(repository.terminallyFailCandidate).toHaveBeenCalledWith(
+        candidate,
+        "Validation failure (stellar_payment_already_used)"
+      );
+
+      const terminalErrorLog = logger.entries.find(
+        (entry) =>
+          entry.level === "error" &&
+          entry.message === "Pending Stellar investment funding transaction terminally failed reconciliation."
+      );
+      expect(terminalErrorLog).toBeDefined();
+      expect(terminalErrorLog?.metadata).toMatchObject({
+        event: "investment_funding_terminally_failed",
+        investment_id: "inv-dup-1",
+        stellar_tx_hash: "hash-already-credited",
+        failureKind: "permanent_validation",
+        action: expect.any(String),
+      });
+    });
+
+    it("terminally fails candidate when reconciliation conflict occurs", async () => {
+      const now = new Date("2026-01-01T00:10:00.000Z");
+      const logger = new CaptureLogger();
+      const candidate = createCandidate("inv-conflict", "hash-conflict-789");
+
+      const repository = {
+        findPendingCandidates: jest.fn().mockResolvedValue([candidate]),
+        terminallyFailCandidate: jest.fn().mockResolvedValue(undefined),
+      };
+
+      const paymentVerifier = {
+        verifyPayment: jest.fn().mockRejectedValue(
+          new ServiceError(
+            "reconciliation_conflict",
+            "Transaction row is already linked to a different Stellar hash.",
+            409
+          )
+        ),
+      };
+
+      const worker = new ReconcilePendingStellarStateWorker({
+        repository,
+        paymentVerifier,
+        config: {
+          enabled: true,
+          intervalMs: 1_000,
+          batchSize: 5,
+          gracePeriodMs: 60_000,
+          maxRuntimeMs: 10_000,
+        },
+        logger,
+        now: () => now,
+        yieldControl: async () => undefined,
+      });
+
+      const result = await worker.runTick();
+
+      expect(result.failed).toBe(1);
+      expect(result.terminallyFailed).toBe(1);
+      expect(repository.terminallyFailCandidate).toHaveBeenCalledWith(
+        candidate,
+        "Validation failure (reconciliation_conflict)"
+      );
+    });
+  });
+
+  describe("terminal reconciliation of timeout and provider mismatch outcomes", () => {
+    it("terminally reconciles candidate when max retry attempts are exceeded (timeout outcome)", async () => {
+      const now = new Date("2026-01-01T00:10:00.000Z");
+      const logger = new CaptureLogger();
+      const candidate = createCandidate("inv-timeout", "hash-timeout-999");
+
+      const repository = {
+        findPendingCandidates: jest.fn().mockResolvedValue([candidate]),
+        terminallyFailCandidate: jest.fn().mockResolvedValue(undefined),
+        recordAttempt: jest.fn().mockResolvedValue(undefined),
+      };
+
+      const paymentVerifier = {
+        verifyPayment: jest.fn().mockRejectedValue(
+          new ServiceError("horizon_unavailable", "Horizon is down", 503)
+        ),
+      };
+
+      const worker = new ReconcilePendingStellarStateWorker({
+        repository,
+        paymentVerifier,
+        config: {
+          enabled: true,
+          intervalMs: 1_000,
+          batchSize: 5,
+          gracePeriodMs: 60_000,
+          maxRuntimeMs: 10_000,
+          maxAttempts: 3,
+        },
+        logger,
+        now: () => now,
+        yieldControl: async () => undefined,
+      });
+
+      // Tick 1: attempt 1 (retryable, not terminal yet)
+      const res1 = await worker.runTick();
+      expect(res1.failed).toBe(1);
+      expect(res1.terminallyFailed ?? 0).toBe(0);
+      expect(repository.terminallyFailCandidate).not.toHaveBeenCalled();
+
+      // Tick 2: attempt 2 (retryable, not terminal yet)
+      const res2 = await worker.runTick();
+      expect(res2.failed).toBe(1);
+      expect(res2.terminallyFailed ?? 0).toBe(0);
+      expect(repository.terminallyFailCandidate).not.toHaveBeenCalled();
+
+      // Tick 3: attempt 3 reaches maxAttempts -> terminally failed
+      const res3 = await worker.runTick();
+      expect(res3.failed).toBe(1);
+      expect(res3.terminallyFailed).toBe(1);
+      expect(repository.terminallyFailCandidate).toHaveBeenCalledWith(
+        candidate,
+        expect.stringContaining("exceeding max attempts (3)")
+      );
+    });
+
+    it("terminally reconciles provider mismatch outcomes immediately without retrying", async () => {
+      const now = new Date("2026-01-01T00:10:00.000Z");
+      const logger = new CaptureLogger();
+      const candidate = createCandidate("inv-mismatch", "hash-mismatch");
+
+      const repository = {
+        findPendingCandidates: jest.fn().mockResolvedValue([candidate]),
+        terminallyFailCandidate: jest.fn().mockResolvedValue(undefined),
+      };
+
+      const paymentVerifier = {
+        verifyPayment: jest.fn().mockRejectedValue(
+          new ServiceError("invalid_payment", "No Stellar payment operation matched.", 422)
+        ),
+      };
+
+      const worker = new ReconcilePendingStellarStateWorker({
+        repository,
+        paymentVerifier,
+        config: {
+          enabled: true,
+          intervalMs: 1_000,
+          batchSize: 5,
+          gracePeriodMs: 60_000,
+          maxRuntimeMs: 10_000,
+          maxAttempts: 3,
+        },
+        logger,
+        now: () => now,
+        yieldControl: async () => undefined,
+      });
+
+      const result = await worker.runTick();
+
+      expect(result.failed).toBe(1);
+      expect(result.terminallyFailed).toBe(1);
+      expect(repository.terminallyFailCandidate).toHaveBeenCalledWith(
+        candidate,
+        "Validation failure (invalid_payment)"
+      );
+
+      const terminalLog = logger.entries.find(
+        (entry) =>
+          entry.level === "error" &&
+          entry.message === "Pending Stellar investment funding transaction terminally failed reconciliation."
+      );
+      expect(terminalLog?.metadata).toMatchObject({
+        event: "investment_funding_terminally_failed",
+        failureKind: "permanent_validation",
+        action: expect.any(String),
+      });
+    });
+
+    it("TypeOrmReconciliationCandidateRepository terminally fails both investment and transaction", async () => {
+      const investmentRepo = {
+        find: jest.fn(),
+        update: jest.fn().mockResolvedValue({ affected: 1 }),
+      };
+      const transactionRepo = {
+        find: jest.fn(),
+        update: jest.fn().mockResolvedValue({ affected: 1 }),
+      };
+      const pendingTxRepo = {
+        update: jest.fn().mockResolvedValue({ affected: 1 }),
+      };
+
+      const dataSource = {
+        getRepository: jest.fn((entity: any) => {
+          if (entity.name === "Investment" || entity.toString().includes("Investment")) return investmentRepo;
+          if (entity.name === "Transaction" || entity.toString().includes("Transaction")) return transactionRepo;
+          return pendingTxRepo;
+        }),
+      } as any;
+
+      const worker = createReconcilePendingStellarStateWorker(
+        dataSource,
+        {} as any,
+        {
+          enabled: true,
+          intervalMs: 1000,
+          batchSize: 10,
+          gracePeriodMs: 60000,
+          maxRuntimeMs: 10000,
+        },
+        new CaptureLogger()
+      );
+
+      const candidate = createCandidate("inv-term-repo", "tx-hash-term");
+      // Call terminallyFailCandidate on worker's repository
+      await (worker as any).repository.terminallyFailCandidate(candidate, "Test failure");
+
+      expect(investmentRepo.update).toHaveBeenCalledWith(
+        { id: "inv-term-repo", status: InvestmentStatus.PENDING },
+        { status: InvestmentStatus.CANCELLED }
+      );
+      expect(transactionRepo.update).toHaveBeenCalledWith(
+        { investmentId: "inv-term-repo", status: TransactionStatus.PENDING },
+        { status: TransactionStatus.FAILED }
+      );
+      expect(pendingTxRepo.update).toHaveBeenCalledWith(
+        { stellarTxHash: "tx-hash-term", status: "PENDING_CONFIRMATION" },
+        expect.objectContaining({
+          status: "FAILED",
+          failureReason: "Test failure",
+        })
+      );
     });
   });
 });
