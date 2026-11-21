@@ -15,6 +15,17 @@ import { cacheContextPrefix, defaultCacheNetwork } from "./cache-key";
  * process and eventually exhaust the heap.
  */
 
+/**
+ * Called when an entry leaves the in-process map without an explicit
+ * `delete()`: either because its TTL lapsed or because the cache was full and
+ * evicted the least recently used entry. `key` is the un-namespaced key the
+ * caller passed to `set()`, so a feature can reclaim its own side indexes.
+ */
+export type TtlCacheEvictionListener = (
+  key: string,
+  reason: "expired" | "evicted"
+) => void;
+
 export interface TtlCacheOptions {
   /** Entry lifetime in seconds. */
   ttlSeconds: number;
@@ -37,11 +48,15 @@ export interface TtlCacheOptions {
    * lazy expiry plus pruning on write.
    */
   sweepIntervalMs?: number;
+  /** Registered at construction; see {@link TtlCacheEvictionListener}. */
+  onEvict?: TtlCacheEvictionListener;
 }
 
 interface MemoryEntry {
   value: string;
   expiresAt: number;
+  /** Un-namespaced key, reported to eviction listeners. */
+  key: string;
 }
 
 export const DEFAULT_MAX_ENTRIES = 5000;
@@ -61,6 +76,7 @@ export class TtlCache {
   private readonly sweepIntervalMs: number;
   /** Insertion order doubles as recency order: a hit is re-inserted at the end. */
   private readonly memory = new Map<string, MemoryEntry>();
+  private readonly evictionListeners: TtlCacheEvictionListener[] = [];
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(options: TtlCacheOptions) {
@@ -83,6 +99,20 @@ export class TtlCache {
     this.enabled = options.enabled !== false;
     this.now = options.now ?? (() => Date.now());
     this.sweepIntervalMs = sweepIntervalMs;
+    if (options.onEvict) this.evictionListeners.push(options.onEvict);
+  }
+
+  /**
+   * Subscribes to implicit removals (expiry and capacity eviction). Explicit
+   * `delete()`/`clear()` calls are caller-driven and do not notify. Returns an
+   * unsubscribe function.
+   */
+  addEvictionListener(listener: TtlCacheEvictionListener): () => void {
+    this.evictionListeners.push(listener);
+    return () => {
+      const index = this.evictionListeners.indexOf(listener);
+      if (index >= 0) this.evictionListeners.splice(index, 1);
+    };
   }
 
   isEnabled(): boolean {
@@ -106,7 +136,7 @@ export class TtlCache {
       try {
         const raw = await this.redis.get(namespaced);
         if (raw !== null) {
-          this.remember(namespaced, raw);
+          this.remember(namespaced, raw, undefined, key);
           return JSON.parse(raw) as T;
         }
         return null;
@@ -118,7 +148,7 @@ export class TtlCache {
     const entry = this.memory.get(namespaced);
     if (!entry) return null;
     if (this.now() > entry.expiresAt) {
-      this.memory.delete(namespaced);
+      this.remove(namespaced, "expired");
       return null;
     }
     // Reading refreshes recency so hot keys outlive a burst of one-off writes.
@@ -147,7 +177,7 @@ export class TtlCache {
     }
 
     this.memory.delete(namespaced);
-    this.memory.set(namespaced, { value: serialized, expiresAt: this.now() + ttl * 1000 });
+    this.memory.set(namespaced, { value: serialized, expiresAt: this.now() + ttl * 1000, key });
     this.pruneExpired();
     this.evictToCapacity();
     this.ensureSweeper();
@@ -187,9 +217,9 @@ export class TtlCache {
   pruneExpired(): number {
     const now = this.now();
     let removed = 0;
-    for (const [key, entry] of this.memory) {
+    for (const [namespaced, entry] of this.memory) {
       if (now > entry.expiresAt) {
-        this.memory.delete(key);
+        this.remove(namespaced, "expired");
         removed++;
       }
     }
@@ -210,7 +240,21 @@ export class TtlCache {
       // so the first key is the least recently used one.
       const oldest = this.memory.keys().next();
       if (oldest.done) return;
-      this.memory.delete(oldest.value);
+      this.remove(oldest.value, "evicted");
+    }
+  }
+
+  /** Drops one entry and tells listeners why it left, unless it was explicit. */
+  private remove(namespaced: string, reason: "expired" | "evicted"): void {
+    const entry = this.memory.get(namespaced);
+    if (!entry) return;
+    this.memory.delete(namespaced);
+    for (const listener of this.evictionListeners) {
+      try {
+        listener(entry.key, reason);
+      } catch {
+        // A listener must never break cache reads or writes.
+      }
     }
   }
 
@@ -229,10 +273,17 @@ export class TtlCache {
     }
   }
 
-  private remember(key: string, raw: string, ttlSeconds?: number): void {
+  private remember(
+    namespaced: string,
+    raw: string,
+    ttlSeconds?: number,
+    originalKey?: string
+  ): void {
     const ttl = ttlSeconds ?? this.ttlSeconds;
-    this.memory.delete(key);
-    this.memory.set(key, { value: raw, expiresAt: this.now() + ttl * 1000 });
+    const existing = this.memory.get(namespaced);
+    const key = originalKey ?? existing?.key ?? namespaced;
+    this.memory.delete(namespaced);
+    this.memory.set(namespaced, { value: raw, expiresAt: this.now() + ttl * 1000, key });
     this.evictToCapacity();
     this.ensureSweeper();
   }
