@@ -1716,7 +1716,7 @@
     "/api/v1/kyc/webhook": {
       "post": {
         "summary": "Process a KYC provider webhook",
-        "description": "Updates verification and user KYC state after validating the provider HMAC signature.",
+        "description": "Validates the provider HMAC signature and durably records the event outcome. Deliveries with the same provider eventId (or id) are processed once; if neither is supplied, the payload hash is used as the event identity. Processing failures remain recorded for retry and operational review.",
         "requestBody": {
           "required": true,
           "content": {
@@ -1730,6 +1730,9 @@
         "responses": {
           "204": {
             "description": "Webhook processed"
+          },
+          "503": {
+            "description": "The event is currently being processed; retry the delivery"
           },
           "401": {
             "description": "Invalid webhook signature"

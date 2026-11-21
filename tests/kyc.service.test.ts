@@ -1,9 +1,14 @@
 import crypto from "crypto";
 import { KycService } from "../src/services/kyc.service";
+import { KYCVerification } from "../src/models/KYCVerification.model";
+import { KycHistory } from "../src/models/KycHistory.model";
+import { KycWebhookEvent } from "../src/models/KycWebhookEvent.model";
+import { User } from "../src/models/User.model";
 import { KYCStatus, KYCVerificationType, NotificationType } from "../src/types/enums";
 import type { NotificationService } from "../src/services/notification.service";
 
 function createHarness(notificationService?: NotificationService) {
+  let eventRecord: Record<string, any> | undefined;
   const user = { id: "user-1" };
   const verification = {
     id: "verification-1",
@@ -23,13 +28,96 @@ function createHarness(notificationService?: NotificationService) {
     findOneBy: jest.fn().mockResolvedValue(verification),
     findOne: jest.fn().mockResolvedValue(verification),
   };
-  const manager = {
-    getRepository: jest.fn((entity) =>
-      entity.name === "User" ? userRepository : verificationRepository
+  const historyRepository = {
+    create: jest.fn((value) => ({ ...value })),
+    save: jest.fn(async (value) => value),
+  };
+  const eventRepository = {
+    createQueryBuilder: jest.fn(() => {
+      let operation: "insert" | "update" | undefined;
+      let values: Record<string, any> = {};
+      let parameters: Record<string, any> = {};
+      let builder: any;
+      builder = {
+        insert: jest.fn(() => {
+          operation = "insert";
+          return builder;
+        }),
+        into: jest.fn(() => builder),
+        values: jest.fn((value) => {
+          values = value;
+          return builder;
+        }),
+        orIgnore: jest.fn(() => builder),
+        update: jest.fn(() => {
+          operation = "update";
+          return builder;
+        }),
+        set: jest.fn((value) => {
+          values = value;
+          return builder;
+        }),
+        where: jest.fn((_condition, value) => {
+          parameters = value;
+          return builder;
+        }),
+        execute: jest.fn(async () => {
+          if (operation === "insert") {
+            if (!eventRecord) eventRecord = { ...values };
+            return { affected: eventRecord ? 1 : 0 };
+          }
+          if (
+            !eventRecord ||
+            eventRecord.provider !== parameters.provider ||
+            eventRecord.eventId !== parameters.eventId ||
+            eventRecord.status === "succeeded" ||
+            (eventRecord.status === "processing" &&
+              eventRecord.processingStartedAt > parameters.expiredBefore)
+          ) {
+            return { affected: 0 };
+          }
+          eventRecord = {
+            ...eventRecord,
+            ...values,
+            attemptCount: eventRecord.attemptCount + 1,
+          };
+          return { affected: 1 };
+        }),
+      };
+      return builder;
+    }),
+    findOneBy: jest.fn(async (where) =>
+      eventRecord &&
+      eventRecord.provider === where.provider &&
+      eventRecord.eventId === where.eventId
+        ? eventRecord
+        : null
     ),
+    update: jest.fn(async (where, values) => {
+      if (
+        !eventRecord ||
+        eventRecord.provider !== where.provider ||
+        eventRecord.eventId !== where.eventId ||
+        eventRecord.status !== where.status
+      ) {
+        return { affected: 0 };
+      }
+      eventRecord = { ...eventRecord, ...values };
+      return { affected: 1 };
+    }),
+  };
+  const manager = {
+    getRepository: jest.fn((entity) => {
+      if (entity === User) return userRepository;
+      if (entity === KYCVerification) return verificationRepository;
+      if (entity === KycHistory) return historyRepository;
+      if (entity === KycWebhookEvent) return eventRepository;
+      return verificationRepository;
+    }),
   };
   const dataSource = {
     transaction: jest.fn(async (callback) => callback(manager)),
+    getRepository: jest.fn(() => eventRepository),
   };
   const appLogger = {
     info: jest.fn(),
@@ -44,7 +132,15 @@ function createHarness(notificationService?: NotificationService) {
     appLogger as any,
     notificationService
   );
-  return { service, userRepository, verificationRepository, appLogger };
+  return {
+    service,
+    userRepository,
+    verificationRepository,
+    historyRepository,
+    eventRepository,
+    getEventRecord: () => eventRecord,
+    appLogger,
+  };
 }
 
 describe("KycService", () => {
@@ -89,6 +185,78 @@ describe("KycService", () => {
       "kyc.webhook.processed",
       expect.objectContaining({ status })
     );
+  });
+
+  it("persists event outcomes and skips business side effects for duplicate events", async () => {
+    const notificationService = {
+      createNotification: jest.fn().mockResolvedValue(undefined),
+    } as unknown as NotificationService;
+    const { service, verificationRepository, historyRepository, getEventRecord } =
+      createHarness(notificationService);
+    const payload = {
+      eventId: "provider-event-1",
+      userId: "user-1",
+      status: KYCStatus.APPROVED,
+    };
+
+    await service.processWebhook(payload);
+    await service.processWebhook(payload);
+
+    expect(getEventRecord()).toMatchObject({
+      provider: "kyc",
+      eventId: "provider-event-1",
+      status: "succeeded",
+      attemptCount: 1,
+      failureKind: null,
+    });
+    expect(verificationRepository.save).toHaveBeenCalledTimes(1);
+    expect(historyRepository.save).toHaveBeenCalledTimes(1);
+    expect(notificationService.createNotification).toHaveBeenCalledTimes(1);
+  });
+
+  it("persists permanent validation failures for operator visibility", async () => {
+    const { service, getEventRecord } = createHarness();
+
+    await expect(
+      service.processWebhook({
+        eventId: "invalid-event",
+        userId: "user-1",
+        status: KYCStatus.PENDING,
+      })
+    ).rejects.toMatchObject({ statusCode: 400 });
+
+    expect(getEventRecord()).toMatchObject({
+      eventId: "invalid-event",
+      status: "failed",
+      failureKind: "permanent",
+      errorMessage: "Webhook status must be approved or rejected.",
+    });
+  });
+
+  it("reclaims a failed event on retry and completes it", async () => {
+    const { service, userRepository, getEventRecord } = createHarness();
+    userRepository.findOneBy
+      .mockRejectedValueOnce(new Error("temporary database outage"))
+      .mockResolvedValueOnce({ id: "user-1" });
+    const payload = {
+      eventId: "retryable-event",
+      userId: "user-1",
+      status: KYCStatus.APPROVED,
+    };
+
+    await expect(service.processWebhook(payload)).rejects.toThrow("temporary database outage");
+    expect(getEventRecord()).toMatchObject({
+      status: "failed",
+      failureKind: "retryable",
+      attemptCount: 1,
+    });
+
+    await service.processWebhook(payload);
+    expect(getEventRecord()).toMatchObject({
+      status: "succeeded",
+      failureKind: null,
+      attemptCount: 2,
+    });
   });
 
   it("rejects unsupported webhook transitions", async () => {
