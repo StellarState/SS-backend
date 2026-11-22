@@ -200,7 +200,7 @@ export function createApp({
   }
 
   if (settlementService) {
-    app.use("/api/v1/settlements", createSettlementRouter({ settlementService }));
+    app.use("/api/v1", createSettlementRouter({ settlementService }));
   }
 
   if (issuerAnalyticsService) {

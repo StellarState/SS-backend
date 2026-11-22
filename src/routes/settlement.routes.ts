@@ -16,6 +16,8 @@ export function createSettlementRouter({
   // POST /api/v1/settlements/:invoiceId - Settle a funded invoice and
   // distribute pro-rata returns to its confirmed investors
   router.post("/:invoiceId", authenticateJWT, controller.settleInvoice);
+  router.get("/investors/:wallet/settlements", authenticateJWT, controller.getHistory);
+  router.get("/investors/:wallet/settlements/export", authenticateJWT, controller.exportHistory);
 
   return router;
 }
