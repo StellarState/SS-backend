@@ -55,6 +55,7 @@ export interface BuyListingInput {
 
 export interface ListingResult {
   id: string;
+  version: number;
   invoiceId: string;
   sellerWallet: string;
   quantity: string;
@@ -417,6 +418,7 @@ export class SecondaryMarketService {
 
     const data: ListingResult[] = listings.map((listing) => ({
       id: listing.id,
+      version: listing.version,
       invoiceId: listing.invoiceId,
       sellerWallet: listing.sellerWallet,
       quantity: listing.quantity,
@@ -454,6 +456,7 @@ export class SecondaryMarketService {
 
     return {
       id: listing.id,
+      version: listing.version,
       invoiceId: listing.invoiceId,
       sellerWallet: listing.sellerWallet,
       quantity: listing.quantity,
@@ -882,8 +885,16 @@ export class SecondaryMarketService {
     listingId: string,
     sellerWallet: string,
     reason?: string,
-    sellerId?: string
+    sellerId?: string,
+    expectedVersion?: unknown
   ): Promise<SecondaryListing> {
+    if (reason !== undefined && (typeof reason !== "string" || reason.length > 2000))
+      throw new ServiceError(
+        "INVALID_CANCELLATION_REASON",
+        "reason must be a string of at most 2000 characters",
+        400
+      );
+    const revision = this.parseRevision(expectedVersion);
     const outcome = await this.dataSource.transaction(async (manager: EntityManager) => {
       const listing = await manager.findOne(SecondaryListing, {
         where: { id: listingId },
@@ -902,8 +913,22 @@ export class SecondaryMarketService {
         throw new ServiceError("FORBIDDEN", "Only the listing owner can cancel this listing", 403);
       }
 
+      if (
+        listing.status === ListingStatus.CANCELLED &&
+        listing.version === revision + 1 &&
+        listing.cancellationReason === (reason || null)
+      )
+        return { expired: false as const, listing };
+      this.assertRevision(listing, revision);
       if (listing.status !== ListingStatus.ACTIVE) {
-        throw new ServiceError("LISTING_NOT_ACTIVE", "Only active listings can be cancelled", 400);
+        throw this.listingConflict(listing, revision, "Only active listings can be cancelled");
+      }
+      if (await manager.findOne(SecondaryTrade, { where: { listingId } })) {
+        throw this.listingConflict(
+          listing,
+          revision,
+          "A listing with completed purchases cannot be cancelled"
+        );
       }
 
       if (isListingExpired(listing, this.now())) {
@@ -929,6 +954,139 @@ export class SecondaryMarketService {
     });
 
     return outcome.listing;
+  }
+
+  /** Update an active ask using the same revision precondition as cancellation. */
+  async relistListing(
+    listingId: string,
+    sellerWallet: string,
+    sellerId: string,
+    body: Record<string, unknown>
+  ): Promise<SecondaryListing> {
+    const revision = this.parseRevision(body.expected_version);
+    const quantity = parsePositiveAmount(body.quantity, "INVALID_QUANTITY", "Quantity");
+    const price = parsePositiveAmount(
+      body.price_per_fraction,
+      "INVALID_PRICE",
+      "Price per fraction"
+    );
+    return this.dataSource.transaction(async (manager) => {
+      const listing = await manager.findOne(SecondaryListing, {
+        where: { id: listingId },
+        lock: { mode: "pessimistic_write" },
+      });
+      if (!listing) throw new ServiceError("LISTING_NOT_FOUND", "Listing not found", 404);
+      if (listing.sellerWallet !== sellerWallet && listing.sellerId !== sellerId)
+        throw new ServiceError("FORBIDDEN", "Only the listing owner can relist", 403);
+      const traded = await manager.findOne(SecondaryTrade, { where: { listingId } });
+      if (
+        listing.status !== ListingStatus.ACTIVE ||
+        isListingExpired(listing, this.now()) ||
+        traded
+      )
+        throw this.listingConflict(
+          listing,
+          revision,
+          "Only an active listing without purchases can be relisted"
+        );
+      if (
+        listing.version === revision + 1 &&
+        new Decimal(listing.quantity).eq(quantity) &&
+        new Decimal(listing.pricePerFraction).eq(price)
+      )
+        return listing;
+      this.assertRevision(listing, revision);
+      const invoice = await manager.findOne(Invoice, {
+        where: { id: listing.invoiceId },
+        lock: { mode: "pessimistic_write" },
+      });
+      if (!invoice || invoice.status !== InvoiceStatus.FUNDED || isPastDueDate(invoice.dueDate))
+        throw this.listingConflict(listing, revision, "Invoice is no longer tradable");
+      const settling = await manager.findOne(SettlementIntent, {
+        where: {
+          invoiceId: invoice.id,
+          status: In([
+            SettlementIntentStatus.PREPARED,
+            SettlementIntentStatus.SUBMITTING,
+            SettlementIntentStatus.DISTRIBUTED,
+          ]),
+        },
+      });
+      if (settling)
+        throw this.listingConflict(listing, revision, "Invoice settlement is in progress");
+      const holdings = await manager.find(Investment, {
+        where: [
+          { invoiceId: invoice.id, investorId: sellerId, status: InvestmentStatus.CONFIRMED },
+          {
+            invoiceId: invoice.id,
+            investorWallet: sellerWallet,
+            status: InvestmentStatus.CONFIRMED,
+          },
+        ],
+        lock: { mode: "pessimistic_write" },
+      });
+      const otherListings = await manager.find(SecondaryListing, {
+        where: [
+          { invoiceId: invoice.id, sellerId, status: ListingStatus.ACTIVE },
+          { invoiceId: invoice.id, sellerWallet, status: ListingStatus.ACTIVE },
+        ],
+      });
+      const reserved = otherListings
+        .filter((row) => row.id !== listingId && !isListingExpired(row, this.now()))
+        .reduce((sum, row) => sum.plus(row.quantity), new Decimal(0));
+      const available = holdings
+        .reduce((sum, row) => sum.plus(row.investmentAmount), new Decimal(0))
+        .minus(reserved);
+      if (quantity.gt(available))
+        throw new ServiceError(
+          "INSUFFICIENT_HOLDINGS",
+          "Requested quantity exceeds available holdings",
+          409
+        );
+      listing.quantity = quantity.toFixed(4);
+      listing.pricePerFraction = price.toFixed(4);
+      listing.totalPrice = quantity.times(price).toFixed(4);
+      return manager.save(listing);
+    });
+  }
+
+  private parseRevision(value: unknown): number {
+    if (value === undefined || value === null)
+      throw new ServiceError(
+        "LISTING_PRECONDITION_REQUIRED",
+        "expected_version is required; fetch the listing version before changing it",
+        428
+      );
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1)
+      throw new ServiceError(
+        "INVALID_LISTING_VERSION",
+        "expected_version must be a positive integer",
+        400
+      );
+    return value;
+  }
+
+  private assertRevision(listing: SecondaryListing, expected: number): void {
+    if (listing.version !== expected)
+      throw this.listingConflict(
+        listing,
+        expected,
+        "Listing changed; fetch its current version before retrying"
+      );
+  }
+
+  private listingConflict(
+    listing: SecondaryListing,
+    expected: number,
+    message: string
+  ): ServiceError {
+    return new ServiceError("LISTING_CONFLICT", message, 409, {
+      listing_id: listing.id,
+      expected_version: expected,
+      current_version: listing.version,
+      status: listing.status,
+      quantity: listing.quantity,
+    });
   }
 
   private getSortColumn(sort: string): string {

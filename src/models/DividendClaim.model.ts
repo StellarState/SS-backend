@@ -1,10 +1,4 @@
-import {
-  Entity,
-  PrimaryGeneratedColumn,
-  Column,
-  CreateDateColumn,
-  Index,
-} from "typeorm";
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, Index } from "typeorm";
 
 /**
  * A dividend payout a holder has claimed against a distribution cycle.
@@ -16,6 +10,15 @@ import {
 @Index("idx_dividend_claims_recipient_wallet", ["recipientWallet"])
 @Index("idx_dividend_claims_claimed_at", ["claimedAt"])
 export class DividendClaim {
+  @Column({ name: "snapshot_id", type: "uuid", nullable: true })
+  snapshotId!: string | null;
+
+  @Column({ type: "integer", default: 1 })
+  revision!: number;
+
+  @Column({ name: "idempotency_key", type: "varchar", length: 64, nullable: true, unique: true })
+  idempotencyKey!: string | null;
+
   @PrimaryGeneratedColumn("uuid")
   id!: string;
 

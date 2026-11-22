@@ -20,6 +20,7 @@ function pick(body: Record<string, unknown>, ...keys: string[]): unknown {
 function sendError(res: Response, err: unknown) {
   if (err instanceof ServiceError) {
     return res.status(err.statusCode).json({
+      success: false,
       error: {
         code: err.code,
         message: err.message,
@@ -184,6 +185,26 @@ export class SecondaryMarketController {
     }
   };
 
+  relistListing = async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      if (!req.user)
+        return res
+          .status(401)
+          .json({
+            success: false,
+            error: { code: "UNAUTHORIZED", message: "Authentication required" },
+          });
+      const listing = await this.secondaryMarketService.relistListing(
+        String(req.params.id),
+        req.user.stellarAddress,
+        req.user.id,
+        req.body ?? {}
+      );
+      return res.status(200).json({ success: true, data: listing });
+    } catch (error) {
+      return sendError(res, error);
+    }
+  };
   cancelListing = async (req: AuthenticatedRequest, res: Response) => {
     try {
       if (!req.user) {
@@ -191,13 +212,14 @@ export class SecondaryMarketController {
       }
 
       const { id } = req.params;
-      const { reason } = req.body || {};
+      const { reason, expected_version } = req.body || {};
 
       const listing = await this.secondaryMarketService.cancelListing(
         Array.isArray(id) ? id[0] : id,
         req.user.stellarAddress,
         reason,
-        req.user.id
+        req.user.id,
+        expected_version
       );
 
       return res.status(200).json({

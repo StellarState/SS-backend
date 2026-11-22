@@ -195,6 +195,17 @@ export function assertTransition(
   }
 }
 
+/** Deletion is a draft-only cancellation, governed by the same lifecycle graph. */
+export function assertDraftDeletion(invoice: Invoice, actor: TransitionActor): void {
+  if (actor.role === "seller" && actor.id !== invoice.sellerId) {
+    throw new ServiceError("unauthorized_invoice_access", "You can only delete your own invoices", 403);
+  }
+  if (invoice.status !== InvoiceStatus.DRAFT) {
+    throw new ServiceError("invalid_invoice_status", "Only draft invoices can be deleted", 409, { status: invoice.status, allowedTransitions: allowedTransitionsFrom(invoice.status) });
+  }
+  assertTransition(invoice, InvoiceStatus.CANCELLED, actor);
+}
+
 /** A committed status change, handed to side effects. */
 export interface InvoiceTransition {
   invoice: Invoice;

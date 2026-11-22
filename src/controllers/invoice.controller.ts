@@ -387,7 +387,7 @@ export function createInvoiceController(
             next(new HttpError(404, "Invoice not found"));
             return;
           }
-          next(new HttpError(error.statusCode, error.message));
+          next(new PublicAppError(error.statusCode, error.message, error.code, error.details));
           return;
         }
 
@@ -561,6 +561,7 @@ export function createInvoiceController(
           fileBuffer: req.file.buffer,
           filename: req.file.originalname,
           mimeType: req.file.mimetype,
+          contentChecksum: req.body?.content_checksum,
         });
 
         if (cacheService) {
@@ -577,7 +578,7 @@ export function createInvoiceController(
         });
       } catch (error) {
         if (error instanceof ServiceError) {
-          next(new HttpError(error.statusCode, error.message));
+          next(new PublicAppError(error.statusCode, error.message, error.code, error.details));
           return;
         }
 
