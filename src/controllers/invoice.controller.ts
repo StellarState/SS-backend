@@ -329,6 +329,11 @@ export function createInvoiceController(invoiceService: InvoiceService) {
         });
       } catch (error) {
         if (error instanceof ServiceError) {
+          if (error.statusCode === 403) {
+            // Hide whether an invoice exists from callers who do not own it.
+            next(new HttpError(404, "Invoice not found"));
+            return;
+          }
           next(new HttpError(error.statusCode, error.message));
           return;
         }

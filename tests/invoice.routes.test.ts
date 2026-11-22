@@ -616,7 +616,7 @@ describe("Invoice Routes", () => {
         .expect(404);
     });
 
-    it("should handle unauthorized access to invoice", async () => {
+    it("should hide unauthorized invoice existence", async () => {
       mockInvoiceService.uploadDocument.mockRejectedValue(
         new ServiceError(
           "unauthorized_invoice_access",
@@ -629,7 +629,7 @@ describe("Invoice Routes", () => {
         .post("/api/v1/invoices/invoice-123/document")
         .set("Authorization", `Bearer ${validToken}`)
         .attach("document", Buffer.from("test content"), "test.pdf")
-        .expect(403);
+        .expect(404);
     });
 
     it("should handle invalid JWT tokens", async () => {
