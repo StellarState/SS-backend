@@ -588,7 +588,8 @@ describe("SecondaryMarketService", () => {
         listing.id,
         SELLER_WALLET,
         "Changed my mind",
-        SELLER_ID
+        SELLER_ID,
+        listing.version
       );
 
       expect(cancelled.status).toBe(ListingStatus.CANCELLED);
@@ -601,23 +602,23 @@ describe("SecondaryMarketService", () => {
       const service = new SecondaryMarketService(fake.dataSource as any);
 
       await expect(
-        service.cancelListing(listing.id, OTHER_WALLET, "Hacking", OTHER_USER_ID)
+        service.cancelListing(listing.id, OTHER_WALLET, "Hacking", OTHER_USER_ID, listing.version)
       ).rejects.toMatchObject({
         code: "FORBIDDEN",
         statusCode: 403,
       });
     });
 
-    it("rejects cancellation of an already sold or cancelled listing with 400", async () => {
+    it("rejects cancellation of an already sold listing with a conflict", async () => {
       const listing = makeListing({ status: ListingStatus.SOLD });
       const fake = createFakeDataSource({ listings: [listing] });
       const service = new SecondaryMarketService(fake.dataSource as any);
 
       await expect(
-        service.cancelListing(listing.id, SELLER_WALLET, "Too late", SELLER_ID)
+        service.cancelListing(listing.id, SELLER_WALLET, "Too late", SELLER_ID, listing.version)
       ).rejects.toMatchObject({
-        code: "LISTING_NOT_ACTIVE",
-        statusCode: 400,
+        code: "LISTING_CONFLICT",
+        statusCode: 409,
       });
     });
   });
@@ -737,7 +738,7 @@ describe("Secondary Market HTTP Endpoints", () => {
     const res = await request(app)
       .delete(`/secondary-market/listings/${listing.id}`)
       .set("Authorization", "Bearer valid")
-      .send({ reason: "Price too low" });
+      .send({ reason: "Price too low", expected_version: listing.version });
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
@@ -753,7 +754,7 @@ describe("Secondary Market HTTP Endpoints", () => {
     const res = await request(app)
       .post(`/secondary-market/listings/${listing.id}/cancel`)
       .set("Authorization", "Bearer valid")
-      .send({ reason: "Cancelling via POST" });
+      .send({ reason: "Cancelling via POST", expected_version: listing.version });
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
@@ -769,7 +770,7 @@ describe("Secondary Market HTTP Endpoints", () => {
     const res = await request(app)
       .delete(`/secondary-market/listings/${listing.id}`)
       .set("Authorization", "Bearer other")
-      .send({ reason: "Attempted hijack" });
+      .send({ reason: "Attempted hijack", expected_version: listing.version });
 
     expect(res.status).toBe(403);
     expect(res.body.error.code).toBe("FORBIDDEN");

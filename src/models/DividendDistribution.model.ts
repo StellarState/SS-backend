@@ -1,10 +1,4 @@
-import {
-  Entity,
-  PrimaryGeneratedColumn,
-  Column,
-  CreateDateColumn,
-  Index,
-} from "typeorm";
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, Index } from "typeorm";
 
 export enum DistributionTrigger {
   SCHEDULED = "scheduled",
@@ -19,6 +13,9 @@ export enum DistributionTrigger {
 @Index("idx_dividend_distributions_issuer_wallet", ["issuerWallet"])
 @Index("idx_dividend_distributions_distributed_at", ["distributedAt"])
 export class DividendDistribution {
+  @Column({ name: "snapshot_id", type: "uuid", nullable: true, unique: true })
+  snapshotId!: string | null;
+
   @PrimaryGeneratedColumn("uuid")
   id!: string;
 

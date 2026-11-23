@@ -21,8 +21,16 @@ export class YieldAdjustment {
   @Column({ name: "adjusted_yield", type: "decimal", precision: 12, scale: 6, nullable: true })
   adjustedYield!: string | null;
 
+  /** Ledger close time of the settlement event. Set once; replays never change it. */
   @Column({ name: "settled_at", type: "timestamptz" })
   settledAt!: Date;
+
+  /**
+   * When the settlement was first projected (issue #812). Kept on replay so
+   * processing lag (processedAt - settledAt) stays meaningful. Null for legacy rows.
+   */
+  @Column({ name: "processed_at", type: "timestamptz", nullable: true })
+  processedAt!: Date | null;
 
   @Column({ name: "transaction_hash", type: "varchar", length: 128 })
   transactionHash!: string;

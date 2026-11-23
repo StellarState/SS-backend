@@ -39,7 +39,8 @@ describe("Invoice draft partial schema and structural validation (issue #730)", 
       expect(draft.id).toBeDefined();
 
       const resumed = await service.getDraft(draft.id, sellerId);
-      expect(resumed).toEqual({});
+      expect(resumed.id).toBe(draft.id);
+      expect(resumed.revision).toBe(1);
     });
 
     it("allows saving a partially filled draft without requiring publish-ready data", async () => {

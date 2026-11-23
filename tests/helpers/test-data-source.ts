@@ -24,7 +24,7 @@ function patchEntityMetadataForSQLite(): void {
       col.options.type = "datetime" as unknown as typeof col.options.type;
     }
     if (col.options.type === "jsonb") {
-      col.options.type = "text" as unknown as typeof col.options.type;
+      col.options.type = "simple-json" as unknown as typeof col.options.type;
     }
     if (col.options.type === "enum") {
       col.options.type = "varchar" as unknown as typeof col.options.type;
@@ -32,7 +32,13 @@ function patchEntityMetadataForSQLite(): void {
   }
 }
 
-export async function createTestDataSource(): Promise<DataSource> {
+/**
+ * @param extraEntities Entities a test needs beyond the shared set, e.g. the
+ *   indexer tables. Appended, so existing callers are unaffected.
+ */
+export async function createTestDataSource(
+  extraEntities: Array<new (...args: never[]) => unknown> = []
+): Promise<DataSource> {
   patchEntityMetadataForSQLite();
   const dataSource = new DataSource({
     type: "sqlite",
@@ -57,6 +63,7 @@ export async function createTestDataSource(): Promise<DataSource> {
       Notification,
       SecondaryListing,
       Watchlist,
+      ...extraEntities,
     ],
     synchronize: false,
     logging: false,

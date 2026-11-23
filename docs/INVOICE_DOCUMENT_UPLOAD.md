@@ -135,3 +135,46 @@ All tests mock the Pinata API and require no real JWT credentials to run.
 - No personally identifiable information (PII) is logged during uploads
 - Document retention follows Pinata's retention policies
 - Consider implementing document lifecycle management for compliance
+
+## Resumable uploads and integrity (#826)
+
+The original multipart `POST /api/v1/invoices/{id}/document` accepts optional
+`content_checksum` (64 hexadecimal SHA256 characters). The server hashes the
+received bytes before pinning and returns `contentChecksum` and `uploadComplete`.
+A checksum mismatch returns 409 `checksum_mismatch` without changing the document.
+Legacy documents without checksum metadata remain supported.
+
+For resumable uploads on a seller-owned draft:
+
+1. `POST /api/v1/invoices/{id}/uploads` with JSON `filename`, `mime_type`,
+   `file_size_bytes`, optional `content_checksum`, and optional UUID
+   `upload_session_id`. Reusing the same ID with the same metadata returns the
+   existing session. Metadata changes require a new session. The total size and
+   MIME type follow the existing IPFS configuration; raise `IPFS_MAX_FILE_SIZE_MB`
+   to accept larger documents. Only one pending upload is allowed per invoice.
+2. `PATCH /api/v1/invoices/{id}/uploads/{sessionId}` sends raw
+   `application/octet-stream` bytes with integer `Upload-Offset`. Chunks are
+   sequential and at most 1 MiB. Acknowledged bytes are durable in PostgreSQL.
+   Replaying the same offset and identical bytes is idempotent; gaps, changed
+   retries, and overruns return 409 with `received_bytes`.
+3. `GET /api/v1/invoices/{id}/uploads/{sessionId}` returns `received_bytes`,
+   `state`, `upload_complete`, checksum, CID and immutable file metadata. Resume
+   at that offset, including after an application restart.
+4. `POST /api/v1/invoices/{id}/uploads/{sessionId}/complete` requires all bytes,
+   verifies SHA256, pins the document, and persists verified invoice and document
+   metadata atomically. A completed retry returns the stored result. A checksum
+   or gateway failure leaves the pending session and acknowledged bytes intact.
+5. `POST /api/v1/invoices/{id}/uploads/{sessionId}/restart` discards the pending
+   chunks and returns a new session UUID starting at zero. Delayed requests on
+   the old UUID return 409 `upload_state_conflict`. An optional JSON body can
+   replace `filename`, `mime_type`, `file_size_bytes` or `content_checksum`,
+   allowing a bad checksum or changed file to be corrected. Omitted fields
+   retain their original values; a null checksum removes the supplied digest.
+
+An upload in progress blocks submission and publication even if an older CID is
+attached. Verification flags are server controlled. Registering checksum
+metadata through `/documents` requires a completed session with matching invoice,
+CID, checksum and byte count. The completion request assembles the configured
+maximum file in memory and holds the invoice/session locks through pinning; size
+limits should reflect available memory and gateway latency. Retained chunks
+allow exact completion retries; pending uploads do not expire automatically.

@@ -1,3 +1,5 @@
+import type { PayoutClaimsService } from "../services/payout-claims.service";
+import { RoyaltyStatementsService, StatementOptions, statementCsv } from "../services/royalty-statements.service";
 import { Router, Response, NextFunction } from "express";
 
 import { createAuthMiddleware, requireRole } from "../middleware/auth.middleware";
@@ -11,6 +13,8 @@ import type { AuthenticatedRequest } from "../types/auth";
 export interface RoyaltiesRouterDependencies {
   royaltyEarningsService: RoyaltyEarningsService;
   authService: AuthService;
+  payoutClaimsService?: PayoutClaimsService;
+  royaltyStatementsService?: RoyaltyStatementsService;
 }
 
 const DEFAULT_TRANSFER_LIMIT = 50;
@@ -42,6 +46,8 @@ function parseBoundedInt(
 export function createRoyaltiesRouter({
   royaltyEarningsService,
   authService,
+  payoutClaimsService,
+  royaltyStatementsService,
 }: RoyaltiesRouterDependencies): Router {
   const router = Router();
 
@@ -111,6 +117,127 @@ export function createRoyaltiesRouter({
             ? error
             : new AppError(500, "Failed to retrieve royalty claim history", "ROYALTY_HISTORY_ERROR")
         );
+      }
+    }
+  );
+
+  router.post(
+    "/claims",
+    requireAuth,
+    requireCreator,
+    async (req: AuthenticatedRequest, res, next) => {
+      try {
+        if (!payoutClaimsService)
+          throw new AppError(503, "Claim service unavailable", "CLAIMS_UNAVAILABLE");
+        const { cycleId, revision } = req.body ?? {};
+        if (typeof cycleId !== "string" || typeof revision !== "number")
+          throw new AppError(400, "Cycle ID and revision are required", "INVALID_CLAIM");
+        const claim = await payoutClaimsService.requestRoyalty(
+          req.user!.stellarAddress,
+          cycleId,
+          revision
+        );
+        res.status(claim.status === "pending" ? 202 : 200).json({ success: true, data: claim });
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
+
+  function statementOptions(query: AuthenticatedRequest["query"]): StatementOptions {
+    const text = (name: string): string | undefined => {
+      const value = query[name];
+      if (value !== undefined && typeof value !== "string")
+        throw new AppError(400, "Invalid statement query", "INVALID_QUERY");
+      return value as string | undefined;
+    };
+    return {
+      limit: text("limit") === undefined ? undefined : Number(text("limit")),
+      cursor: text("cursor"),
+      cycleFrom: text("cycle_from"),
+      cycleTo: text("cycle_to"),
+      keyAddress: text("key_address"),
+      revision: text("revision") === undefined ? undefined : Number(text("revision")),
+    };
+  }
+
+  router.get(
+    "/statements",
+    requireAuth,
+    requireCreator,
+    async (req: AuthenticatedRequest, res, next) => {
+      try {
+        if (!royaltyStatementsService)
+          throw new AppError(503, "Statement service unavailable", "STATEMENTS_UNAVAILABLE");
+        const page = await royaltyStatementsService.list(
+          req.user!.stellarAddress,
+          statementOptions(req.query)
+        );
+        res.json({
+          success: true,
+          data: page.items,
+          totals: page.totals,
+          meta: { hasMore: page.hasMore, nextCursor: page.nextCursor },
+        });
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
+
+  router.get(
+    "/statements/export",
+    requireAuth,
+    requireCreator,
+    async (req: AuthenticatedRequest, res, next) => {
+      try {
+        if (!royaltyStatementsService)
+          throw new AppError(503, "Statement service unavailable", "STATEMENTS_UNAVAILABLE");
+        const format = req.query.format ?? "json";
+        if (format !== "json" && format !== "csv")
+          throw new AppError(400, "Format must be json or csv", "INVALID_FORMAT");
+        const statement = await royaltyStatementsService.export(
+          req.user!.stellarAddress,
+          statementOptions(req.query)
+        );
+        if (format === "csv") {
+          res.setHeader("Content-Disposition", 'attachment; filename="royalty-statement.csv"');
+          res.setHeader("X-Statement-Gross", statement.totals.gross);
+          res.setHeader("X-Statement-Platform-Fee", statement.totals.platformFee);
+          res.setHeader("X-Statement-Net", statement.totals.net);
+          res.type("text/csv").send(statementCsv(statement.items));
+        } else
+          res.json({
+            success: true,
+            data: statement.items,
+            totals: statement.totals,
+            rowCount: statement.rowCount,
+          });
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
+
+  router.post(
+    "/claims/:key/transaction",
+    requireAuth,
+    requireCreator,
+    async (req: AuthenticatedRequest, res, next) => {
+      try {
+        if (!payoutClaimsService)
+          throw new AppError(503, "Claim service unavailable", "CLAIMS_UNAVAILABLE");
+        const { txHash } = req.body ?? {};
+        if (typeof txHash !== "string")
+          throw new AppError(400, "Transaction hash is required", "INVALID_TRANSACTION");
+        const claim = await payoutClaimsService.bindTransaction(
+          String(req.params.key),
+          txHash,
+          req.user!.stellarAddress
+        );
+        res.json({ success: true, data: claim });
+      } catch (error) {
+        next(error);
       }
     }
   );

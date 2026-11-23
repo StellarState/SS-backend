@@ -1,3 +1,4 @@
+import { requireEnumValue } from "../utils/enum-validation";
 import { TtlCache } from "../lib/ttl-cache";
 import { HttpError } from "../utils/http-error";
 import type { DecodedSorobanEvent } from "../types/soroban.types";
@@ -158,8 +159,12 @@ export class AclService implements ContractEventHandler {
 
   private resolveAction(event: DecodedSorobanEvent, permittedFunctions: string[]): AclLogAction {
     const explicit = readEventString(event, ["action", "event", "operation"]);
-    if (explicit && /remove|revoke|delete|disable/i.test(explicit)) return "remove";
-    if (explicit && /add|grant|whitelist|enable/i.test(explicit)) return "add";
+    if (explicit) {
+      const action = explicit.trim().toLowerCase();
+      if (["remove", "revoke", "delete", "disable"].includes(action)) return "remove";
+      if (["add", "grant", "whitelist", "enable"].includes(action)) return "add";
+      return requireEnumValue(action, ["add", "remove"] as const, "ACLUpdated.action");
+    }
 
     const data = event.data as Record<string, unknown> | null;
     if (data && typeof data === "object" && !Array.isArray(data)) {
