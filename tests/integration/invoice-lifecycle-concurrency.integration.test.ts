@@ -68,7 +68,7 @@ function createSerializedFakeDataSource(invoice: Invoice, seller: User) {
 
       const inv = data as Invoice;
       if (inv && inv.id) {
-        invoices.set(inv.id, { ...inv });
+        invoices.set(inv.id, Object.assign(new Invoice(), inv));
       }
       return inv;
     },
@@ -154,7 +154,7 @@ describe("Invoice lifecycle concurrency and pessimistic locking (issue #732)", (
           return inv ? ({ ...inv, seller: sellerUser } as Invoice) : null;
         },
         save: async (inv: Invoice) => {
-          invoices.set(inv.id, { ...inv });
+          invoices.set(inv.id, Object.assign(new Invoice(), inv));
           return inv;
         },
       } as any;
@@ -212,7 +212,7 @@ describe("Invoice lifecycle concurrency and pessimistic locking (issue #732)", (
           return inv ? ({ ...inv, seller: sellerUser } as Invoice) : null;
         },
         save: async (inv: Invoice) => {
-          invoices.set(inv.id, { ...inv });
+          invoices.set(inv.id, Object.assign(new Invoice(), inv));
           return inv;
         },
       } as any;
@@ -226,6 +226,7 @@ describe("Invoice lifecycle concurrency and pessimistic locking (issue #732)", (
       // Both operations coordinate at the initial-read boundary (invoice is DRAFT)
       // Publication runs, followed by an update attempting to alter financial fields
       const publishPromise = service.publishInvoice({ invoiceId: invoice.id, sellerId });
+      await new Promise((resolve) => setImmediate(resolve));
       const editPromise = service.updateInvoice({
         invoiceId: invoice.id,
         sellerId,
@@ -261,7 +262,7 @@ describe("Invoice lifecycle concurrency and pessimistic locking (issue #732)", (
           return inv ? ({ ...inv, seller: sellerUser } as Invoice) : null;
         },
         save: async (inv: Invoice) => {
-          invoices.set(inv.id, { ...inv });
+          invoices.set(inv.id, Object.assign(new Invoice(), inv));
           return inv;
         },
       } as any;
