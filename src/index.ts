@@ -9,6 +9,7 @@ import { logger } from "./observability/logger";
 
 import { createAuthService } from "./services/auth.service";
 import { createNotificationService } from "./services/notification.service";
+import { createNotificationDeadLetterService } from "./services/notification-dead-letter.service";
 import { createInvoiceService } from "./services/invoice.service";
 import { createIPFSService } from "./services/ipfs.service";
 import { createInvestmentService } from "./services/investment.service";
@@ -30,6 +31,7 @@ export async function bootstrap(): Promise<{ server: Server }> {
 
   const authService = createAuthService(dataSource, config);
   const notificationService = createNotificationService(dataSource);
+  const notificationDeadLetterService = createNotificationDeadLetterService(dataSource);
   const ipfsService = createIPFSService(config.ipfs, logger);
 
   const issuerAnalyticsService = createIssuerAnalyticsService(dataSource);
@@ -94,6 +96,7 @@ export async function bootstrap(): Promise<{ server: Server }> {
   const app = createApp({
     authService,
     notificationService,
+    notificationDeadLetterService,
     invoiceService,
     investmentService,
     settlementService,

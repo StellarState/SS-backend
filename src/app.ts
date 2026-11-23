@@ -19,6 +19,7 @@ import { createSettlementRouter } from "./routes/settlement.routes";
 import { createIssuerAnalyticsRouter } from "./routes/issuer-analytics.routes";
 import { createDocumentExportRouter } from "./routes/document-export.routes";
 import { createAutoInvestRouter } from "./routes/auto-invest.routes";
+import { createNotificationDeadLetterRouter } from "./routes/admin/notification-dead-letter.routes";
 
 import type { AuthService } from "./services/auth.service";
 import type { NotificationService } from "./services/notification.service";
@@ -28,6 +29,7 @@ import type { SettlementService } from "./services/settlement.service";
 import type { IssuerAnalyticsService } from "./services/issuer-analytics.service";
 import type { DocumentExportService } from "./services/document-export.service";
 import type { AutoInvestRulesService } from "./services/auto-invest-rules.service";
+import type { NotificationDeadLetterService } from "./services/notification-dead-letter.service";
 
 import dataSource from "./config/database";
 import type { StellarNetworksConfig } from "./config/stellar-networks";
@@ -67,6 +69,7 @@ export interface AppDependencies {
   issuerAnalyticsService?: IssuerAnalyticsService;
   documentExportService?: DocumentExportService;
   autoInvestRulesService?: AutoInvestRulesService;
+  notificationDeadLetterService?: NotificationDeadLetterService;
   logger?: AppLogger;
   metricsEnabled?: boolean;
   metricsRegistry?: MetricsRegistry;
@@ -95,6 +98,7 @@ export function createApp({
   issuerAnalyticsService,
   documentExportService,
   autoInvestRulesService,
+  notificationDeadLetterService,
   logger: appLogger = logger,
   metricsEnabled = true,
   metricsRegistry = new MetricsRegistry(),
@@ -189,6 +193,10 @@ export function createApp({
 
   if (notificationService) {
     app.use("/api/v1/notifications", createNotificationRouter(notificationService, authService));
+  }
+
+  if (notificationDeadLetterService) {
+    app.use("/api/v1/admin/notifications/dead-letters", createNotificationDeadLetterRouter(notificationDeadLetterService));
   }
 
   if (invoiceService && config) {
