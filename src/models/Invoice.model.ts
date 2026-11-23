@@ -18,21 +18,13 @@ import { InvoiceStatus } from "../types/enums";
 import { logger } from "../observability/logger";
 import { AppError } from "../utils/http-error";
 import { isPastDueDate } from "../utils/date.utils";
+import {
+  VALID_INVOICE_TRANSITIONS,
+  isValidInvoiceTransition,
+  TERMINAL_INVOICE_STATUSES,
+} from "../lib/invoice-transitions";
 
-/**
- * Frozen state transition map optimized for performance.
- * Prevents accidental mutations and enables faster lookups.
- */
-export const VALID_INVOICE_TRANSITIONS: Record<InvoiceStatus, readonly InvoiceStatus[]> = Object.freeze({
-  [InvoiceStatus.DRAFT]: Object.freeze([InvoiceStatus.PUBLISHED, InvoiceStatus.CANCELLED, InvoiceStatus.REJECTED]),
-  [InvoiceStatus.PENDING]: Object.freeze([InvoiceStatus.PUBLISHED, InvoiceStatus.CANCELLED, InvoiceStatus.REJECTED]),
-  [InvoiceStatus.PUBLISHED]: Object.freeze([InvoiceStatus.FUNDED, InvoiceStatus.CANCELLED, InvoiceStatus.FAILED]),
-  [InvoiceStatus.FUNDED]: Object.freeze([InvoiceStatus.SETTLED, InvoiceStatus.CANCELLED]),
-  [InvoiceStatus.SETTLED]: Object.freeze([InvoiceStatus.CANCELLED]),
-  [InvoiceStatus.CANCELLED]: Object.freeze([]),
-  [InvoiceStatus.REJECTED]: Object.freeze([]),
-  [InvoiceStatus.FAILED]: Object.freeze([]),
-});
+export { VALID_INVOICE_TRANSITIONS, TERMINAL_INVOICE_STATUSES };
 
 /**
  * Validation constraints for invoice fields.
@@ -419,29 +411,11 @@ export class Invoice {
 
   /**
    * Checks if a transition from current status to target status is valid.
-   * Optimized with early exit and fallback safety.
+   * Delegates to the authoritative shared invoice transitions graph.
+   * Terminal statuses (SETTLED, CANCELLED, REJECTED, FAILED) have no valid transitions.
    */
   static isValidTransition(currentStatus: InvoiceStatus, targetStatus: InvoiceStatus): boolean {
-    try {
-      const current = currentStatus ?? InvoiceStatus.DRAFT;
-      const allowed = VALID_INVOICE_TRANSITIONS[current];
-
-      // Handle edge case where status key doesn't exist
-      if (!allowed) {
-        logger.warn("Unknown invoice status in transition check", { status: current });
-        return false;
-      }
-
-      return allowed.includes(targetStatus);
-    } catch (error) {
-      logger.error("Error checking invoice transition validity", {
-        error: error instanceof Error ? error.message : String(error),
-        currentStatus,
-        targetStatus,
-        context: "Invoice.isValidTransition",
-      });
-      return false;
-    }
+    return isValidInvoiceTransition(currentStatus, targetStatus);
   }
 
   /**

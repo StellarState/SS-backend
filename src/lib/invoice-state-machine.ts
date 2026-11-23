@@ -128,14 +128,19 @@ const TRANSITION_RULES: readonly TransitionRule[] = Object.freeze([
   { from: InvoiceStatus.FUNDED, to: InvoiceStatus.CANCELLED, roles: ["admin"] },
 ]);
 
-/** Statuses reachable from `from`, in declaration order. Empty for terminal states. */
-export function allowedTransitionsFrom(from: InvoiceStatus): InvoiceStatus[] {
-  return TRANSITION_RULES.filter((rule) => rule.from === from).map((rule) => rule.to);
-}
+import {
+  allowedTransitionsFrom,
+  isTerminalStatus,
+  isValidInvoiceTransition,
+  TERMINAL_INVOICE_STATUSES,
+} from "./invoice-transitions";
 
-export function isTerminalStatus(status: InvoiceStatus): boolean {
-  return allowedTransitionsFrom(status).length === 0;
-}
+export {
+  allowedTransitionsFrom,
+  isTerminalStatus,
+  isValidInvoiceTransition,
+  TERMINAL_INVOICE_STATUSES,
+};
 
 function findRule(from: InvoiceStatus, to: InvoiceStatus): TransitionRule | undefined {
   return TRANSITION_RULES.find((rule) => rule.from === from && rule.to === to);
