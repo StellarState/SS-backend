@@ -3,6 +3,8 @@ import { Invoice } from "../models/Invoice.model";
 import { InvoiceDocument, InvoiceDocumentType } from "../models/InvoiceDocument.model";
 import { InvoiceStatus, UserType } from "../types/enums";
 import { ServiceError } from "../utils/service-error";
+import { parseContentChecksum } from "../lib/document-checksum";
+import { InvoiceUploadSession } from "../models/InvoiceUploadSession.model";
 import { isValidCid } from "../utils/cid.utils";
 import type { TransitionEffect } from "../lib/invoice-state-machine";
 import { logger as defaultLogger, type AppLogger } from "../observability/logger";
@@ -41,6 +43,8 @@ export interface RegisterInvoiceDocumentInput {
   fileSizeBytes: unknown;
   filename?: unknown;
   mimeType?: unknown;
+  contentChecksum?: unknown;
+  uploadSessionId?: unknown;
 }
 
 export interface InvoiceDocumentView {
@@ -52,6 +56,10 @@ export interface InvoiceDocumentView {
   filename: string | null;
   mime_type: string | null;
   created_at: string;
+  content_checksum: string | null;
+  upload_session_id: string | null;
+  checksum_verified: boolean;
+  upload_complete: boolean;
 }
 
 function optionalString(value: unknown, field: string, maxLength: number): string | null {
@@ -80,6 +88,10 @@ export function toInvoiceDocumentView(doc: InvoiceDocument): InvoiceDocumentView
     filename: doc.filename,
     mime_type: doc.mimeType,
     created_at: new Date(doc.createdAt).toISOString(),
+    content_checksum: doc.contentChecksum ?? null,
+    upload_session_id: doc.uploadSessionId ?? null,
+    checksum_verified: doc.checksumVerified ?? false,
+    upload_complete: true,
   };
 }
 
@@ -128,45 +140,80 @@ export class InvoiceDocumentService {
     const filename = optionalString(input.filename, "filename", 255);
     const mimeType = optionalString(input.mimeType, "mime_type", 128);
 
-    const invoice = await this.findInvoice(input.invoiceId);
-    if (invoice.sellerId !== input.requester.id) {
+    const checksum = parseContentChecksum(input.contentChecksum);
+    const sessionId = input.uploadSessionId;
+    if (sessionId !== undefined && (typeof sessionId !== "string" || !UUID_PATTERN.test(sessionId)))
+      throw new ServiceError("invalid_upload_session", "upload_session_id must be a UUID", 400);
+    if (checksum && !sessionId)
       throw new ServiceError(
-        "unauthorized_invoice_access",
-        "Only the invoice owner can register documents.",
-        403
+        "upload_verification_required",
+        "Checksum registration requires a completed upload session",
+        400
       );
-    }
-    if (!REGISTRABLE_STATUSES.includes(invoice.status)) {
-      throw new ServiceError(
-        "invalid_invoice_status",
-        `Documents cannot be registered on an invoice in ${invoice.status} status.`,
-        409
-      );
-    }
-
-    const repository = this.dataSource.getRepository(InvoiceDocument);
-    try {
-      const saved = await repository.save(
-        repository.create({
-          invoiceId: invoice.id,
-          cid,
-          docType: documentType,
-          fileSize: size,
-          filename,
-          mimeType,
-        })
-      );
-      return toInvoiceDocumentView(saved);
-    } catch (error) {
-      if (error instanceof QueryFailedError && /unique|duplicate/i.test(error.message)) {
+    return this.dataSource.transaction(async (manager) => {
+      const invoice = await this.findInvoice(input.invoiceId, manager);
+      if (invoice.sellerId !== input.requester.id) {
         throw new ServiceError(
-          "document_already_registered",
-          "This CID is already registered on the invoice.",
+          "unauthorized_invoice_access",
+          "Only the invoice owner can register documents.",
+          403
+        );
+      }
+      if (!REGISTRABLE_STATUSES.includes(invoice.status)) {
+        throw new ServiceError(
+          "invalid_invoice_status",
+          `Documents cannot be registered on an invoice in ${invoice.status} status.`,
           409
         );
       }
-      throw error;
-    }
+
+      let verifiedChecksum: string | null = null;
+      if (sessionId) {
+        const session = await manager.findOneBy(InvoiceUploadSession, {
+          id: sessionId as string,
+          invoiceId: invoice.id,
+        });
+        if (
+          !session ||
+          session.state !== "complete" ||
+          session.cid !== cid ||
+          session.fileSizeBytes !== size ||
+          (checksum && session.contentChecksum !== checksum)
+        )
+          throw new ServiceError(
+            "upload_metadata_conflict",
+            "Document metadata must match its completed upload session",
+            409
+          );
+        verifiedChecksum = session.contentChecksum;
+      }
+      const repository = manager.getRepository(InvoiceDocument);
+      try {
+        const saved = await repository.save(
+          repository.create({
+            invoiceId: invoice.id,
+            cid,
+            docType: documentType,
+            fileSize: size,
+            filename,
+            mimeType,
+            contentChecksum: verifiedChecksum,
+            checksumVerified: Boolean(verifiedChecksum),
+            uploadSessionId: (sessionId as string | undefined) ?? null,
+          })
+        );
+        return toInvoiceDocumentView(saved);
+      } catch (error) {
+        if (error instanceof QueryFailedError && /unique|duplicate/i.test(error.message)) {
+          throw new ServiceError(
+            "document_already_registered",
+            "This CID is already registered on the invoice.",
+            409
+          );
+        }
+        throw error;
+      }
+    });
   }
 
   /** Active (non-deleted) documents, oldest first. */
@@ -218,12 +265,13 @@ export class InvoiceDocumentService {
     return softDeleteDocumentsOnWithdrawal;
   }
 
-  private async findInvoice(invoiceId: string): Promise<Invoice> {
+  private async findInvoice(invoiceId: string, manager?: EntityManager): Promise<Invoice> {
     if (!UUID_PATTERN.test(invoiceId)) throw this.invoiceNotFound();
     // Soft-deleted invoices are excluded by TypeORM, so they read as not found.
-    const invoice = await this.dataSource.getRepository(Invoice).findOne({
+    const invoice = await (manager ?? this.dataSource.manager).getRepository(Invoice).findOne({
       where: { id: invoiceId },
       select: { id: true, sellerId: true, status: true },
+      ...(manager ? { lock: { mode: "pessimistic_write" as const } } : {}),
     });
     if (!invoice) throw this.invoiceNotFound();
     return invoice;

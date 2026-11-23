@@ -23,6 +23,9 @@ export function createDocumentExportRouter({
   // GET /api/v1/invoices/:id/documents/export/:jobId - poll job status / get the signed download URL
   router.get("/:id/documents/export/:jobId", authMiddleware, controller.getExportStatus);
 
+  // DELETE /api/v1/invoices/:id/documents/export/:jobId - cancel a queued or running job (idempotent)
+  router.delete("/:id/documents/export/:jobId", authMiddleware, controller.cancelExport);
+
   // GET /api/v1/invoices/:id/documents/export/:jobId/download?token=... - stream the ZIP
   router.get("/:id/documents/export/:jobId/download", controller.downloadExport);
 

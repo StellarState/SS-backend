@@ -1,3 +1,5 @@
+import type { PayoutClaimsService } from "../services/payout-claims.service";
+import type { DividendReconciliationService } from "../services/dividend-reconciliation.service";
 import { Router, Response, NextFunction } from "express";
 import { DividendCycleService } from "../services/dividend-cycle.service";
 import type { DividendDistributionService } from "../services/dividend-distribution.service";
@@ -11,6 +13,8 @@ import { logger } from "../observability/logger";
 export interface DividendsRouterDependencies {
   dividendCycleService: DividendCycleService;
   authService: AuthService;
+  payoutClaimsService?: PayoutClaimsService;
+  dividendReconciliationService?: DividendReconciliationService;
   /** Issue #538 — holder claimable balance, claim history and summary. */
   dividendDistributionService?: DividendDistributionService;
 }
@@ -31,6 +35,8 @@ export function createDividendsRouter({
   dividendCycleService,
   authService,
   dividendDistributionService,
+  payoutClaimsService,
+  dividendReconciliationService,
 }: DividendsRouterDependencies): Router {
   const router = Router();
   const requireAuth = createAuthMiddleware(authService);
@@ -338,6 +344,86 @@ export function createDividendsRouter({
     }
     return dividendDistributionService;
   }
+
+  router.post("/claims", requireAuth, async (req: AuthenticatedRequest, res, next) => {
+    try {
+      if (!payoutClaimsService)
+        throw new AppError(503, "Claim service unavailable", "CLAIMS_UNAVAILABLE");
+      const { snapshotId, revision } = req.body ?? {};
+      if (
+        typeof snapshotId !== "string" ||
+        !/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(snapshotId) ||
+        typeof revision !== "number"
+      )
+        throw new AppError(400, "Snapshot ID and revision are required", "INVALID_CLAIM");
+      const claim = await payoutClaimsService.requestDividend(
+        req.user!.stellarAddress,
+        snapshotId,
+        revision
+      );
+      res.status(claim.status === "pending" ? 202 : 200).json({ success: true, data: claim });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post(
+    "/cycles/:snapshotId/lock",
+    requireAuth,
+    async (req: AuthenticatedRequest, res, next) => {
+      try {
+        if (!dividendReconciliationService)
+          throw new AppError(503, "Cycle service unavailable", "CYCLES_UNAVAILABLE");
+        await dividendReconciliationService.lockCycle(
+          String(req.params.snapshotId),
+          req.user!.stellarAddress
+        );
+        res.status(204).end();
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
+
+  router.post(
+    "/cycles/:snapshotId/reconcile",
+    requireAuth,
+    async (req: AuthenticatedRequest, res, next) => {
+      try {
+        if (!dividendReconciliationService)
+          throw new AppError(503, "Cycle service unavailable", "CYCLES_UNAVAILABLE");
+        const report = await dividendReconciliationService.reconcile(
+          String(req.params.snapshotId),
+          req.user!.stellarAddress
+        );
+        res.json({ success: true, data: report });
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
+
+  router.post(
+    "/claims/:key/transaction",
+    requireAuth,
+    async (req: AuthenticatedRequest, res, next) => {
+      try {
+        if (!payoutClaimsService)
+          throw new AppError(503, "Claim service unavailable", "CLAIMS_UNAVAILABLE");
+        const { txHash } = req.body ?? {};
+        if (typeof txHash !== "string")
+          throw new AppError(400, "Transaction hash is required", "INVALID_TRANSACTION");
+        const claim = await payoutClaimsService.bindTransaction(
+          String(req.params.key),
+          txHash,
+          req.user!.stellarAddress
+        );
+        res.json({ success: true, data: claim });
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
 
   return router;
 }

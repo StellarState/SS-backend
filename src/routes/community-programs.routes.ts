@@ -34,7 +34,14 @@ export function createCommunityProgramsRouter(dataSource: DataSource, authServic
   });
 
   router.post("/waitlist", async (req: Request, res: Response, next) => {
-    try { res.status(201).json({ success: true, data: await service.registerWaitlist(String(req.body?.wallet ?? ""), String(req.body?.email ?? ""), req.body?.referralCode) }); }
+    try {
+      const result = await service.registerWaitlist(
+        String(req.body?.wallet ?? ""),
+        String(req.body?.email ?? ""),
+        req.body?.referralCode,
+      );
+      res.status(result.created ? 201 : 200).json({ success: true, data: result });
+    }
     catch (error) { forward(next, error); }
   });
   router.get("/waitlist/:wallet", async (req: Request<{ wallet: string }>, res: Response, next) => {
@@ -47,7 +54,13 @@ export function createCommunityProgramsRouter(dataSource: DataSource, authServic
     } catch (error) { forward(next, error); }
   });
   router.post("/waitlist/referral", async (req: Request, res: Response, next) => {
-    try { const result = await dataSource.getRepository(WaitlistEntry).increment({ referralCode: String(req.body?.referralCode ?? "") }, "referralCount", 1); res.json({ success: true, data: { recorded: Boolean(result.affected) } }); }
+    try {
+      const result = await service.recordWaitlistReferral(
+        String(req.body?.referralCode ?? ""),
+        String(req.body?.signupWallet ?? ""),
+      );
+      res.json({ success: true, data: result });
+    }
     catch (error) { forward(next, error); }
   });
 

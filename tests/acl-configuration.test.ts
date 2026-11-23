@@ -100,6 +100,27 @@ function fakeAclRepository(
 }
 
 describe("Issue #543: ACL configuration for whitelisted contract integrations", () => {
+  it("rejects unknown deserialized actions instead of granting access", async () => {
+    const state: FakeAclState = { current: [], log: [] };
+    const repository = fakeAclRepository(state);
+    const service = createAclService({ aclRepository: repository });
+    await expect(
+      service.handle(
+        makeEvent({
+          topic: "acl_updated",
+          contractId: "CACLMGR",
+          topics: ["acl_updated", "TARGET"],
+          data: {
+            action: "unknown_add",
+            contract_address: "TARGET",
+            permitted_functions: ["settle"],
+          },
+        })
+      )
+    ).rejects.toMatchObject({ code: "INVALID_ENUM_VALUE" });
+    expect(repository.updates).toBe(0);
+  });
+
   it("syncs the whitelist from ACLUpdated events and exposes permitted functions", async () => {
     const state: FakeAclState = { current: [], log: [] };
     const service = createAclService({ aclRepository: fakeAclRepository(state) });

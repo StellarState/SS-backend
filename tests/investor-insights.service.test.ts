@@ -118,6 +118,13 @@ describe("InvestorInsightsService", () => {
       watchlist_change: true,
       auto_invest: true,
       maturity: false,
+      channels: {
+        settlement: ["in_app"],
+        kyc_expiry: ["in_app"],
+        watchlist_change: ["in_app"],
+        auto_invest: ["in_app"],
+        maturity: ["in_app"],
+      },
     });
   });
 

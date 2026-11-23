@@ -96,6 +96,7 @@ function fakeDataSource(store: Store) {
   const dataSource = {
     getRepository,
     manager: { getRepository },
+    transaction: async (fn: (manager: unknown) => unknown) => fn({ getRepository }),
   } as unknown as DataSource;
   return { dataSource, documentRepo };
 }
@@ -356,31 +357,17 @@ describe("document soft delete on invoice withdrawal (issue #781)", () => {
     expect(await service.listDocuments(INVOICE_ID, { id: OWNER_ID })).toEqual([]);
   });
 
-  it("soft-deletes documents in the same transaction when a draft invoice is deleted", async () => {
-    const softDelete = jest.fn().mockResolvedValue({ affected: 2 });
-    const save = jest.fn().mockResolvedValue(undefined);
-    const manager = { save, getRepository: jest.fn(() => ({ softDelete })) };
-    const dataSource = { transaction: jest.fn(async (fn: (m: unknown) => unknown) => fn(manager)) };
-    const invoice = {
-      id: INVOICE_ID,
-      sellerId: OWNER_ID,
-      status: InvoiceStatus.DRAFT,
-      deletedAt: null,
-    } as unknown as Invoice;
-    const service = new InvoiceService({
-      invoiceRepository: { findOne: jest.fn().mockResolvedValue(invoice) } as never,
-      ipfsService: {} as never,
-      dataSource: dataSource as never,
-    });
-
-    await service.deleteInvoice(INVOICE_ID, OWNER_ID);
-
-    expect(dataSource.transaction).toHaveBeenCalledTimes(1);
-    expect(save).toHaveBeenCalledWith(
-      Invoice,
-      expect.objectContaining({ deletedAt: expect.any(Date) })
-    );
-    expect(manager.getRepository).toHaveBeenCalledWith(InvoiceDocument);
-    expect(softDelete).toHaveBeenCalledWith({ invoiceId: INVOICE_ID });
+  it("rejects draft deletion with document linkage instead of removing documents", async () => {
+    const save = jest.fn();
+    const invoice = { id: INVOICE_ID, sellerId: OWNER_ID, status: InvoiceStatus.DRAFT } as Invoice;
+    const manager = {
+      findOne: jest.fn().mockResolvedValue(invoice),
+      save,
+      getRepository: jest.fn((entity) => ({ count: async () => entity === InvoiceDocument ? 2 : 0 })),
+      connection: { getMetadata: () => ({ tableName: "invoice_documents" }) },
+    };
+    const service = new InvoiceService({ invoiceRepository: {} as never, ipfsService: {} as never, dataSource: { transaction: async (fn: (m: unknown) => unknown) => fn(manager) } as never });
+    await expect(service.deleteInvoice(INVOICE_ID, OWNER_ID)).rejects.toMatchObject({ code: "invoice_has_dependents", statusCode: 409 });
+    expect(save).not.toHaveBeenCalled();
   });
 });

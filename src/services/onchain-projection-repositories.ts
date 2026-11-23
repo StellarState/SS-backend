@@ -1,4 +1,12 @@
-import type { DataSource, Repository } from "typeorm";
+import Decimal from "decimal.js";
+import { createHash } from "node:crypto";
+import { DividendReconciliationService } from "./dividend-reconciliation.service";
+import { recordDividendCallback, recordRoyaltyCallback } from "./payout-callbacks.service";
+import { assertRevision, lockPayoutScope } from "./payout-claims.service";
+import { PayoutAttempt } from "../models/PayoutAttempt.model";
+import { AppError } from "../utils/http-error";
+import { In, IsNull, type DataSource, type Repository } from "typeorm";
+import { DividendSnapshot } from "../models/DividendSnapshot.model";
 
 import { AtomicSwap } from "../models/AtomicSwap.model";
 import { ContractAcl, type AclStatus } from "../models/ContractAcl.model";
@@ -9,7 +17,6 @@ import { KeyMergeProposal } from "../models/KeyMergeProposal.model";
 import { KeyMergeVote } from "../models/KeyMergeVote.model";
 import { DividendAllocation } from "../models/DividendAllocation.model";
 import { DividendClaim } from "../models/DividendClaim.model";
-import { DividendDistribution } from "../models/DividendDistribution.model";
 import { RoyaltyClaim } from "../models/RoyaltyClaim.model";
 import { RoyaltyEvent } from "../models/RoyaltyEvent.model";
 import type { AclRepositoryContract, AclUpdateInput } from "./acl.service";
@@ -272,85 +279,63 @@ export function createRoyaltyEarningsRepository(
       return qb.getMany();
     },
     async recordRoyaltyPaid(input) {
-      // Replaying the same ledger event must not double-count earnings, so the
-      // on-chain identity (tx hash plus ledger) is the idempotency key.
-      const existing = await events().findOne({
-        where: { txHash: input.txHash ?? "", ledgerSequence: input.ledgerSequence ?? "" },
+      assertRevision(input.revision ?? 1);
+      const gross = new Decimal(input.gross ?? input.amount);
+      const fee = new Decimal(input.platformFee ?? 0);
+      if (!gross.isFinite() || !fee.isFinite() || gross.lt(0) || fee.lt(0) || !gross.minus(fee).eq(input.amount) ||
+          (input.cycleAt && Number.isNaN(input.cycleAt.getTime()))) throw new AppError(400, "Invalid royalty values", "INVALID_AMOUNT");
+      const eventId = input.eventId ?? createHash("sha256").update(JSON.stringify([input.txHash, input.ledgerSequence, input.keyAddress, input.creatorWallet])).digest("hex");
+      await dataSource.transaction(async (m) => {
+        await lockPayoutScope(m, `royalty:${input.creatorWallet}:${input.cycleId ?? null}`);
+        if (await m.findOneBy(RoyaltyEvent, { eventId })) return;
+        if (input.txHash) {
+          const legacy = await m.findOneBy(RoyaltyEvent, { eventId: IsNull(), txHash: input.txHash,
+            ledgerSequence: input.ledgerSequence ?? IsNull(), keyAddress: input.keyAddress, creatorWallet: input.creatorWallet });
+          if (legacy && new Decimal(legacy.amount).eq(input.amount)) {
+            await m.update(RoyaltyEvent, { id: legacy.id }, { eventId, cycleId: input.cycleId, cycleAt: input.cycleAt ?? input.paidAt,
+              revision: input.revision ?? 1, gross: gross.toFixed(4), platformFee: fee.toFixed(4) });
+            return;
+          }
+        }
+        if (input.cycleId && await m.findOneBy(PayoutAttempt, { kind: "royalty", wallet: input.creatorWallet, cycleId: input.cycleId, revision: input.revision ?? 1 })) {
+          throw new AppError(409, "Reserved royalty cycle values are immutable", "SNAPSHOT_CONFLICT");
+        }
+        await m.createQueryBuilder().insert().into(RoyaltyEvent).values({
+          ...input, eventId, gross: gross.toFixed(4), platformFee: fee.toFixed(4),
+          cycleAt: input.cycleAt ?? input.paidAt,
+        }).orIgnore().execute();
       });
-      if (existing) return;
-
-      await events().save(
-        events().create({
-          keyAddress: input.keyAddress,
-          creatorWallet: input.creatorWallet,
-          buyerWallet: input.buyerWallet,
-          amount: input.amount,
-          txHash: input.txHash,
-          ledgerSequence: input.ledgerSequence,
-          paidAt: input.paidAt,
-        })
-      );
     },
     async recordRoyaltyClaim(input) {
-      const existing = await claims().findOne({ where: { claimId: input.claimId } });
-      if (existing) return;
-
-      await claims().save(claims().create({ ...input }));
+      await recordRoyaltyCallback(dataSource, input);
     },
   };
 }
 
 export function createDividendRepository(dataSource: DataSource): DividendRepositoryContract {
-  const distributions = (): Repository<DividendDistribution> =>
-    dataSource.getRepository(DividendDistribution);
   const allocations = (): Repository<DividendAllocation> =>
     dataSource.getRepository(DividendAllocation);
   const claims = (): Repository<DividendClaim> => dataSource.getRepository(DividendClaim);
 
   return {
+    async recordSnapshot(input, inputs) {
+      await new DividendReconciliationService(dataSource).recordSnapshot(input, inputs);
+    },
     async recordDistribution(input) {
-      // `dividend_distributions` has no ledger column, so the cycle is keyed on
-      // the transaction that created it plus the issuer, which is enough to stop
-      // a replayed `DividendDistributed` event opening a second cycle.
-      const existing = await distributions().findOne({
-        where: {
-          txHash: input.txHash ?? "",
-          issuerWallet: input.issuerWallet,
-          distributedAt: input.distributedAt,
-        },
-      });
-      if (existing) return;
-
-      await distributions().save(
-        distributions().create({
-          issuerWallet: input.issuerWallet,
-          totalAmount: input.totalAmount,
-          recipientCount: input.recipientCount,
-          cycleFrequency: input.cycleFrequency,
-          txHash: input.txHash,
-          distributedAt: input.distributedAt,
-        })
-      );
+      await new DividendReconciliationService(dataSource).recordSnapshot(input, []);
     },
     async recordAllocations(inputs) {
-      const repo = allocations();
-      for (const input of inputs) {
-        const existing = await repo.findOne({ where: { allocationId: input.allocationId } });
-        if (existing) continue;
-        await repo.save(repo.create({ ...input }));
-      }
+      if (inputs.length) await allocations().createQueryBuilder().insert().values(inputs).orIgnore().execute();
     },
     async recordClaim(input) {
-      const repo = claims();
-      const existing = await repo.findOne({ where: { claimId: input.claimId } });
-      if (existing) return;
-      await repo.save(repo.create({ ...input }));
+      await recordDividendCallback(dataSource, input);
     },
     async allocationsByWallet(wallet) {
-      return allocations().find({
-        where: { recipientWallet: wallet },
-        order: { distributedAt: "DESC", id: "DESC" },
-      });
+      const rows = await allocations().find({ where: { recipientWallet: wallet }, order: { distributedAt: "DESC", id: "DESC" } });
+      const ids = rows.flatMap((r) => r.snapshotId ? [r.snapshotId] : []);
+      const snapshots = ids.length ? await dataSource.getRepository(DividendSnapshot).findBy({ id: In(ids) }) : [];
+      return rows.filter((r) => !r.snapshotId || snapshots.find((s) => s.id === r.snapshotId)?.isCurrent)
+        .map((r) => Object.assign(r, { cycleLocked: snapshots.find((s) => s.id === r.snapshotId)?.locked ?? false }));
     },
     async claimsByWallet(wallet) {
       return claims().find({

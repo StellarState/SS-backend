@@ -114,6 +114,21 @@ class InMemoryUserRepository implements UserRepositoryContract {
 class InMemoryChallengeRepository implements ChallengeRepositoryContract {
   readonly challenges = new Map<string, InMemoryChallenge>();
 
+  async supersedeActive(stellarAddress: string, at: Date): Promise<number> {
+    let count = 0;
+    for (const challenge of this.challenges.values()) {
+      if (
+        challenge.stellarAddress === stellarAddress &&
+        !challenge.consumedAt &&
+        challenge.expiresAt > at
+      ) {
+        challenge.consumedAt = at;
+        count++;
+      }
+    }
+    return count;
+  }
+
   async create(input: InMemoryChallenge) {
     const challenge: InMemoryChallenge = {
       id: crypto.randomUUID(),

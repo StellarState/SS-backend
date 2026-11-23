@@ -4,6 +4,8 @@ import type { InvoiceCacheService } from "../services/invoice-cache.service";
 import { HttpError, PublicAppError } from "../utils/http-error";
 import { ServiceError } from "../utils/service-error";
 import { AuthenticatedRequest } from "../types/auth";
+import { invoiceCacheContext } from "../lib/cache-key";
+import { requireEnumValue } from "../utils/enum-validation";
 import { InvoiceStatus } from "@/types/enums";
 import { calculateInvoiceTerms } from "../utils/discount-calculator.utils";
 
@@ -122,7 +124,10 @@ export function createInvoiceController(
         });
 
         if (cacheService) {
-          await cacheService.invalidateSellerInvoices(req.user.id);
+          await cacheService.invalidateSellerInvoices(
+            req.user.id,
+            invoiceCacheContext(req, req.user.id)
+          );
         }
 
         res.status(201).json({
@@ -155,17 +160,26 @@ export function createInvoiceController(
         const limit = Number(req.query.limit) || 20;
         const rawStatus = req.query.status;
         const status = rawStatus
-          ? (String(rawStatus).trim().toLowerCase() as InvoiceStatus)
+          ? requireEnumValue(
+              String(rawStatus).trim().toLowerCase(),
+              Object.values(InvoiceStatus),
+              "status"
+            )
           : undefined;
 
         // Validate limit
         if (limit < 1 || limit > 100) {
-          throw new HttpError(400, "Invalid pagination parameters: limit must be between 1 and 100");
+          throw new HttpError(
+            400,
+            "Invalid pagination parameters: limit must be between 1 and 100"
+          );
         }
 
         if (isCursorRequest) {
           const cursor =
-            req.query.cursor === "" || req.query.cursor === "null" || req.query.cursor === "undefined"
+            req.query.cursor === "" ||
+            req.query.cursor === "null" ||
+            req.query.cursor === "undefined"
               ? null
               : req.query.cursor;
 
@@ -202,59 +216,34 @@ export function createInvoiceController(
           throw new HttpError(400, "Invalid pagination parameters: page must be at least 1");
         }
 
+        const load = async () => {
+          const result = await invoiceService.getInvoicesBySellerId({
+            sellerId: req.user!.id,
+            status,
+            skip: (page - 1) * limit,
+            take: limit,
+          });
+          return {
+            success: true,
+            data: result.invoices,
+            meta: { total: result.total, page, limit, totalPages: Math.ceil(result.total / limit) },
+          };
+        };
         if (cacheService) {
-          try {
-            const cached = await cacheService.getInvoicesList(
-              req.user.id,
-              page,
-              limit,
-              status as string | undefined
-            );
-            if (cached) {
-              res.setHeader("X-Cache", "HIT");
-              res.status(200).json(JSON.parse(cached));
-              return;
-            }
-          } catch {
-            // Graceful fallback to database
-          }
-        }
-
-        res.setHeader("X-Cache", "MISS");
-
-        const result = await invoiceService.getInvoicesBySellerId({
-          sellerId: req.user.id,
-          status: status as InvoiceStatus | undefined,
-          skip: (page - 1) * limit,
-          take: limit,
-        });
-
-        const responsePayload = {
-          success: true,
-          data: result.invoices,
-          meta: {
-            total: result.total,
+          const cached = await cacheService.getOrLoadInvoicesList(
+            req.user.id,
             page,
             limit,
-            totalPages: Math.ceil(result.total / limit),
-          },
-        };
-
-        if (cacheService) {
-          try {
-            await cacheService.setInvoicesList(
-              req.user.id,
-              page,
-              limit,
-              status as string | undefined,
-              responsePayload
-            );
-          } catch {
-            // Non-blocking cache error
-          }
+            status,
+            load,
+            invoiceCacheContext(req, req.user.id)
+          );
+          res.setHeader("X-Cache", cached.state);
+          res.status(200).json(JSON.parse(cached.value));
+        } else {
+          res.setHeader("X-Cache", "MISS");
+          res.status(200).json(await load());
         }
-
-        res.status(200).json(responsePayload);
       } catch (error) {
         if (error instanceof ServiceError) {
           next(new HttpError(error.statusCode, error.message));
@@ -278,42 +267,25 @@ export function createInvoiceController(
 
         const { id } = req.params;
 
-        if (cacheService) {
-          try {
-            const cached = await cacheService.getInvoiceDetail(authReq.user.id, id);
-            if (cached) {
-              res.setHeader("X-Cache", "HIT");
-              res.status(200).json(JSON.parse(cached));
-              return;
-            }
-          } catch {
-            // Graceful fallback to database
-          }
-        }
-
-        res.setHeader("X-Cache", "MISS");
-
+        const load = async () => {
+          const result = await invoiceService.getInvoiceById(id, authReq.user!.id);
+          if (!result) throw new HttpError(404, "Invoice not found");
+          return { success: true, data: result };
+        };
         try {
-          const result = await invoiceService.getInvoiceById(id, authReq.user.id);
-
-          if (!result) {
-            throw new HttpError(404, "Invoice not found");
-          }
-
-          const responsePayload = {
-            success: true,
-            data: result,
-          };
-
           if (cacheService) {
-            try {
-              await cacheService.setInvoiceDetail(authReq.user.id, id, responsePayload);
-            } catch {
-              // Non-blocking cache error
-            }
+            const cached = await cacheService.getOrLoadInvoiceDetail(
+              authReq.user.id,
+              id,
+              load,
+              invoiceCacheContext(req, authReq.user.id)
+            );
+            res.setHeader("X-Cache", cached.state);
+            res.status(200).json(JSON.parse(cached.value));
+          } else {
+            res.setHeader("X-Cache", "MISS");
+            res.status(200).json(await load());
           }
-
-          res.status(200).json(responsePayload);
         } catch (error) {
           if (error instanceof ServiceError && error.statusCode === 403) {
             // Return 404 instead of 403 to prevent info leakage
@@ -358,7 +330,11 @@ export function createInvoiceController(
         });
 
         if (cacheService) {
-          await cacheService.invalidateInvoice(id, req.user.id);
+          await cacheService.invalidateInvoice(
+            id,
+            req.user.id,
+            invoiceCacheContext(req, req.user.id)
+          );
         }
 
         res.status(200).json({
@@ -396,7 +372,11 @@ export function createInvoiceController(
         await invoiceService.deleteInvoice(id, authReq.user.id);
 
         if (cacheService) {
-          await cacheService.invalidateInvoice(id, authReq.user.id);
+          await cacheService.invalidateInvoice(
+            id,
+            authReq.user.id,
+            invoiceCacheContext(req, authReq.user.id)
+          );
         }
 
         res.status(204).send();
@@ -407,7 +387,7 @@ export function createInvoiceController(
             next(new HttpError(404, "Invoice not found"));
             return;
           }
-          next(new HttpError(error.statusCode, error.message));
+          next(new PublicAppError(error.statusCode, error.message, error.code, error.details));
           return;
         }
 
@@ -431,7 +411,11 @@ export function createInvoiceController(
         });
 
         if (cacheService) {
-          await cacheService.invalidateInvoice(req.params.id, req.user.id);
+          await cacheService.invalidateInvoice(
+            req.params.id,
+            req.user.id,
+            invoiceCacheContext(req, req.user.id)
+          );
         }
 
         res.status(200).json({ success: true, data: result });
@@ -484,7 +468,11 @@ export function createInvoiceController(
         });
 
         if (cacheService) {
-          await cacheService.invalidateInvoice(id, req.user.id);
+          await cacheService.invalidateInvoice(
+            id,
+            req.user.id,
+            invoiceCacheContext(req, req.user.id)
+          );
         }
 
         res.status(200).json({
@@ -527,7 +515,10 @@ export function createInvoiceController(
         });
 
         if (cacheService) {
-          await cacheService.invalidateSellerInvoices(req.user.id);
+          await cacheService.invalidateSellerInvoices(
+            req.user.id,
+            invoiceCacheContext(req, req.user.id)
+          );
         }
 
         res.status(200).json({
@@ -570,10 +561,15 @@ export function createInvoiceController(
           fileBuffer: req.file.buffer,
           filename: req.file.originalname,
           mimeType: req.file.mimetype,
+          contentChecksum: req.body?.content_checksum,
         });
 
         if (cacheService) {
-          await cacheService.invalidateInvoice(invoiceId, sellerId);
+          await cacheService.invalidateInvoice(
+            invoiceId,
+            sellerId,
+            invoiceCacheContext(req, sellerId)
+          );
         }
 
         res.status(200).json({
@@ -582,7 +578,7 @@ export function createInvoiceController(
         });
       } catch (error) {
         if (error instanceof ServiceError) {
-          next(new HttpError(error.statusCode, error.message));
+          next(new PublicAppError(error.statusCode, error.message, error.code, error.details));
           return;
         }
 
@@ -590,29 +586,33 @@ export function createInvoiceController(
       }
     },
 
-    async getDocument(req: Request & { params: { id: string } }, res: Response, next: NextFunction): Promise<void> {
+    async getDocument(
+      req: Request & { params: { id: string } },
+      res: Response,
+      next: NextFunction
+    ): Promise<void> {
       try {
         const authReq = req as AuthenticatedRequest;
-        
+
         const { id: invoiceId } = req.params;
-        
+
         const result = await invoiceService.getDocumentUrl({
-           invoiceId,
-           requesterId: authReq.user?.id,
-           requesterType: authReq.user?.userType,
-           isAdmin: !authReq.user // if there's no user but it passed routing, it's admin route
+          invoiceId,
+          requesterId: authReq.user?.id,
+          requesterType: authReq.user?.userType,
+          isAdmin: !authReq.user, // if there's no user but it passed routing, it's admin route
         });
 
         res.status(200).json({
           success: true,
           data: {
-             url: result
-          }
+            url: result,
+          },
         });
       } catch (error) {
         if (error instanceof ServiceError) {
-           next(new HttpError(error.statusCode, error.message));
-           return;
+          next(new HttpError(error.statusCode, error.message));
+          return;
         }
         next(error);
       }
@@ -638,23 +638,23 @@ export function createInvoiceController(
           data: result,
         });
       } catch (error) {
-          if (error instanceof ServiceError) {
-            next(
-              new PublicAppError(
-                error.statusCode,
-                error.message,
-                error.code.toUpperCase(),
-                error.details
-              )
-            );
-            return;
-          }
-
-          next(error);
+        if (error instanceof ServiceError) {
+          next(
+            new PublicAppError(
+              error.statusCode,
+              error.message,
+              error.code.toUpperCase(),
+              error.details
+            )
+          );
+          return;
         }
-      },
 
-      async getInvoiceEscrowStatus(
+        next(error);
+      }
+    },
+
+    async getInvoiceEscrowStatus(
       req: Request & { params: { id: string } },
       res: Response,
       next: NextFunction

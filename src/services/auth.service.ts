@@ -11,6 +11,14 @@ import { buildAuthFailureDetails, classifyJwtError } from "../lib/auth-failure";
 import type { AppLogger } from "../observability/logger";
 import { buildWalletChallenge } from "../utils/stellar-challenge";
 import { MetricsRegistry } from "../observability/metrics";
+import {
+  singleKeyRing,
+  signWithKeyRing,
+  verifyWithKeyRing,
+  type JwtKeyRing,
+} from "../lib/jwt-keyring";
+import { TypeOrmWalletSessionStore, WalletSessionService } from "./wallet-session.service";
+import { WalletSession } from "../models/WalletSession.model";
 
 interface ChallengeRecord {
   id: string;
@@ -55,6 +63,7 @@ export interface ChallengeRepositoryContract {
   consume(id: string, consumedAt: Date): Promise<boolean>;
   deleteExpired(before: Date): Promise<number>;
   countByStatus(status: "active" | "consumed" | "expired"): Promise<number>;
+  supersedeActive(stellarAddress: string, at: Date): Promise<number>;
 }
 
 interface AuthTokenPayload extends JwtPayload {
@@ -63,7 +72,7 @@ interface AuthTokenPayload extends JwtPayload {
 }
 
 export interface AuthConfig extends Pick<AppConfig, "auth" | "stellar"> {
-  jwt: AppConfig["jwt"] & { publicKey?: string };
+  jwt: AppConfig["jwt"] & { publicKey?: string; keyRing?: JwtKeyRing };
   serverKeypair?: Keypair;
   serverPublicKey?: string;
   /**
@@ -89,6 +98,8 @@ export interface AuthServiceDependencies {
    */
   now?: () => number;
   metrics?: MetricsRegistry;
+  /** Records a session per issued token so it can be listed and revoked. */
+  walletSessions?: WalletSessionService;
 }
 
 export interface ChallengeResponse {
@@ -108,6 +119,7 @@ export interface VerifyChallengeInput {
   challenge?: string;
   signature: string;
   ipAddress?: string;
+  userAgent?: string;
 }
 
 export interface VerifyChallengeResponse {
@@ -219,6 +231,8 @@ export class AuthService {
   private readonly serverKeypair?: Keypair;
   private readonly now: () => number;
   private readonly metrics?: MetricsRegistry;
+  private readonly keyRing: JwtKeyRing;
+  private readonly walletSessions?: WalletSessionService;
 
   /**
    * In-process single-flight cache for user upserts keyed by Stellar address.
@@ -260,6 +274,8 @@ export class AuthService {
     this.logger = dependencies.logger;
     this.serverKeypair = dependencies.config.serverKeypair;
     this.now = dependencies.now ?? (() => Date.now());
+    this.keyRing = dependencies.config.jwt.keyRing ?? singleKeyRing(dependencies.config.jwt.secret);
+    this.walletSessions = dependencies.walletSessions;
     this.metrics = dependencies.metrics;
 
     const userCacheTtl = dependencies.config.userCacheTtlMs ?? 0;
@@ -322,6 +338,7 @@ export class AuthService {
       });
 
       try {
+        await this.challengeRepository.supersedeActive(sanitizedKey, issuedAt);
         await this.challengeRepository.create({
           stellarAddress: sanitizedKey,
           nonceHash: hashNonce(nonce),
@@ -466,8 +483,18 @@ export class AuthService {
       const publicUser = toPublicUser(user);
       this.userCache.set(sanitizedKey, publicUser);
 
-      const token = this.signToken(publicUser);
+      const sessionId = crypto.randomUUID();
+      const token = this.signToken(publicUser, sessionId);
       const decoded = jwt.decode(token) as { iat?: number; exp?: number } | null;
+      if (this.walletSessions && decoded?.exp) {
+        await this.walletSessions.open({
+          id: sessionId,
+          wallet: publicUser.stellarAddress,
+          userAgent: input.userAgent,
+          ipAddress: input.ipAddress,
+          expiresAt: new Date(decoded.exp * 1000),
+        });
+      }
       this.logger?.info("jwt.issued", {
         wallet: publicUser.stellarAddress,
         issued_at: decoded?.iat
@@ -588,8 +615,7 @@ export class AuthService {
 
       let payload: AuthTokenPayload;
       try {
-        const verifyKey = this.config.jwt.publicKey ?? this.config.jwt.secret;
-        payload = jwt.verify(sanitizedToken, verifyKey) as AuthTokenPayload;
+        payload = this.verifyAccessToken(sanitizedToken);
       } catch (error) {
         throw new HttpError(
           401,
@@ -605,6 +631,10 @@ export class AuthService {
           "Invalid or expired token.",
           buildAuthFailureDetails(sanitizedToken, "invalid_token")
         );
+      }
+
+      if (typeof payload.jti === "string" && this.walletSessions) {
+        await this.walletSessions.assertActive(payload.jti, sub);
       }
 
       // Check LRU cache first for instant resolution under heavy traffic
@@ -741,28 +771,39 @@ export class AuthService {
     return promise;
   }
 
-  private signToken(user: PublicUser): string {
-    const isAsymmetric =
-      typeof this.config.jwt.secret === "string" && this.config.jwt.secret.includes("BEGIN");
+  private get isAsymmetric(): boolean {
+    return typeof this.config.jwt.secret === "string" && this.config.jwt.secret.includes("BEGIN");
+  }
 
-    const signOptions: SignOptions = {
-      expiresIn: this.config.jwt.expiresIn as SignOptions["expiresIn"],
-      ...(isAsymmetric ? { algorithm: "RS256" as const } : {}),
-    };
+  private signAccessToken(claims: JwtPayload, options: Pick<SignOptions, "subject"> = {}): string {
+    const expiresIn = this.config.jwt.expiresIn as SignOptions["expiresIn"];
+    if (this.isAsymmetric) {
+      return jwt.sign(claims, this.config.jwt.secret, { ...options, expiresIn, algorithm: "RS256" });
+    }
+    return signWithKeyRing(claims, this.keyRing, { ...options, expiresIn });
+  }
 
-    return jwt.sign(
-      {
-        sub: user.stellarAddress,
-        stellarAddress: user.stellarAddress,
-        wallet: user.stellarAddress,
-        walletAddress: user.stellarAddress,
-        role: user.userType,
-        userType: user.userType,
-        userId: user.id,
-      },
-      this.config.jwt.secret,
-      signOptions
-    );
+  private verifyAccessToken(token: string): AuthTokenPayload {
+    if (this.config.jwt.publicKey) {
+      return jwt.verify(token, this.config.jwt.publicKey) as AuthTokenPayload;
+    }
+    if (this.isAsymmetric) {
+      return jwt.verify(token, this.config.jwt.secret) as AuthTokenPayload;
+    }
+    return verifyWithKeyRing(token, this.keyRing) as AuthTokenPayload;
+  }
+
+  private signToken(user: PublicUser, sessionId: string): string {
+    return this.signAccessToken({
+      sub: user.stellarAddress,
+      jti: sessionId,
+      stellarAddress: user.stellarAddress,
+      wallet: user.stellarAddress,
+      walletAddress: user.stellarAddress,
+      role: user.userType,
+      userType: user.userType,
+      userId: user.id,
+    });
   }
 
   generateToken(user: { id: string; stellarAddress: string }): string & { token: string } {
@@ -774,28 +815,30 @@ export class AuthService {
     const userId =
       typeof user.id === "string" && user.id.trim() ? user.id.trim() : sanitizedAddress;
 
-    const isAsymmetric =
-      typeof this.config.jwt.secret === "string" && this.config.jwt.secret.includes("BEGIN");
-
-    const signOptions: SignOptions = {
-      expiresIn: this.config.jwt.expiresIn as SignOptions["expiresIn"],
-      ...(isAsymmetric ? { algorithm: "RS256" as const } : {}),
-    };
-
-    const rawToken = jwt.sign(
+    const rawToken = this.signAccessToken(
       {
         stellarAddress: sanitizedAddress,
         walletAddress: sanitizedAddress,
         userId,
       },
-      this.config.jwt.secret,
-      {
-        ...signOptions,
-        subject: sanitizedAddress,
-      }
+      { subject: sanitizedAddress }
     );
     const tokenObj = Object.assign(new String(rawToken), { token: rawToken });
     return tokenObj as unknown as string & { token: string };
+  }
+
+  async listSessions(wallet: string, currentSessionId?: string) {
+    if (!this.walletSessions) {
+      throw new HttpError(503, "Session management is not available.");
+    }
+    return this.walletSessions.list(wallet, currentSessionId);
+  }
+
+  async revokeSession(wallet: string, sessionId: string): Promise<boolean> {
+    if (!this.walletSessions) {
+      throw new HttpError(503, "Session management is not available.");
+    }
+    return this.walletSessions.revoke(wallet, sessionId);
   }
 
   getServerPublicKey(): string | undefined {
@@ -812,8 +855,10 @@ export class AuthService {
     if (typeof token !== "string" || !token.trim()) {
       throw new HttpError(401, "Token is required.");
     }
-    const verifyKey = key ?? this.config.jwt.publicKey ?? this.config.jwt.secret;
-    return jwt.verify(token.trim(), verifyKey) as AuthTokenPayload;
+    if (key) {
+      return jwt.verify(token.trim(), key) as AuthTokenPayload;
+    }
+    return this.verifyAccessToken(token.trim());
   }
 }
 
@@ -945,6 +990,20 @@ class TypeOrmChallengeRepository implements ChallengeRepositoryContract {
     }
     return qb.getCount();
   }
+
+  async supersedeActive(stellarAddress: string, at: Date): Promise<number> {
+    const result = await this.repository.update(
+      {
+        stellarAddress,
+        consumedAt: IsNull(),
+      },
+      {
+        consumedAt: at,
+      },
+    );
+
+    return result.affected ?? 0;
+  }
 }
 
 export function createAuthService(
@@ -960,6 +1019,9 @@ export function createAuthService(
     config,
     logger,
     metrics,
+    walletSessions: new WalletSessionService(
+      new TypeOrmWalletSessionStore(dataSource.getRepository(WalletSession))
+    ),
   });
 }
 

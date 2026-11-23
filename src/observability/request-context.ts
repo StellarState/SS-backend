@@ -9,6 +9,7 @@ import { randomUUID } from "crypto";
  */
 export interface RequestContext {
   correlationId: string;
+  stellarNetwork?: "mainnet" | "testnet";
 }
 
 export const CORRELATION_ID_HEADER = "x-correlation-id";

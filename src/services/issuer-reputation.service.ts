@@ -3,6 +3,7 @@ import { IssuerReputation, IssuerReputationHistory, ReputationTier } from "../mo
 import { Invoice } from "../models/Invoice.model";
 import { logger } from "../observability/logger";
 import Decimal from "decimal.js";
+import { percentageNumber } from "../utils/percentage.utils";
 
 export interface ReputationScore {
   score: number;
@@ -155,7 +156,7 @@ export class IssuerReputationService {
     }
 
     const totalSettled = invoices.length;
-    const onTimeRate = (onTimeCount / totalSettled) * 100;
+    const onTimeRate = percentageNumber(BigInt(onTimeCount), BigInt(totalSettled));
     const avgDaysLate = totalDaysLate / totalSettled;
     const avgDaysEarly = totalDaysEarly / totalSettled;
 
@@ -166,7 +167,7 @@ export class IssuerReputationService {
       score,
       tier,
       totalInvoicesSettled: totalSettled,
-      onTimeSettlementRate: Math.round(onTimeRate * 100) / 100,
+      onTimeSettlementRate: onTimeRate,
       avgDaysLate: Math.round(avgDaysLate * 100) / 100,
       avgDaysEarly: Math.round(avgDaysEarly * 100) / 100,
       lastSettledAt,

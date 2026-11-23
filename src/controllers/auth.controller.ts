@@ -32,7 +32,8 @@ export function createAuthController(authService: AuthService) {
       const forwarded = req.headers["x-forwarded-for"];
       const ipAddress =
         (Array.isArray(forwarded) ? forwarded[0] : forwarded?.split(",")[0]?.trim()) ?? req.ip;
-      const session = await authService.verifyChallenge({ ...req.body, ipAddress });
+      const userAgent = req.headers["user-agent"];
+      const session = await authService.verifyChallenge({ ...req.body, ipAddress, userAgent });
       res.status(200).json(session);
     },
 

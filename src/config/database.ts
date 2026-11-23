@@ -1,6 +1,7 @@
 import "dotenv/config";
 import "reflect-metadata";
 import { DataSource } from "typeorm";
+import { EnumValidationSubscriber } from "../subscribers/enum-validation.subscriber";
 import { logger } from "../observability/logger";
 
 const isProduction = process.env.NODE_ENV === "production";
@@ -60,6 +61,7 @@ const baseConfig = {
   logging: process.env.NODE_ENV === "development",
   logger: "advanced-console" as const,
   entities: [entitiesPath],
+  subscribers: [EnumValidationSubscriber],
   migrations: [migrationsPath],
   migrationsTableName: "migrations",
   // Postgres refuses `ALTER TYPE ... ADD VALUE` inside a transaction block, so
@@ -67,7 +69,8 @@ const baseConfig = {
   // TypeORM rejects such overrides under the default "all" mode, which wraps
   // the entire run in one transaction; "each" honours the per-migration flag.
   migrationsTransactionMode: "each" as const,
-  migrationsRun: !isDevelopment,
+  // Run explicitly through ensureDatabaseReady so preflight checks precede migrations.
+  migrationsRun: false,
 };
 
 export const dataSource = isDevelopment

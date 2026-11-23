@@ -80,6 +80,18 @@ export interface PublicInvoiceDTO {
 @Index("idx_invoices_status_created_at", ["status", "createdAt"])
 @Index("idx_invoices_status_amount", ["status", "amount"])
 export class Invoice {
+  @Column({ name: "content_checksum", type: "varchar", length: 64, nullable: true })
+  contentChecksum?: string | null;
+
+  @Column({ name: "upload_session_id", type: "uuid", nullable: true })
+  uploadSessionId?: string | null;
+
+  @Column({ name: "upload_complete", type: "boolean", default: true })
+  uploadComplete?: boolean;
+
+  @Column({ name: "checksum_verified", type: "boolean", default: false })
+  checksumVerified?: boolean;
+
   @PrimaryGeneratedColumn("uuid")
   id!: string;
 

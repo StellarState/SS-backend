@@ -2,6 +2,7 @@ import crypto from "crypto";
 import { DataSource, In } from "typeorm";
 import { KYCVerification } from "../models/KYCVerification.model";
 import { KycHistory } from "../models/KycHistory.model";
+import { KycWebhookEvent } from "../models/KycWebhookEvent.model";
 import { User } from "../models/User.model";
 import { KYCStatus, KYCVerificationType, NotificationType } from "../types/enums";
 import { HttpError } from "../utils/http-error";
@@ -18,10 +19,16 @@ export interface KycProviderData {
 export interface KycWebhookPayload {
   userId: string;
   status: KYCStatus;
+  eventId?: string;
+  id?: string;
   verificationId?: string;
   providerReference?: string;
   reason?: string;
 }
+
+const KYC_WEBHOOK_PROVIDER = "kyc";
+const KYC_WEBHOOK_PROCESSING_LEASE_MS = 5 * 60 * 1000;
+const KYC_WEBHOOK_ERROR_MAX_LENGTH = 2000;
 
 export type KycDocumentType = "passport" | "national_id" | "drivers_license";
 
@@ -179,65 +186,165 @@ export class KycService {
   }
 
   async processWebhook(payload: KycWebhookPayload): Promise<void> {
-    if (!payload || typeof payload.userId !== "string") {
-      throw new HttpError(400, "Webhook userId is required.");
-    }
-    if (![KYCStatus.APPROVED, KYCStatus.REJECTED].includes(payload.status)) {
-      throw new HttpError(400, "Webhook status must be approved or rejected.");
-    }
+    const eventId = this.getWebhookEventId(payload);
+    const eventRepository = this.dataSource.getRepository(KycWebhookEvent);
+    await eventRepository
+      .createQueryBuilder()
+      .insert()
+      .into(KycWebhookEvent)
+      .values({
+        provider: KYC_WEBHOOK_PROVIDER,
+        eventId,
+        status: "received",
+        payload,
+        attemptCount: 0,
+        errorMessage: null,
+        failureKind: null,
+        receivedAt: new Date(),
+        processingStartedAt: null,
+        completedAt: null,
+      })
+      .orIgnore()
+      .execute();
 
-    await this.dataSource.transaction(async (manager) => {
-      const userRepository = manager.getRepository(User);
-      const verificationRepository = manager.getRepository(KYCVerification);
-      const historyRepository = manager.getRepository(KycHistory);
-      const user = await userRepository.findOneBy({ id: payload.userId });
-      if (!user) throw new HttpError(404, "User not found.");
+    const now = new Date();
+    const expiredBefore = new Date(now.getTime() - KYC_WEBHOOK_PROCESSING_LEASE_MS);
+    const claim = await eventRepository
+      .createQueryBuilder()
+      .update(KycWebhookEvent)
+      .set({
+        status: "processing",
+        attemptCount: () => '"attempt_count" + 1',
+        errorMessage: null,
+        failureKind: null,
+        processingStartedAt: now,
+        completedAt: null,
+      })
+      .where(
+        "provider = :provider AND event_id = :eventId AND status <> :succeeded AND (status <> :processing OR processing_started_at <= :expiredBefore)",
+        {
+          provider: KYC_WEBHOOK_PROVIDER,
+          eventId,
+          succeeded: "succeeded",
+          processing: "processing",
+          expiredBefore,
+        }
+      )
+      .execute();
 
-      const verification = payload.verificationId
-        ? await verificationRepository.findOneBy({ id: payload.verificationId })
-        : await verificationRepository.findOne({
-            where: { userId: payload.userId, status: KYCStatus.PENDING },
-          });
-      if (!verification) throw new HttpError(404, "KYC verification not found.");
-
-      const previousStatus = verification.status;
-      verification.status = payload.status;
-      verification.verifiedAt = new Date();
-      await verificationRepository.save(verification);
-
-      // Archive to history before status change
-      const historyEntry = historyRepository.create({
-        userId: user.id,
-        wallet: verification.wallet,
-        verificationType: verification.verificationType,
-        status: previousStatus,
-        documents: verification.documents,
-        rejectionReason: payload.status === KYCStatus.REJECTED ? payload.reason : null,
-        providerReference: (verification.documents as { providerReference?: string })?.providerReference || null,
-        isArchived: true,
-        archivedAt: new Date(),
+    if (!claim.affected) {
+      const current = await eventRepository.findOneBy({
+        provider: KYC_WEBHOOK_PROVIDER,
+        eventId,
       });
-      await historyRepository.save(historyEntry);
+      if (current?.status === "succeeded") {
+        this.appLogger.info("kyc.webhook.already_processed", {
+          provider: KYC_WEBHOOK_PROVIDER,
+          event_id: eventId,
+        });
+        return;
+      }
+      throw new HttpError(503, "Webhook event is already being processed.");
+    }
 
-      await userRepository.update(payload.userId, {
-        kycStatus: payload.status,
-        isKycVerified: payload.status === KYCStatus.APPROVED,
+    try {
+      if (!payload || typeof payload.userId !== "string") {
+        throw new HttpError(400, "Webhook userId is required.");
+      }
+      if (![KYCStatus.APPROVED, KYCStatus.REJECTED].includes(payload.status)) {
+        throw new HttpError(400, "Webhook status must be approved or rejected.");
+      }
+
+      const verificationId = await this.dataSource.transaction(async (manager) => {
+        const userRepository = manager.getRepository(User);
+        const verificationRepository = manager.getRepository(KYCVerification);
+        const historyRepository = manager.getRepository(KycHistory);
+        const user = await userRepository.findOneBy({ id: payload.userId });
+        if (!user) throw new HttpError(404, "User not found.");
+
+        const verification = payload.verificationId
+          ? await verificationRepository.findOneBy({ id: payload.verificationId })
+          : await verificationRepository.findOne({
+              where: { userId: payload.userId, status: KYCStatus.PENDING },
+            });
+        if (!verification) throw new HttpError(404, "KYC verification not found.");
+
+        const previousStatus = verification.status;
+        verification.status = payload.status;
+        verification.verifiedAt = new Date();
+        await verificationRepository.save(verification);
+
+        const historyEntry = historyRepository.create({
+          userId: user.id,
+          wallet: verification.wallet,
+          verificationType: verification.verificationType,
+          status: previousStatus,
+          documents: verification.documents,
+          rejectionReason: payload.status === KYCStatus.REJECTED ? payload.reason : null,
+          providerReference:
+            (verification.documents as { providerReference?: string })?.providerReference || null,
+          isArchived: true,
+          archivedAt: new Date(),
+        });
+        await historyRepository.save(historyEntry);
+
+        await userRepository.update(payload.userId, {
+          kycStatus: payload.status,
+          isKycVerified: payload.status === KYCStatus.APPROVED,
+        });
+
+        const succeeded = await manager.getRepository(KycWebhookEvent).update(
+          { provider: KYC_WEBHOOK_PROVIDER, eventId, status: "processing" },
+          {
+            status: "succeeded",
+            errorMessage: null,
+            failureKind: null,
+            processingStartedAt: null,
+            completedAt: new Date(),
+          }
+        );
+        if (!succeeded.affected) {
+          throw new Error("KYC webhook processing claim was lost before completion.");
+        }
+        return verification.id;
       });
       this.appLogger.info("kyc.webhook.processed", {
         user_id: payload.userId,
-        verification_id: verification.id,
+        verification_id: verificationId,
         status: payload.status,
         reason: payload.reason ?? null,
+        provider: KYC_WEBHOOK_PROVIDER,
+        event_id: eventId,
       });
-    });
+    } catch (error) {
+      const statusCode =
+        typeof error === "object" && error !== null && "statusCode" in error
+          ? Number((error as { statusCode: unknown }).statusCode)
+          : 500;
+      const failureKind = statusCode >= 400 && statusCode < 500 ? "permanent" : "retryable";
+      const errorMessage = (error instanceof Error ? error.message : String(error)).slice(
+        0,
+        KYC_WEBHOOK_ERROR_MAX_LENGTH
+      );
+      await eventRepository.update(
+        { provider: KYC_WEBHOOK_PROVIDER, eventId, status: "processing" },
+        { status: "failed", errorMessage, failureKind, processingStartedAt: null }
+      );
+      this.appLogger.error("kyc.webhook.failed", {
+        provider: KYC_WEBHOOK_PROVIDER,
+        event_id: eventId,
+        failure_kind: failureKind,
+        error: errorMessage,
+      });
+      throw error;
+    }
 
     try {
       const notifType =
         payload.status === KYCStatus.APPROVED
           ? NotificationType.KYC_APPROVED
           : NotificationType.KYC_REJECTED;
-      const title =
-        payload.status === KYCStatus.APPROVED ? "KYC Approved" : "KYC Status Updated";
+      const title = payload.status === KYCStatus.APPROVED ? "KYC Approved" : "KYC Status Updated";
       const message =
         payload.status === KYCStatus.APPROVED
           ? "Your identity verification has been approved."
@@ -255,6 +362,22 @@ export class KycService {
         error,
       });
     }
+  }
+
+  private getWebhookEventId(payload: unknown): string {
+    const candidate =
+      typeof payload === "object" && payload !== null
+        ? ((payload as Record<string, unknown>).eventId ?? (payload as Record<string, unknown>).id)
+        : undefined;
+    const suppliedId = typeof candidate === "string" ? candidate.trim() : "";
+    const identity =
+      suppliedId ||
+      `sha256:${crypto
+        .createHash("sha256")
+        .update(JSON.stringify(payload) ?? String(payload))
+        .digest("hex")}`;
+    if (identity.length <= 255) return identity;
+    return `sha256:${crypto.createHash("sha256").update(identity).digest("hex")}`;
   }
 
   /**
@@ -303,7 +426,9 @@ export class KycService {
         status: currentVerification.status,
         documents: currentVerification.documents,
         rejectionReason: currentVerification.status === KYCStatus.REJECTED ? "Resubmitted" : null,
-        providerReference: (currentVerification.documents as { providerReference?: string })?.providerReference || null,
+        providerReference:
+          (currentVerification.documents as { providerReference?: string })?.providerReference ||
+          null,
         isArchived: true,
         archivedAt: new Date(),
       });
@@ -345,10 +470,7 @@ export class KycService {
    * Submit KYC details and IPFS document CIDs.
    * If a previous submission was rejected, re-submission resets status to pending and clears rejection reason.
    */
-  async submitKyc(
-    walletOrUserId: string,
-    payload: KycSubmissionInput
-  ): Promise<KYCVerification> {
+  async submitKyc(walletOrUserId: string, payload: KycSubmissionInput): Promise<KYCVerification> {
     return this.dataSource.transaction(async (manager) => {
       const userRepository = manager.getRepository(User);
       const verificationRepository = manager.getRepository(KYCVerification);
@@ -434,11 +556,15 @@ export class KycService {
           status: existing.status,
           documents: existing.documents,
           rejectionReason:
-            (typeof existingDocs?.rejectionReason === "string" ? existingDocs.rejectionReason : null) ??
+            (typeof existingDocs?.rejectionReason === "string"
+              ? existingDocs.rejectionReason
+              : null) ??
             (typeof existingDocs?.reason === "string" ? existingDocs.reason : null) ??
             "Resubmitted",
           providerReference:
-            typeof existingDocs?.providerReference === "string" ? existingDocs.providerReference : null,
+            typeof existingDocs?.providerReference === "string"
+              ? existingDocs.providerReference
+              : null,
           isArchived: true,
           archivedAt: new Date(),
         });
@@ -582,11 +708,11 @@ export class KycService {
   /**
    * Admin review of a KYC verification, transitioning status to approved or rejected with reason.
    */
-  async reviewKyc(
-    idOrUserId: string,
-    input: KycReviewInput
-  ): Promise<KYCVerification> {
-    const rawAction = (input.status || input.action || input.decision || "").toString().toLowerCase().trim();
+  async reviewKyc(idOrUserId: string, input: KycReviewInput): Promise<KYCVerification> {
+    const rawAction = (input.status || input.action || input.decision || "")
+      .toString()
+      .toLowerCase()
+      .trim();
     let decision: KYCStatus;
     if (rawAction === "approved" || rawAction === "approve") {
       decision = KYCStatus.APPROVED;
@@ -691,7 +817,9 @@ export class KycService {
 
       // Notification
       try {
-        const notifType = isApproved ? NotificationType.KYC_APPROVED : NotificationType.KYC_REJECTED;
+        const notifType = isApproved
+          ? NotificationType.KYC_APPROVED
+          : NotificationType.KYC_REJECTED;
         const notifTitle = isApproved ? "KYC Approved" : "KYC Status Updated";
         const notifMsg = isApproved
           ? "Your identity verification has been approved."
@@ -740,4 +868,3 @@ export class KycService {
     return history;
   }
 }
-

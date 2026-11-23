@@ -87,6 +87,7 @@ export class CreateInvoiceDraftsTable1754300000000 implements MigrationInterface
         "seller_id" VARCHAR(64) NOT NULL,
         "seller_wallet" VARCHAR(56) NOT NULL,
         "draft_data" JSONB NOT NULL,
+        "revision" INTEGER NOT NULL DEFAULT 1,
         "last_saved_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
         "expires_at" TIMESTAMP WITH TIME ZONE NOT NULL,
         "created_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()

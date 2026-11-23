@@ -566,6 +566,7 @@ describe("Invoice Routes", () => {
         fileBuffer: expect.any(Buffer),
         filename: "test.pdf",
         mimeType: "application/pdf",
+        contentChecksum: undefined,
       });
     });
 

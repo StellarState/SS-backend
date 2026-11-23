@@ -53,6 +53,8 @@ export function createInvoiceDocumentsRouter({
           fileSizeBytes: body.file_size_bytes,
           filename: body.filename,
           mimeType: body.mime_type,
+          contentChecksum: body.content_checksum,
+          uploadSessionId: body.upload_session_id,
         });
         res.status(201).json({ success: true, data: document });
       } catch (error) {

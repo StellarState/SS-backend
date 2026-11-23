@@ -3,6 +3,7 @@ import { Invoice } from "../models/Invoice.model";
 import { Investment } from "../models/Investment.model";
 import { InvoiceStatus, InvestmentStatus } from "../types/enums";
 import { Decimal } from "decimal.js";
+import { percentageNumber } from "../utils/percentage.utils";
 
 export interface AdminMetricsQuery {
   from?: Date | null;
@@ -114,8 +115,10 @@ export class AdminMetricsService {
       (invoiceStatusCounts[InvoiceStatus.FUNDED] ?? 0) +
       (invoiceStatusCounts[InvoiceStatus.SETTLED] ?? 0);
     const settled = invoiceStatusCounts[InvoiceStatus.SETTLED] ?? 0;
-    const settlementSuccessRatePercent =
-      fundedOrSettled === 0 ? 0 : Number(((settled / fundedOrSettled) * 100).toFixed(2));
+    const settlementSuccessRatePercent = percentageNumber(
+      BigInt(settled),
+      BigInt(fundedOrSettled)
+    );
 
     return {
       invoiceStatusCounts,

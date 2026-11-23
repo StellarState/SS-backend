@@ -45,6 +45,7 @@ describe("InvoiceService.publishInvoicesBatch", () => {
   let managerSave: jest.Mock;
   let transactionCommitted: boolean;
   let service: InvoiceService;
+  let storedInvoices: Invoice[];
 
   const invoiceSaves = () => managerSave.mock.calls.filter(([entity]) => entity === Invoice);
   const historySaves = () =>
@@ -52,6 +53,7 @@ describe("InvoiceService.publishInvoicesBatch", () => {
 
   /** Stub the repository so a batched `find` resolves the requested invoice ids. */
   function stubInvoices(invoices: Invoice[]) {
+    storedInvoices = invoices;
     repository.find.mockImplementation(async ({ where }: { where: { id: { value: string[] } } }) => {
       const ids = new Set(where.id.value);
       return invoices.filter((invoice) => ids.has(invoice.id));
@@ -60,6 +62,7 @@ describe("InvoiceService.publishInvoicesBatch", () => {
 
   beforeEach(() => {
     transactionCommitted = false;
+    storedInvoices = [];
     // The state machine saves the invoice and a status history row per
     // publish: save(Invoice, invoice) and save(InvoiceStatusHistory, row).
     managerSave = jest.fn(async (_entity: unknown, value: unknown) => value);
@@ -76,7 +79,7 @@ describe("InvoiceService.publishInvoicesBatch", () => {
 
     dataSource = {
       transaction: jest.fn(async (work: (manager: unknown) => Promise<unknown>) => {
-        const result = await work({ save: managerSave });
+        const result = await work({ save: managerSave, findOne: async (_entity: unknown, { where }: { where: { id: string } }) => storedInvoices.find((row) => row.id === where.id) ?? null });
         transactionCommitted = true;
         return result;
       }),

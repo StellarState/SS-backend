@@ -32,6 +32,15 @@ export class IPFSService {
     this.fetchImplementation = dependencies.fetchImplementation ?? fetch;
   }
 
+  validateUploadMetadata(size: number, mimeType: string): void {
+    if (!Number.isInteger(size) || size <= 0 || size > this.config.maxFileSizeMB * 1024 * 1024) {
+      throw new ServiceError("file_too_large", "File size must be positive and within the configured IPFS limit", 400);
+    }
+    if (!this.config.allowedMimeTypes.includes(mimeType)) {
+      throw new ServiceError("invalid_file_type", "File type is not allowed", 400);
+    }
+  }
+
   async uploadFile(
     fileBuffer: Buffer,
     filename: string,

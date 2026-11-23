@@ -1,10 +1,4 @@
-import {
-  Entity,
-  PrimaryGeneratedColumn,
-  Column,
-  CreateDateColumn,
-  Index,
-} from "typeorm";
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, Index } from "typeorm";
 
 /**
  * Stores a royalty payout that a creator has claimed from accrued earnings.
@@ -18,6 +12,15 @@ import {
 @Index("idx_royalty_claims_creator_wallet", ["creatorWallet"])
 @Index("idx_royalty_claims_claimed_at", ["claimedAt"])
 export class RoyaltyClaim {
+  @Column({ name: "cycle_id", type: "varchar", length: 128, nullable: true })
+  cycleId!: string | null;
+
+  @Column({ type: "integer", default: 1 })
+  revision!: number;
+
+  @Column({ name: "idempotency_key", type: "varchar", length: 64, nullable: true, unique: true })
+  idempotencyKey!: string | null;
+
   @PrimaryGeneratedColumn("uuid")
   id!: string;
 
