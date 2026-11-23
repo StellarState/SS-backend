@@ -2,6 +2,7 @@ import { Response, NextFunction } from "express";
 import { InvoiceDraftService, DraftData } from "../services/invoice-draft.service";
 import { AppError, PublicAppError } from "../utils/http-error";
 import { ServiceError } from "../utils/service-error";
+import { validateDraftPayload } from "../lib/invoice-draft-validation";
 import type { AuthenticatedRequest } from "../types/auth";
 
 export class InvoiceDraftController {
@@ -22,6 +23,33 @@ export class InvoiceDraftController {
       if (!sellerId || !sellerWallet) {
         throw new AppError(401, "Authentication required", "UNAUTHORIZED");
       }
+
+      if (typeof body !== "object" || body === null || Array.isArray(body)) {
+        throw new PublicAppError(
+          400,
+          "Draft payload must be a plain object",
+          "INVALID_DRAFT_DATA",
+          {
+            errors: [{ field: "payload", message: "Draft payload must be a plain object" }],
+            fieldErrors: { payload: "Draft payload must be a plain object" },
+          }
+        );
+      }
+
+      const validation = validateDraftPayload(body);
+      if (!validation.isValid) {
+        throw new PublicAppError(
+          400,
+          `Draft validation failed: ${validation.errors.map((e) => e.message).join("; ")}`,
+          "INVALID_DRAFT_DATA",
+          {
+            errors: validation.errors,
+            fieldErrors: validation.fieldErrors,
+          }
+        );
+      }
+
+      const validData = validation.cleanedData ?? body;
 
       let expectedRevision: number | undefined;
 
@@ -46,20 +74,20 @@ export class InvoiceDraftController {
       }
 
       const draftData: DraftData = {
-        invoiceNumber: body.invoiceNumber,
-        customerName: body.customerName,
-        issuerName: body.issuerName,
-        description: body.description,
-        amount: body.amount,
-        discountRate: body.discountRate,
-        dueDate: body.dueDate,
-        ipfsHash: body.ipfsHash,
-        title: body.title,
-        faceValue: body.faceValue,
-        fundingTarget: body.fundingTarget,
-        yieldBps: body.yieldBps,
-        fundingDeadline: body.fundingDeadline,
-        ...body,
+        invoiceNumber: validData.invoiceNumber as string | undefined,
+        customerName: validData.customerName as string | undefined,
+        issuerName: validData.issuerName as string | undefined,
+        description: validData.description as string | undefined,
+        amount: validData.amount as string | undefined,
+        discountRate: validData.discountRate as string | undefined,
+        dueDate: validData.dueDate as string | undefined,
+        ipfsHash: validData.ipfsHash as string | undefined,
+        title: validData.title as string | undefined,
+        faceValue: validData.faceValue as string | undefined,
+        fundingTarget: validData.fundingTarget as string | undefined,
+        yieldBps: validData.yieldBps as number | undefined,
+        fundingDeadline: validData.fundingDeadline as string | undefined,
+        ...validData,
       };
 
       const draft = await this.draftService.saveDraft(

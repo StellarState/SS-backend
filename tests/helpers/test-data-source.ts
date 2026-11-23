@@ -24,7 +24,7 @@ function patchEntityMetadataForSQLite(): void {
       col.options.type = "datetime" as unknown as typeof col.options.type;
     }
     if (col.options.type === "jsonb") {
-      col.options.type = "text" as unknown as typeof col.options.type;
+      col.options.type = "simple-json" as unknown as typeof col.options.type;
     }
     if (col.options.type === "enum") {
       col.options.type = "varchar" as unknown as typeof col.options.type;

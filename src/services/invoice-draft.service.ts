@@ -1,8 +1,10 @@
 import { DataSource, OptimisticLockVersionMismatchError } from "typeorm";
+import type { QueryDeepPartialEntity } from "typeorm";
 import { InvoiceDraft } from "../models/InvoiceDraft.model";
 import { ServiceError } from "../utils/service-error";
 import { logger } from "../observability/logger";
 import { randomUUID } from "crypto";
+import { assertValidDraftPayload } from "../lib/invoice-draft-validation";
 
 const DRAFT_EXPIRY_DAYS = 30;
 
@@ -69,6 +71,7 @@ export class InvoiceDraftService {
     draftData: DraftData,
     expectedRevision?: number | null
   ): Promise<InvoiceDraft> {
+    const validatedData = (assertValidDraftPayload(draftData) as DraftData) || draftData;
     const repository = this.dataSource.getRepository(InvoiceDraft);
 
     // Clean up expired drafts for this seller
@@ -94,7 +97,7 @@ export class InvoiceDraftService {
         ? Number(rawExpectedRevision)
         : undefined;
 
-    const { revision: _r, expectedRevision: _er, ...cleanedDraftData } = draftData;
+    const { revision: _r, expectedRevision: _er, ...cleanedDraftData } = validatedData;
 
     if (existingDraft) {
       // Verify ownership first
@@ -135,7 +138,37 @@ export class InvoiceDraftService {
       existingDraft.expiresAt = expiresAt;
 
       try {
-        const saved = await repository.save(existingDraft);
+        const result = await repository
+          .createQueryBuilder()
+          .update(InvoiceDraft)
+          .set({
+            draftData: cleanedDraftData as unknown as QueryDeepPartialEntity<InvoiceDraft>["draftData"],
+            lastSavedAt: existingDraft.lastSavedAt,
+            expiresAt: existingDraft.expiresAt,
+            revision: () => "revision + 1",
+          })
+          .where("id = :id AND revision = :revision", {
+            id,
+            revision: parsedExpectedRevision,
+          })
+          .execute();
+
+        if (result.affected === 0) {
+          const current = await repository.findOne({ where: { id } });
+          throw new ServiceError(
+            "REVISION_CONFLICT",
+            `Draft revision conflict: expected revision ${parsedExpectedRevision}, but current revision is ${current?.revision}`,
+            409,
+            {
+              currentRevision: current?.revision,
+              revision: current?.revision,
+              lastSavedAt: current?.lastSavedAt,
+              draftData: current?.draftData,
+            }
+          );
+        }
+
+        const saved = await repository.findOneOrFail({ where: { id } });
 
         logger.info("invoice_draft.updated", {
           draftId: id,
@@ -145,10 +178,13 @@ export class InvoiceDraftService {
         });
 
         return saved;
-      } catch (err: any) {
+      } catch (err: unknown) {
+        if (err instanceof ServiceError) {
+          throw err;
+        }
         if (
           err instanceof OptimisticLockVersionMismatchError ||
-          err?.name === "OptimisticLockVersionMismatchError"
+          (err as { name?: string })?.name === "OptimisticLockVersionMismatchError"
         ) {
           const current = await repository.findOne({ where: { id } });
           throw new ServiceError(
@@ -188,11 +224,12 @@ export class InvoiceDraftService {
         });
 
         return saved;
-      } catch (err: any) {
+      } catch (err: unknown) {
+        const error = err as { code?: string; message?: string };
         if (
-          err?.code === "23505" ||
-          String(err?.message).includes("UNIQUE") ||
-          String(err?.message).includes("duplicate key")
+          error?.code === "23505" ||
+          String(error?.message).includes("UNIQUE") ||
+          String(error?.message).includes("duplicate key")
         ) {
           const current = await repository.findOne({ where: { id } });
           if (current) {
@@ -262,8 +299,17 @@ export class InvoiceDraftService {
       throw new ServiceError("DRAFT_EXPIRED", "Draft has expired", 410);
     }
 
+    let draftData = draft.draftData;
+    if (typeof draftData === "string") {
+      try {
+        draftData = JSON.parse(draftData);
+      } catch {
+        draftData = {};
+      }
+    }
+
     return {
-      ...(draft.draftData as DraftData),
+      ...(draftData as DraftData),
       id: draft.id,
       revision: draft.revision,
       lastSavedAt: draft.lastSavedAt,
