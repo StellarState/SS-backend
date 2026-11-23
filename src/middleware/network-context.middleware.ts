@@ -1,4 +1,5 @@
 import type { NextFunction, Response } from "express";
+import { getRequestContext } from "../observability/request-context";
 import { HttpError } from "../utils/http-error";
 import {
   STELLAR_NETWORK_NAMES,
@@ -35,13 +36,15 @@ export function createNetworkContextMiddleware(networksConfig: StellarNetworksCo
       next(
         new HttpError(
           400,
-          `Invalid X-Stellar-Network header "${raw}". Expected one of: ${STELLAR_NETWORK_NAMES.join(", ")}.`,
-        ),
+          `Invalid X-Stellar-Network header "${raw}". Expected one of: ${STELLAR_NETWORK_NAMES.join(", ")}.`
+        )
       );
       return;
     }
 
     req.stellarNetwork = networksConfig[network];
+    const context = getRequestContext();
+    if (context) context.stellarNetwork = network;
     next();
   };
 }

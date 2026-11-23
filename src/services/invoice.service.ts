@@ -8,6 +8,7 @@ import { ServiceError } from "../utils/service-error";
 import { validateInvoiceForPublish } from "../lib/validate-invoice-for-publish";
 import {
   createInvoiceStateMachine,
+  assertDraftDeletion,
   entityManagerTransitionStore,
   type InvoiceStateMachine,
   type InvoiceTransition,
@@ -16,9 +17,15 @@ import {
 } from "../lib/invoice-state-machine";
 import { InvoiceStatusHistory } from "../models/InvoiceStatusHistory.model";
 import { InvoiceDocument } from "../models/InvoiceDocument.model";
+import { InvoiceUploadSession } from "../models/InvoiceUploadSession.model";
+import { SecondaryListing } from "../models/SecondaryListing.model";
+import { SecondaryTrade } from "../models/SecondaryTrade.model";
+import { Transaction } from "../models/Transaction.model";
 import { logger } from "../observability/logger";
 import type { IPFSService, IPFSUploadResult } from "./ipfs.service";
 import { decodeInvoiceCursor, encodeInvoiceCursor } from "../utils/invoice-cursor.utils";
+import { percentageString } from "../utils/percentage.utils";
+import { parseContentChecksum, verifyDocumentChecksum } from "../lib/document-checksum";
 
 export interface InvoiceRepositoryContract {
   findOne(options: { where: { id: string }; relations?: string[] }): Promise<Invoice | null>;
@@ -57,6 +64,7 @@ export interface UploadDocumentInput {
   fileBuffer: Buffer;
   filename: string;
   mimeType: string;
+  contentChecksum?: unknown;
 }
 
 export interface UploadDocumentResult {
@@ -64,6 +72,8 @@ export interface UploadDocumentResult {
   ipfsHash: string;
   fileSize: number;
   uploadedAt: string;
+  contentChecksum: string;
+  uploadComplete: boolean;
 }
 
 export interface CreateInvoiceInput {
@@ -211,6 +221,11 @@ export class InvoiceService {
       createInvoiceStateMachine({ notificationSink: dependencies.notificationSink });
   }
 
+  private invoiceWriteLock(): { mode: "pessimistic_write" } | undefined {
+    // SQLite serializes writes and has no FOR UPDATE; production PostgreSQL always locks.
+    return this.dataSource?.options?.type === "sqlite" ? undefined : { mode: "pessimistic_write" };
+  }
+
   /**
    * Calculate net_amount from amount and discount_rate
    * Formula: net_amount = amount - (amount * discount_rate / 100)
@@ -260,9 +275,11 @@ export class InvoiceService {
   ): Promise<Invoice> {
     let transition: InvoiceTransition;
     if (this.dataSource) {
-      transition = await this.dataSource.transaction((manager) =>
-        this.stateMachine.transition(entityManagerTransitionStore(manager), invoice, to, options)
-      );
+      transition = await this.dataSource.transaction(async (manager) => {
+        const current = await manager.findOne(Invoice, { where: { id: invoice.id }, lock: this.invoiceWriteLock() });
+        if (!current) throw new ServiceError("invoice_not_found", "Invoice not found", 404);
+        return this.stateMachine.transition(entityManagerTransitionStore(manager), current, to, options);
+      });
     } else {
       transition = await this.stateMachine.transition(
         { saveInvoice: (entity) => this.invoiceRepository.save(entity) },
@@ -624,42 +641,54 @@ export class InvoiceService {
    */
   async deleteInvoice(invoiceId: string, sellerId: string): Promise<void> {
     try {
-      const invoice = await this.invoiceRepository.findOne({
-        where: { id: invoiceId },
-      });
-
-      if (!invoice) {
-        throw new ServiceError("invoice_not_found", "Invoice not found", 404);
-      }
-
-      // Verify ownership
-      if (invoice.sellerId !== sellerId) {
+      if (!this.dataSource)
         throw new ServiceError(
-          "unauthorized_invoice_access",
-          "You can only delete your own invoices",
-          403
+          "invoice_delete_unavailable",
+          "Atomic invoice deletion requires a database transaction",
+          503
         );
-      }
-
-      // Only draft invoices can be deleted
-      if (invoice.status !== InvoiceStatus.DRAFT) {
-        throw new ServiceError(
-          "invalid_invoice_status",
-          `Cannot delete invoice in ${invoice.status} status. Only draft invoices can be deleted.`,
-          400
-        );
-      }
-
-      invoice.deletedAt = new Date();
-      if (this.dataSource) {
-        // Withdrawing an invoice also withdraws its registered documents (issue #781).
-        await this.dataSource.transaction(async (manager) => {
-          await manager.save(Invoice, invoice);
-          await manager.getRepository(InvoiceDocument).softDelete({ invoiceId: invoice.id });
+      const transition = await this.dataSource.transaction(async (manager) => {
+        const invoice = await manager.findOne(Invoice, {
+          where: { id: invoiceId },
+          lock: this.invoiceWriteLock(),
         });
-      } else {
-        await this.invoiceRepository.save(invoice);
-      }
+        if (!invoice) throw new ServiceError("invoice_not_found", "Invoice not found", 404);
+        assertDraftDeletion(invoice, { role: "seller", id: sellerId });
+        // Include historical and soft-deleted activity: linkage is permanent.
+        const dependencies = [
+          Investment,
+          InvoiceDocument,
+          InvoiceUploadSession,
+          SecondaryListing,
+          SecondaryTrade,
+          Transaction,
+        ] as const;
+        const linked: string[] = [];
+        for (const entity of dependencies) {
+          if (
+            await manager.getRepository(entity).count({ where: { invoiceId }, withDeleted: true })
+          )
+            linked.push(manager.connection.getMetadata(entity).tableName);
+        }
+        if (invoice.ipfsHash) linked.push("ipfs_document");
+        if (linked.length)
+          throw new ServiceError(
+            "invoice_has_dependents",
+            "An invoice with investment or document linkage cannot be deleted",
+            409,
+            { invoice_id: invoiceId, dependencies: linked }
+          );
+        const result = await this.stateMachine.transition(
+          entityManagerTransitionStore(manager),
+          invoice,
+          InvoiceStatus.CANCELLED,
+          { actor: { role: "seller", id: sellerId }, trigger: "seller_cancelled" }
+        );
+        result.invoice.deletedAt = new Date();
+        await manager.save(Invoice, result.invoice);
+        return result;
+      });
+      await this.stateMachine.dispatch(transition);
     } catch (error) {
       if (error instanceof ServiceError) throw error;
       logger.error("Failed to delete invoice", { error, invoiceId });
@@ -948,9 +977,11 @@ export class InvoiceService {
     const transitions = await this.dataSource.transaction(async (manager) => {
       const store = entityManagerTransitionStore(manager);
       const results: InvoiceTransition[] = [];
-      for (const { invoice, sellerWallet } of publishable) {
+      for (const { invoice, sellerWallet } of publishable.sort((a, b) => a.invoice.id.localeCompare(b.invoice.id))) {
+        const current = await manager.findOne(Invoice, { where: { id: invoice.id }, lock: this.invoiceWriteLock() });
+        if (!current) throw new ServiceError("invoice_not_found", "Invoice not found", 404);
         results.push(
-          await this.stateMachine.transition(store, invoice, InvoiceStatus.PUBLISHED, {
+          await this.stateMachine.transition(store, current, InvoiceStatus.PUBLISHED, {
             actor: { role: "seller", id: sellerId, wallet: sellerWallet },
             trigger: "seller_batch_published",
           })
@@ -974,34 +1005,42 @@ export class InvoiceService {
    * Upload document (IPFS) - hardened with size/type pre-check, graceful IPFS failure handling
    */
   async uploadDocument(input: UploadDocumentInput): Promise<UploadDocumentResult> {
-    try {
+    if (!input.fileBuffer?.length)
+      throw new ServiceError("empty_file", "File buffer is empty", 400);
+    const checksum = verifyDocumentChecksum(
+      input.fileBuffer,
+      parseContentChecksum(input.contentChecksum)
+    );
+    const upload = async (
+      repository: InvoiceRepositoryContract,
+      locked = false
+    ): Promise<UploadDocumentResult> => {
       const invoiceId = input.invoiceId?.trim();
       const sellerId = input.sellerId?.trim();
-      if (!invoiceId || !sellerId) {
+      if (!invoiceId || !sellerId)
         throw new ServiceError("invalid_input", "Invoice id and seller id are required", 400);
-      }
-      if (!input.fileBuffer || input.fileBuffer.length === 0) {
+      if (!input.fileBuffer?.length)
         throw new ServiceError("empty_file", "File buffer is empty", 400);
-      }
-
-      const invoice = await this.invoiceRepository.findOne({
+      const invoice = await repository.findOne({
         where: { id: invoiceId },
+        ...(locked ? { lock: this.invoiceWriteLock() } : {}),
       });
-      if (!invoice) {
-        throw new ServiceError("invoice_not_found", "Invoice not found", 404);
-      }
-
-      if (invoice.sellerId !== sellerId) {
+      if (!invoice) throw new ServiceError("invoice_not_found", "Invoice not found", 404);
+      if (invoice.sellerId !== sellerId)
         throw new ServiceError(
           "unauthorized_invoice_access",
           "You can only upload documents to your own invoices",
           403
         );
-      }
-
-      let uploadResult: IPFSUploadResult;
+      if (invoice.uploadComplete === false)
+        throw new ServiceError(
+          "upload_in_progress",
+          "Complete or restart the current upload session",
+          409
+        );
+      let result: IPFSUploadResult;
       try {
-        uploadResult = await this.ipfsService.uploadFile(
+        result = await this.ipfsService.uploadFile(
           input.fileBuffer,
           input.filename.trim(),
           input.mimeType.trim(),
@@ -1009,23 +1048,33 @@ export class InvoiceService {
         );
       } catch (error) {
         if (error instanceof ServiceError) throw error;
-        logger.error("IPFS upload failed", { error, invoiceId });
         throw new ServiceError("ipfs_upload_failed", "Failed to upload document to IPFS", 502);
       }
-
-      invoice.ipfsHash = uploadResult.hash;
-      await this.invoiceRepository.save(invoice);
-
+      invoice.ipfsHash = result.hash;
+      invoice.contentChecksum = checksum;
+      invoice.checksumVerified = true;
+      invoice.uploadComplete = true;
+      invoice.uploadSessionId = null;
+      await repository.save(invoice);
       return {
         invoiceId,
-        ipfsHash: uploadResult.hash,
-        fileSize: uploadResult.size,
-        uploadedAt: uploadResult.timestamp,
+        ipfsHash: result.hash,
+        fileSize: input.fileBuffer.length,
+        uploadedAt: result.timestamp,
+        contentChecksum: checksum,
+        uploadComplete: true,
       };
+    };
+    try {
+      return this.dataSource
+        ? await this.dataSource.transaction((manager) =>
+            upload(manager.getRepository(Invoice), true)
+          )
+        : await upload(this.invoiceRepository);
     } catch (error) {
       if (error instanceof ServiceError) throw error;
       logger.error("Failed to process document upload", { error, invoiceId: input.invoiceId });
-      throw new ServiceError("document_upload_failed", "Failed to process document upload", 500);
+      throw new ServiceError("document_upload_failed", "Failed to upload document", 500);
     }
   }
 
@@ -1138,12 +1187,7 @@ export class InvoiceService {
 
       return investments.map((investment) => {
         const investor = investment.investor as unknown as User;
-        const percentage = totalInvested.isZero()
-          ? new Decimal(0)
-          : new Decimal(investment.investmentAmount)
-              .dividedBy(totalInvested)
-              .times(100)
-              .toDecimalPlaces(2);
+        const sharePercent = percentageString(investment.investmentAmount, totalInvested);
 
         const address = investor.stellarAddress || "";
         const truncatedWallet = address.length > 8 ? `${address.slice(0, 4)}...${address.slice(-4)}` : address;
@@ -1151,7 +1195,7 @@ export class InvoiceService {
         return {
           wallet: truncatedWallet,
           amount: investment.investmentAmount,
-          share_percent: percentage.toFixed(2),
+          share_percent: sharePercent,
           committed_at: investment.createdAt,
         };
       });

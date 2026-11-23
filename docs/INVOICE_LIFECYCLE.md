@@ -120,3 +120,17 @@ Authenticated users read their notifications through:
 | `POST /api/v1/invoices/:id/invest`        | published → funded, when the investment fills the invoice |
 | `POST /api/v1/investments`                | published → funded, when the investment completes funding |
 | `POST /api/v1/settlements/:invoiceId`     | funded → settled                                          |
+
+
+## Draft deletion (#827)
+
+`DELETE /api/v1/invoices/{id}` locks the invoice row and checks ownership and
+the lifecycle graph inside one transaction. Deletion is limited to drafts and
+records a draft to cancelled transition before soft deletion. Any investment
+(including pending, cancelled, settled or soft deleted records), transaction,
+secondary listing or trade, registered document, upload session, or attached
+invoice CID prevents deletion with HTTP 409 `invoice_has_dependents`.
+The standard error envelope includes `invoice_id` and the linked tables.
+A draft with no dependents is cancelled, audited and deleted atomically.
+Concurrent investment or document writers must use the same invoice row lock
+or version precondition; they cannot attach activity to a deleted invoice.

@@ -33,10 +33,84 @@ function buildMetricKey(labels: RequestMetricLabels): string {
   return `${labels.method}|${labels.route}|${labels.statusClass}`;
 }
 
+const SETTLEMENT_LATENCY_BUCKETS_SECONDS = [
+  1, 5, 15, 30, 60, 120, 300, 600, 1800, 3600, 7200, 21600, 86400,
+];
+
+export type SettlementStage = "pending" | "in_progress";
+export type SettlementOutcome = "completed" | "failed";
+
+const SETTLEMENT_STAGES: SettlementStage[] = ["pending", "in_progress"];
+const SETTLEMENT_OUTCOMES: SettlementOutcome[] = ["completed", "failed"];
+
+class SecondsHistogram {
+  private readonly bucketCounts = SETTLEMENT_LATENCY_BUCKETS_SECONDS.map(() => 0);
+  private count = 0;
+  private sum = 0;
+
+  observe(seconds: number): void {
+    if (!Number.isFinite(seconds) || seconds < 0) return;
+    this.count += 1;
+    this.sum += seconds;
+    const index = SETTLEMENT_LATENCY_BUCKETS_SECONDS.findIndex((bound) => seconds <= bound);
+    if (index >= 0) this.bucketCounts[index] += 1;
+  }
+
+  render(name: string, help: string): string[] {
+    const lines = [`# HELP ${name} ${help}`, `# TYPE ${name} histogram`];
+    let cumulative = 0;
+    SETTLEMENT_LATENCY_BUCKETS_SECONDS.forEach((bound, index) => {
+      cumulative += this.bucketCounts[index];
+      lines.push(`${name}_bucket{le="${bound}"} ${cumulative}`);
+    });
+    lines.push(
+      `${name}_bucket{le="+Inf"} ${this.count}`,
+      `${name}_sum ${this.sum}`,
+      `${name}_count ${this.count}`
+    );
+    return lines;
+  }
+}
+
 export class MetricsRegistry {
+  private depthSnapshotLagSeconds = 0;
+
+  setDepthSnapshotLagSeconds(seconds: number): void {
+    this.depthSnapshotLagSeconds = Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
+  }
   private readonly requestCounters = new Map<string, CounterMetric>();
   private readonly requestDurationHistograms = new Map<string, HistogramMetric>();
   private readonly customCounters = new Map<string, number>();
+  private readonly settlementStageCounts = new Map<SettlementStage, number>();
+  private readonly settlementOutcomeCounts = new Map<SettlementOutcome, number>();
+  private settlementRetryCount = 0;
+  private settlementOldestPendingAgeSeconds = 0;
+  private readonly settlementQueueLatency = new SecondsHistogram();
+
+  adjustSettlementStageCount(stage: SettlementStage, delta: number): void {
+    const next = Math.max(0, (this.settlementStageCounts.get(stage) ?? 0) + delta);
+    this.settlementStageCounts.set(stage, next);
+  }
+
+  setSettlementStageCount(stage: SettlementStage, count: number): void {
+    this.settlementStageCounts.set(stage, Math.max(0, count));
+  }
+
+  setSettlementOldestPendingAgeSeconds(seconds: number): void {
+    this.settlementOldestPendingAgeSeconds = Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
+  }
+
+  incrementSettlementOutcome(outcome: SettlementOutcome): void {
+    this.settlementOutcomeCounts.set(outcome, (this.settlementOutcomeCounts.get(outcome) ?? 0) + 1);
+  }
+
+  incrementSettlementRetry(): void {
+    this.settlementRetryCount += 1;
+  }
+
+  observeSettlementQueueLatency(seconds: number): void {
+    this.settlementQueueLatency.observe(seconds);
+  }
 
   recordHttpRequest(input: RequestMetricLabels & { durationMs: number }): void {
     const labels: RequestMetricLabels = {
@@ -75,6 +149,9 @@ export class MetricsRegistry {
 
   renderPrometheusMetrics(): string {
     const lines = [
+      "# HELP stellarsettle_secondary_depth_snapshot_lag_seconds Seconds of observed depth snapshot lag.",
+      "# TYPE stellarsettle_secondary_depth_snapshot_lag_seconds gauge",
+      `stellarsettle_secondary_depth_snapshot_lag_seconds ${this.depthSnapshotLagSeconds}`,
       "# HELP stellarsettle_http_requests_total Total completed HTTP requests.",
       "# TYPE stellarsettle_http_requests_total counter",
     ];
@@ -119,6 +196,8 @@ export class MetricsRegistry {
       );
     }
 
+    lines.push(...this.renderSettlementMetrics());
+
     lines.push(
       "# HELP stellarsettle_process_uptime_seconds Process uptime in seconds.",
       "# TYPE stellarsettle_process_uptime_seconds gauge",
@@ -126,6 +205,11 @@ export class MetricsRegistry {
     );
 
     return `${lines.join("\n")}\n`;
+  }
+
+  addCounter(name: string, count: number): void {
+    if (!Number.isFinite(count) || count < 0) return;
+    this.customCounters.set(name, (this.customCounters.get(name) ?? 0) + count);
   }
 
   increment(name: string, labels?: Record<string, string>): void {
@@ -136,6 +220,43 @@ export class MetricsRegistry {
       : name;
     const current = this.customCounters.get(key) ?? 0;
     this.customCounters.set(key, current + 1);
+  }
+
+  private renderSettlementMetrics(): string[] {
+    const lines = [
+      "# HELP stellarsettle_settlement_stage_count Settlements currently in each stage.",
+      "# TYPE stellarsettle_settlement_stage_count gauge",
+    ];
+    for (const stage of SETTLEMENT_STAGES) {
+      lines.push(
+        `stellarsettle_settlement_stage_count{stage="${stage}"} ${this.settlementStageCounts.get(stage) ?? 0}`
+      );
+    }
+
+    lines.push(
+      "# HELP stellarsettle_settlement_oldest_pending_age_seconds Age in seconds of the oldest matured settlement still pending.",
+      "# TYPE stellarsettle_settlement_oldest_pending_age_seconds gauge",
+      `stellarsettle_settlement_oldest_pending_age_seconds ${this.settlementOldestPendingAgeSeconds}`,
+      "# HELP stellarsettle_settlement_transitions_total Settlement flows reaching a terminal outcome.",
+      "# TYPE stellarsettle_settlement_transitions_total counter"
+    );
+    for (const outcome of SETTLEMENT_OUTCOMES) {
+      lines.push(
+        `stellarsettle_settlement_transitions_total{outcome="${outcome}"} ${this.settlementOutcomeCounts.get(outcome) ?? 0}`
+      );
+    }
+
+    lines.push(
+      "# HELP stellarsettle_settlement_retries_total Matured settlements that failed and will be retried.",
+      "# TYPE stellarsettle_settlement_retries_total counter",
+      `stellarsettle_settlement_retries_total ${this.settlementRetryCount}`,
+      ...this.settlementQueueLatency.render(
+        "stellarsettle_settlement_queue_latency_seconds",
+        "Seconds between a settlement's due date and the start of its processing."
+      )
+    );
+
+    return lines;
   }
 }
 

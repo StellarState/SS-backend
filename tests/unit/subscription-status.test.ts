@@ -5,6 +5,7 @@ import {
   type SubscriptionHoldingReader,
   type KeyHoldingReading,
 } from "../../src/services/subscription-status.service";
+import { TtlCache } from "../../src/lib/ttl-cache";
 import type { DecodedSorobanEvent } from "../../src/types/soroban.types";
 
 const WALLET = "GHOLDER00000000000000000000000000000000000000000000000000000AA";
@@ -183,3 +184,148 @@ describe("SubscriptionStatusService (issue #539)", () => {
     expect(calls).toHaveLength(1);
   });
 });
+
+describe("SubscriptionStatusService cache metadata lifetime (issue #774)", () => {
+  function setup(options: { maxEntries?: number; redisClient?: FakeRedis } = {}) {
+    let clock = Date.UTC(2026, 10, 21, 12, 0, 0);
+    const cache = new TtlCache({
+      ttlSeconds: SUBSCRIPTION_STATUS_CACHE_TTL_SECONDS,
+      namespace: "subscriptions",
+      maxEntries: options.maxEntries,
+      sweepIntervalMs: 0,
+      now: () => clock,
+      redisClient: options.redisClient,
+    });
+    const { reader, calls, state } = fakeReader();
+    const service = createSubscriptionStatusService({
+      holdingReader: reader,
+      cache,
+      cacheTtlSeconds: SUBSCRIPTION_STATUS_CACHE_TTL_SECONDS,
+      now: () => new Date(clock),
+    });
+    return {
+      cache,
+      service,
+      calls,
+      state,
+      advance(ms: number) {
+        clock += ms;
+        options.redisClient?.advance(ms);
+      },
+    };
+  }
+
+  const wallets = Array.from(
+    { length: 5 },
+    (_, i) => `GWALLET${String(i).padStart(49, "0")}`
+  );
+
+  it("drops bookkeeping when a cached reading expires", async () => {
+    const { service, cache, calls, advance } = setup();
+
+    await service.getStatus({ wallet: WALLET, keyId: KEY_ID });
+    expect(service.getCacheMetadataSize()).toEqual({ keyIds: 1, cacheKeys: 1 });
+
+    advance(SUBSCRIPTION_STATUS_CACHE_TTL_SECONDS * 1000 + 1);
+    expect(cache.pruneExpired()).toBe(1);
+    expect(service.getCacheMetadataSize()).toEqual({ keyIds: 0, cacheKeys: 0 });
+
+    // The next read is a miss, so access is confirmed against the chain.
+    await service.getStatus({ wallet: WALLET, keyId: KEY_ID });
+    expect(calls).toHaveLength(2);
+  });
+
+  it("bounds wallet metadata by cache capacity instead of retaining every visitor", async () => {
+    const { service, cache } = setup({ maxEntries: 2 });
+
+    for (const wallet of wallets) {
+      await service.getStatus({ wallet, keyId: KEY_ID });
+    }
+
+    expect(cache.size).toBe(2);
+    expect(service.getCacheMetadataSize()).toEqual({ keyIds: 1, cacheKeys: 2 });
+  });
+
+  it("forgets only the evicted key's metadata when capacity evicts it", async () => {
+    const { service } = setup({ maxEntries: 2 });
+
+    await service.getStatus({ wallet: WALLET, keyId: "CKEY-A" });
+    await service.getStatus({ wallet: WALLET, keyId: "CKEY-B" });
+    await service.getStatus({ wallet: WALLET, keyId: "CKEY-C" });
+
+    // CKEY-A was least recently used and is the one evicted.
+    expect(service.getCacheMetadataSize()).toEqual({ keyIds: 2, cacheKeys: 2 });
+    await service.invalidateKey("CKEY-B");
+    expect(service.getCacheMetadataSize()).toEqual({ keyIds: 1, cacheKeys: 1 });
+  });
+
+  it("keeps targeted invalidation for readings that are still cached", async () => {
+    const { service, calls, state } = setup();
+
+    await service.getStatus({ wallet: WALLET, keyId: KEY_ID });
+    await service.getStatus({ wallet: WALLET, keyId: "CKEY-OTHER" });
+    expect(service.getCacheMetadataSize()).toEqual({ keyIds: 2, cacheKeys: 2 });
+
+    await service.invalidateKey(KEY_ID);
+    expect(service.getCacheMetadataSize()).toEqual({ keyIds: 1, cacheKeys: 1 });
+
+    state.balance = "0";
+    const revoked = await service.getStatus({ wallet: WALLET, keyId: KEY_ID });
+    expect(revoked.subscribed).toBe(false);
+    expect(calls).toHaveLength(3);
+
+    // An unrelated key keeps its cached reading.
+    const before = calls.length;
+    await service.getStatus({ wallet: WALLET, keyId: "CKEY-OTHER" });
+    expect(calls).toHaveLength(before);
+  });
+
+  it("applies the same metadata lifetime with a Redis mirror", async () => {
+    const redis = new FakeRedis();
+    const { service, advance, calls } = setup({ redisClient: redis });
+
+    await service.getStatus({ wallet: WALLET, keyId: KEY_ID });
+    expect(redis.size).toBe(1);
+    expect(service.getCacheMetadataSize()).toEqual({ keyIds: 1, cacheKeys: 1 });
+
+    advance(SUBSCRIPTION_STATUS_CACHE_TTL_SECONDS * 1000 + 1);
+    const status = await service.getStatus({ wallet: WALLET, keyId: KEY_ID });
+
+    expect(status.subscribed).toBe(true);
+    expect(calls).toHaveLength(2);
+    expect(service.getCacheMetadataSize()).toEqual({ keyIds: 1, cacheKeys: 1 });
+  });
+});
+
+/** ioredis-compatible fake that honours the same TTL as the memory cache. */
+class FakeRedis {
+  private readonly entries = new Map<string, { value: string; expiresAt: number }>();
+  private clock = 0;
+
+  get size(): number {
+    return this.entries.size;
+  }
+
+  advance(ms: number): void {
+    this.clock += ms;
+  }
+
+  async get(key: string): Promise<string | null> {
+    const entry = this.entries.get(key);
+    if (!entry || this.clock > entry.expiresAt) return null;
+    return entry.value;
+  }
+
+  async set(key: string, value: string, _mode: "EX", ttl: number): Promise<"OK"> {
+    this.entries.set(key, { value, expiresAt: this.clock + ttl * 1000 });
+    return "OK";
+  }
+
+  async del(...keys: string[]): Promise<number> {
+    let removed = 0;
+    for (const key of keys) {
+      if (this.entries.delete(key)) removed += 1;
+    }
+    return removed;
+  }
+}

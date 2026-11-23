@@ -32,7 +32,13 @@ function patchEntityMetadataForSQLite(): void {
   }
 }
 
-export async function createTestDataSource(): Promise<DataSource> {
+/**
+ * @param extraEntities Entities a test needs beyond the shared set, e.g. the
+ *   indexer tables. Appended, so existing callers are unaffected.
+ */
+export async function createTestDataSource(
+  extraEntities: Array<new (...args: never[]) => unknown> = []
+): Promise<DataSource> {
   patchEntityMetadataForSQLite();
   const dataSource = new DataSource({
     type: "sqlite",
@@ -57,6 +63,7 @@ export async function createTestDataSource(): Promise<DataSource> {
       Notification,
       SecondaryListing,
       Watchlist,
+      ...extraEntities,
     ],
     synchronize: false,
     logging: false,

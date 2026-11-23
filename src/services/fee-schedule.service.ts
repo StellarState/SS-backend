@@ -1,6 +1,7 @@
 import { DataSource, EntityManager } from "typeorm";
 import { FeeSchedule, FeeScheduleHistory } from "../models/FeeSchedule.model";
 import { ServiceError } from "../utils/service-error";
+import { PublicAppError } from "../utils/http-error";
 import { logger } from "../observability/logger";
 import Redis from "ioredis";
 
@@ -32,10 +33,10 @@ export interface FeeScheduleHistoryDTO {
 }
 
 export interface UpdateFeeScheduleInput {
-  investmentFeeBps?: number;
-  settlementFeeBps?: number;
-  platformFeeBps?: number;
-  secondaryMarketFeeBps?: number;
+  investmentFeeBps?: unknown;
+  settlementFeeBps?: unknown;
+  platformFeeBps?: unknown;
+  secondaryMarketFeeBps?: unknown;
   changeReason?: string;
 }
 
@@ -49,6 +50,16 @@ const FEE_BOUNDS = {
   MAX: 1000, // 10% in basis points
 };
 
+const FEE_SCHEDULE_ADVISORY_LOCK_KEY = "754231006815425642";
+const feeScheduleTransactionQueues = new WeakMap<DataSource, Promise<void>>();
+
+function isActiveScheduleConflict(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const driverError = "driverError" in error ? error.driverError : error;
+  if (!driverError || typeof driverError !== "object") return false;
+  return "constraint" in driverError && driverError.constraint === "only_one_active_schedule";
+}
+
 export class FeeScheduleService {
   constructor(
     private readonly dataSource: DataSource,
@@ -58,12 +69,19 @@ export class FeeScheduleService {
   /**
    * Validates fee rates are within allowed bounds.
    */
-  private validateFeeRate(feeBps: number, feeName: string): void {
-    if (feeBps < FEE_BOUNDS.MIN || feeBps > FEE_BOUNDS.MAX) {
-      throw new ServiceError(
+  private validateFeeRate(feeBps: unknown, feeName: keyof FeeScheduleDTO): asserts feeBps is number {
+    if (
+      typeof feeBps !== "number" ||
+      !Number.isFinite(feeBps) ||
+      !Number.isInteger(feeBps) ||
+      feeBps < FEE_BOUNDS.MIN ||
+      feeBps > FEE_BOUNDS.MAX
+    ) {
+      throw new PublicAppError(
+        400,
+        `${feeName} must be a finite integer between ${FEE_BOUNDS.MIN} and ${FEE_BOUNDS.MAX} basis points`,
         "INVALID_FEE_RATE",
-        `${feeName} must be between ${FEE_BOUNDS.MIN} and ${FEE_BOUNDS.MAX} basis points`,
-        400
+        { field: feeName, minimum: FEE_BOUNDS.MIN, maximum: FEE_BOUNDS.MAX }
       );
     }
   }
@@ -271,14 +289,25 @@ return 1
       throw new ServiceError("NO_CHANGES", "At least one fee rate must be provided", 400);
     }
 
-    const result = await this.dataSource.transaction(async (manager: EntityManager) => {
+    let result: FeeSchedule;
+    try {
+      result = await this.runSerializedTransaction(async (manager: EntityManager) => {
+      if (this.dataSource.options.type === "postgres") {
+        await manager.query("SELECT pg_advisory_xact_lock($1::bigint)", [
+          FEE_SCHEDULE_ADVISORY_LOCK_KEY,
+        ]);
+      }
+
       const repository = manager.getRepository(FeeSchedule);
 
       // Get current active schedule
-      const currentSchedule = await repository.findOne({
-        where: { isActive: true },
-        order: { effectiveFrom: "DESC" },
-      });
+      const currentScheduleQuery = repository.createQueryBuilder("schedule")
+        .where("schedule.isActive = :isActive", { isActive: true })
+        .orderBy("schedule.effectiveFrom", "DESC");
+      if (this.dataSource.options.type === "postgres") {
+        currentScheduleQuery.setLock("pessimistic_write");
+      }
+      const currentSchedule = await currentScheduleQuery.getOne();
 
       if (!currentSchedule) {
         throw new ServiceError("NO_ACTIVE_FEE_SCHEDULE", "No active fee schedule found", 404);
@@ -325,10 +354,10 @@ return 1
         oldSettlementFeeBps: oldValues.settlementFeeBps,
         oldPlatformFeeBps: oldValues.platformFeeBps,
         oldSecondaryMarketFeeBps: oldValues.secondaryMarketFeeBps,
-        newInvestmentFeeBps: newInvestmentFeeBps,
-        newSettlementFeeBps: newSettlementFeeBps,
-        newPlatformFeeBps: newPlatformFeeBps,
-        newSecondaryMarketFeeBps: newSecondaryMarketFeeBps,
+        newInvestmentFeeBps,
+        newSettlementFeeBps,
+        newPlatformFeeBps,
+        newSecondaryMarketFeeBps,
         changeReason,
       });
       await historyRepository.save(history);
@@ -345,7 +374,17 @@ return 1
       });
 
       return savedSchedule;
-    });
+      });
+    } catch (error) {
+      if (isActiveScheduleConflict(error)) {
+        throw new PublicAppError(
+          409,
+          "The fee schedule changed concurrently. Please retry the update.",
+          "FEE_SCHEDULE_CONFLICT",
+        );
+      }
+      throw error;
+    }
 
     // Invalidate cache with the newly committed schedule version
     await this.invalidateCache(result.id);
@@ -359,6 +398,30 @@ return 1
       effectiveUntil: result.effectiveUntil,
       isActive: result.isActive,
     };
+  }
+
+  private async runSerializedTransaction<T>(
+    work: (manager: EntityManager) => Promise<T>,
+  ): Promise<T> {
+    if (this.dataSource.options.type === "postgres") {
+      return this.dataSource.transaction(work);
+    }
+
+    const previous = feeScheduleTransactionQueues.get(this.dataSource) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    feeScheduleTransactionQueues.set(this.dataSource, current);
+    await previous;
+    try {
+      return await this.dataSource.transaction(work);
+    } finally {
+      release();
+      if (feeScheduleTransactionQueues.get(this.dataSource) === current) {
+        feeScheduleTransactionQueues.delete(this.dataSource);
+      }
+    }
   }
 
   /**

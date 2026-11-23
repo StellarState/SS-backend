@@ -19,17 +19,11 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body: `👋 Hey @${context.payload.pull_request.user.login}, thanks for your contribution!
-
-` +
+              body: `👋 Hey @${context.payload.pull_request.user.login}, thanks for your contribution!\n\n` +
                     `This PR is targeting \`main\` directly. We use \`main\` for stable releases only — ` +
-                    `all contributions should be opened against the \`dev\` branch instead.
-
-` +
+                    `all contributions should be opened against the \`dev\` branch instead.\n\n` +
                     `**Please close this PR and reopen it with \`dev\` as the base branch.** ` +
-                    `If you're unsure how to do that, you can change the base branch using the *Edit* button at the top of this PR page.
-
-` +
+                    `If you're unsure how to do that, you can change the base branch using the *Edit* button at the top of this PR page.\n\n` +
                     `Closing this PR automatically. See you in \`dev\`! 🚀`
             });
 

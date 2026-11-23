@@ -1,10 +1,4 @@
-import {
-  Entity,
-  PrimaryGeneratedColumn,
-  Column,
-  CreateDateColumn,
-  Index,
-} from "typeorm";
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, Index } from "typeorm";
 
 /**
  * One holder's share of a single dividend distribution.
@@ -17,6 +11,14 @@ import {
 @Index("idx_dividend_allocations_recipient_wallet", ["recipientWallet"])
 @Index("idx_dividend_allocations_distribution", ["distributionId"])
 export class DividendAllocation {
+  cycleLocked?: boolean;
+
+  @Column({ name: "snapshot_id", type: "uuid", nullable: true })
+  snapshotId!: string | null;
+
+  @Column({ type: "integer", default: 1 })
+  revision!: number;
+
   @PrimaryGeneratedColumn("uuid")
   id!: string;
 

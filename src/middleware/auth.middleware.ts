@@ -5,6 +5,7 @@ import type { AuthService } from "../services/auth.service";
 import type { AuthenticatedRequest } from "../types/auth";
 import type { AppLogger } from "../observability/logger";
 import { logger as globalLogger } from "../observability/logger";
+import { loadJwtKeyRing, verifyWithKeyRing } from "../lib/jwt-keyring";
 
 import { AppError, HttpError } from "../utils/http-error";
 import { UserType, KYCStatus } from "../types/enums";
@@ -195,16 +196,8 @@ export function createAuthMiddleware(
   };
 }
 
-async function processEfficiently(token: string, secret: string): Promise<jwt.JwtPayload> {
-  return new Promise((resolve, reject) => {
-    jwt.verify(token, secret, { algorithms: ALLOWED_JWT_ALGORITHMS }, (error, payload) => {
-      if (error) {
-        reject(error);
-      } else {
-        resolve(payload as jwt.JwtPayload);
-      }
-    });
-  });
+async function processEfficiently(token: string): Promise<jwt.JwtPayload> {
+  return verifyWithKeyRing(token, loadJwtKeyRing());
 }
 
 export async function authenticateJWT(req: Request, _res: Response, next: NextFunction): Promise<void> {
@@ -228,8 +221,7 @@ export async function authenticateJWT(req: Request, _res: Response, next: NextFu
     return;
   }
 
-  const secret = process.env.JWT_SECRET;
-  if (!secret) {
+  if (!process.env.JWT_SECRET) {
     // A server misconfiguration, not a problem with the caller's token.
     globalLogger.error("JWT_SECRET is not configured; cannot verify bearer tokens", {
       method: req.method,
@@ -243,7 +235,7 @@ export async function authenticateJWT(req: Request, _res: Response, next: NextFu
 
   let payload: jwt.JwtPayload;
   try {
-    payload = await processEfficiently(token, secret);
+    payload = await processEfficiently(token);
   } catch (error) {
     if (error instanceof jwt.JsonWebTokenError) {
       next(

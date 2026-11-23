@@ -1,4 +1,5 @@
 import { Column, Entity, PrimaryGeneratedColumn, UpdateDateColumn } from "typeorm";
+import type { AlertEvent, NotificationChannel } from "../lib/notification-templates";
 
 @Entity("alert_preferences")
 export class AlertPreference {
@@ -22,6 +23,13 @@ export class AlertPreference {
 
   @Column({ name: "maturity_enabled", type: "boolean", default: true })
   maturityEnabled!: boolean;
+
+  /**
+   * Per-event delivery channels (issue #811). Null, or an event missing from
+   * the map, means DEFAULT_ALERT_CHANNELS. Only registered pairs are stored.
+   */
+  @Column({ type: "jsonb", nullable: true })
+  channels!: Partial<Record<AlertEvent, NotificationChannel[]>> | null;
 
   @Column({ name: "event_id", type: "varchar", length: 128, nullable: true })
   eventId!: string | null;

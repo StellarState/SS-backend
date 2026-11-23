@@ -70,6 +70,14 @@ export interface SubscriptionStatusServiceDependencies {
   logger?: AppLogger;
 }
 
+/** Size of the invalidation index (issue #774), exposed for observability. */
+export interface SubscriptionCacheMetadataSize {
+  /** Gated keys with at least one cached status. */
+  keyIds: number;
+  /** Cached status keys tracked for targeted invalidation. */
+  cacheKeys: number;
+}
+
 /**
  * Read model for gated-content access.
  *
@@ -88,6 +96,8 @@ export class SubscriptionStatusService implements ContractEventHandler {
   private readonly logger: AppLogger;
   /** Cache keys written per gated key, so an event evicts only that key. */
   private readonly cacheKeysByKeyId = new Map<string, Set<string>>();
+  /** Reverse of the index, so an evicted cache key can reclaim its bookkeeping. */
+  private readonly keyIdByCacheKey = new Map<string, string>();
 
   constructor({
     holdingReader,
@@ -109,6 +119,17 @@ export class SubscriptionStatusService implements ContractEventHandler {
         namespace: "subscriptions",
         enabled: true,
       });
+    // #774: an index entry may live no longer than the value it points at.
+    // TtlCache reports expiry and capacity eviction, so bookkeeping follows the
+    // cache's own bound instead of waiting for a holding-change event.
+    this.cache.addEvictionListener((cacheKey) => this.forgetCacheKey(cacheKey));
+  }
+
+  /** Current size of the invalidation index; used by bound/eviction tests. */
+  getCacheMetadataSize(): SubscriptionCacheMetadataSize {
+    let cacheKeys = 0;
+    for (const keys of this.cacheKeysByKeyId.values()) cacheKeys += keys.size;
+    return { keyIds: this.cacheKeysByKeyId.size, cacheKeys };
   }
 
   topics(): string[] {
@@ -133,9 +154,10 @@ export class SubscriptionStatusService implements ContractEventHandler {
   /** Drops every cached status for one gated key. */
   async invalidateKey(keyId: string): Promise<void> {
     const keys = this.cacheKeysByKeyId.get(keyId);
-    this.cacheKeysByKeyId.delete(keyId);
     if (!keys) return;
-    for (const key of keys) {
+    this.cacheKeysByKeyId.delete(keyId);
+    for (const key of [...keys]) {
+      this.keyIdByCacheKey.delete(key);
       await this.cache.delete(key);
     }
   }
@@ -176,6 +198,7 @@ export class SubscriptionStatusService implements ContractEventHandler {
       }
     }
     this.cacheKeysByKeyId.clear();
+    this.keyIdByCacheKey.clear();
   }
 
   private buildStatusView(
@@ -226,9 +249,22 @@ export class SubscriptionStatusService implements ContractEventHandler {
   }
 
   private rememberCacheKey(keyId: string, key: string): void {
+    if (!this.cache.isEnabled()) return;
     const keys = this.cacheKeysByKeyId.get(keyId) ?? new Set<string>();
     keys.add(key);
     this.cacheKeysByKeyId.set(keyId, keys);
+    this.keyIdByCacheKey.set(key, keyId);
+  }
+
+  /** Reclaims index entries for a cache value that expired or was evicted. */
+  private forgetCacheKey(key: string): void {
+    const keyId = this.keyIdByCacheKey.get(key);
+    if (keyId === undefined) return;
+    this.keyIdByCacheKey.delete(key);
+    const keys = this.cacheKeysByKeyId.get(keyId);
+    if (!keys) return;
+    keys.delete(key);
+    if (keys.size === 0) this.cacheKeysByKeyId.delete(keyId);
   }
 }
 

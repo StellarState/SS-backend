@@ -16,6 +16,9 @@ export class WaitlistEntry {
   @Column({ name: "referral_code", type: "varchar", length: 64, unique: true })
   referralCode!: string;
 
+  @Column({ name: "referred_by_code", type: "varchar", length: 64, nullable: true })
+  referredByCode!: string | null;
+
   @Column({ name: "referral_count", type: "integer", default: 0 })
   referralCount!: number;
 

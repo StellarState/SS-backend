@@ -69,6 +69,11 @@ Required for a normal local boot:
 | `CACHE_TTL_INVOICES_LIST`  | `30`                     | TTL in seconds for invoice listing (`GET /invoices`)     |
 | `CACHE_TTL_INVOICE_DETAIL` | `60`                     | TTL in seconds for invoice details (`GET /invoices/:id`) |
 
+See [invoice cache operations](./docs/INVOICE_CACHE.md) for context isolation,
+bounded fills, generation fences, metrics and load checks. Event lifecycle and
+maintenance are documented in [event retention](./docs/EVENT_RETENTION.md);
+legacy enum handling is covered by [enum validation](./docs/ENUM_VALIDATION.md).
+
 ### Webhook & Security Settings
 
 | Variable             | Purpose                                                              |
@@ -117,7 +122,7 @@ All application routes use the `/api/v1` prefix.
 - `/api/v1/notifications` — user notifications
 - `/api/v1/keys` — creator key config, per-transaction buy limit, and curve migration status
 - `/api/v1/swaps` — atomic swap history and lookup
-- `/api/v1/royalties` — creator royalty earnings, per-transfer breakdown and claim history
+- `/api/v1/royalties` — creator royalty earnings, claim reservations, paginated statements and CSV/JSON exports (see [payout reliability](docs/PAYOUT_RELIABILITY.md))
 - `/api/v1/dividends` — issuer cycle config plus holder claimable balances, claim history and summary
 - `/api/v1/subscriptions` — public gated-content subscription status (`?wallet=&key_id=`)
 - `/api/v1/onboarding` — onboarding tour completion state

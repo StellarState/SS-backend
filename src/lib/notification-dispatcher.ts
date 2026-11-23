@@ -1,19 +1,32 @@
+import { randomUUID } from "crypto";
 import { logger as defaultLogger, type AppLogger } from "../observability/logger";
+import { getCorrelationId } from "../observability/request-context";
 import { InvoiceStatus, NotificationType } from "../types/enums";
 import type { Invoice } from "../models/Invoice.model";
 import type { InvestorDirectory } from "./invoice-notifications";
 import type { InvoiceTransition, TransitionEffect } from "./invoice-state-machine";
+import {
+  InMemoryNotificationJobStore,
+  type NotificationJob,
+  type NotificationJobStore,
+} from "./notification-job-store";
 
 /**
  * Queue-based batch notification dispatcher for invoice lifecycle events.
  *
- * Callers enqueue an event and return immediately; recipients are resolved
- * and notifications written in the background, so fan-out to many investors
- * never blocks the request that caused the event. Every notification carries
- * a dedupe key of `<eventId>:<userId>`, which the store enforces as unique,
- * so a re-dispatched event or a retried job cannot notify a wallet twice.
- * A job that keeps failing is retried up to {@link DEFAULT_MAX_ATTEMPTS}
- * times in total and then dead-lettered.
+ * Callers enqueue an event and return once it is durably persisted; recipients
+ * are resolved and notifications written in the background, so fan-out to many
+ * investors never blocks the request that caused the event. Every notification
+ * carries a dedupe key of `<eventId>:<userId>`, which the store enforces as
+ * unique, so a re-dispatched event, a recovered job, or a retried partial
+ * delivery cannot notify a wallet twice.
+ *
+ * Jobs live in a {@link NotificationJobStore}. Each delivery attempt claims the
+ * job for one worker, persists the attempt count and next-attempt time, and
+ * only the owning worker may complete or reschedule it. A job that keeps
+ * failing is retried up to {@link DEFAULT_MAX_ATTEMPTS} times in total and then
+ * dead-lettered with its original identity, where it stays inspectable and can
+ * be replayed deliberately.
  */
 
 export type InvoiceLifecycleEventKind =
@@ -28,6 +41,8 @@ export type InvoiceEventSubject = Pick<Invoice, "id" | "sellerId" | "invoiceNumb
 
 export interface InvoiceLifecycleEvent {
   kind: InvoiceLifecycleEventKind;
+  /** Optional correlation ID propagated from the originating request. */
+  correlationId?: string;
   invoice: InvoiceEventSubject;
   /** Rejection reason, or other free text shown in the message. */
   reason?: string | null;
@@ -69,6 +84,8 @@ export interface DeadLetterSink {
 export const DEFAULT_MAX_ATTEMPTS = 3;
 const DEFAULT_RETRY_DELAY_MS = 500;
 const DEFAULT_CONCURRENCY = 4;
+const DEFAULT_LEASE_MS = 60_000;
+const DEFAULT_DEAD_LETTER_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 type Audience = "seller" | "investors";
 
@@ -164,27 +181,42 @@ export interface NotificationDispatcherOptions {
   concurrency?: number;
   /** Test hook for scheduling; defaults to setTimeout. */
   schedule?: (work: () => void, delayMs: number) => void;
-}
-
-interface Job {
-  eventId: string;
-  event: InvoiceLifecycleEvent;
-  attempts: number;
+  /** Durable job boundary. Defaults to an in-memory store. */
+  jobs?: NotificationJobStore;
+  /** Stable identity of this worker for claim ownership. */
+  workerId?: string;
+  /** A claim older than this is assumed abandoned and may be reclaimed. */
+  leaseMs?: number;
+  /** How long terminal failures stay inspectable before pruning. */
+  deadLetterRetentionMs?: number;
+  /** Injectable clock for deterministic retry scheduling. */
+  now?: () => Date;
+  /**
+   * When false, `enqueue` only persists and never starts delivery on its own;
+   * callers drive work through `recover()`/`drain()`. Used by restart tests and
+   * by deployments that run dispatch in a separate worker.
+   */
+  autoDispatch?: boolean;
 }
 
 export class NotificationDispatcher {
-  private readonly queue: Job[] = [];
-  /** Event ids queued, running or awaiting retry; enqueueing one again is a no-op. */
-  private readonly pending = new Set<string>();
   private active = 0;
+  private pumping = false;
+  private pumpPromise: Promise<void> | null = null;
+  private wakeupScheduled = false;
   private readonly idleWaiters: Array<() => void> = [];
-  private scheduledRetries = 0;
 
   private readonly log: AppLogger;
   private readonly maxAttempts: number;
   private readonly retryDelayMs: number;
   private readonly concurrency: number;
   private readonly schedule: (work: () => void, delayMs: number) => void;
+  private readonly jobs: NotificationJobStore;
+  private readonly workerId: string;
+  private readonly leaseMs: number;
+  private readonly deadLetterRetentionMs: number;
+  private readonly now: () => Date;
+  private readonly autoDispatch: boolean;
 
   constructor(private readonly options: NotificationDispatcherOptions) {
     this.log = options.logger ?? defaultLogger;
@@ -196,104 +228,240 @@ export class NotificationDispatcher {
       ((work, delayMs) => {
         setTimeout(work, delayMs).unref?.();
       });
+    this.now = options.now ?? (() => new Date());
+    this.jobs =
+      options.jobs ??
+      new InMemoryNotificationJobStore({ now: this.now });
+    this.workerId = options.workerId ?? `worker-${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
+    this.leaseMs = options.leaseMs ?? DEFAULT_LEASE_MS;
+    this.deadLetterRetentionMs =
+      options.deadLetterRetentionMs ?? DEFAULT_DEAD_LETTER_RETENTION_MS;
+    this.autoDispatch = options.autoDispatch !== false;
   }
 
-  /** Queues an event and returns immediately. Returns false if it was already pending. */
-  enqueue(event: InvoiceLifecycleEvent): boolean {
+  /**
+   * Persists an event and returns once it is durably queued. Returns false when
+   * the event is already known (pending, in flight, or dead-lettered).
+   */
+  async enqueue(
+    event: InvoiceLifecycleEvent,
+    correlationId?: string
+  ): Promise<boolean> {
+    const resolvedCorrelationId =
+      correlationId ??
+      event.correlationId ??
+      getCorrelationId?.() ??
+      randomUUID();
+    const eventWithCorrelation: InvoiceLifecycleEvent = {
+      ...event,
+      correlationId: resolvedCorrelationId,
+    };
     const eventId = eventIdFor(event);
-    if (this.pending.has(eventId)) {
-      return false;
-    }
-    this.pending.add(eventId);
-    this.queue.push({ eventId, event, attempts: 0 });
-    // Defer so enqueue never runs dispatch work on the caller's stack.
-    setImmediate(() => this.pump());
+    const created = await this.jobs.create({
+      eventId,
+      event: eventWithCorrelation,
+      nextAttemptAt: this.now(),
+      correlationId: resolvedCorrelationId,
+    });
+    if (!created) return false;
+    if (this.autoDispatch) setImmediate(() => void this.pump());
     return true;
   }
 
-  get size(): number {
-    return this.queue.length + this.active + this.scheduledRetries;
-  }
-
-  /** Resolves once every queued job, including pending retries, has finished. */
-  drain(): Promise<void> {
-    if (this.size === 0) return Promise.resolve();
-    return new Promise((resolve) => this.idleWaiters.push(resolve));
-  }
-
-  private pump(): void {
-    while (this.active < this.concurrency && this.queue.length > 0) {
-      const job = this.queue.shift()!;
-      this.active += 1;
-      void this.run(job).finally(() => {
-        this.active -= 1;
-        this.pump();
-        this.notifyIfIdle();
+  /**
+   * Startup recovery: reclaims abandoned claims, prunes expired dead letters,
+   * and resumes every pending or retry-due job. Safe to call on a replacement
+   * worker before it starts accepting new events.
+   */
+  async recover(): Promise<void> {
+    const now = this.now();
+    const recovered = await this.jobs.recoverExpiredLeases({ now, leaseMs: this.leaseMs });
+    if (recovered > 0) {
+      this.log.warn("Recovered abandoned notification delivery claims.", {
+        worker_id: this.workerId,
+        recovered,
       });
+    }
+    const pruned = await this.jobs.pruneDeadLetters(
+      new Date(now.getTime() - this.deadLetterRetentionMs)
+    );
+    if (pruned > 0) {
+      this.log.info("Pruned expired notification dead letters.", {
+        worker_id: this.workerId,
+        pruned,
+      });
+    }
+    await this.pump();
+  }
+
+  /** Resolves once no work is pending or in flight. */
+  async drain(): Promise<void> {
+    for (;;) {
+      await this.pump();
+      if (this.active === 0 && (await this.jobs.countActive()) === 0) return;
+      await new Promise<void>((resolve) => this.idleWaiters.push(resolve));
     }
   }
 
-  private async run(job: Job): Promise<void> {
-    job.attempts += 1;
+  /** Retained terminal failures, newest first. */
+  async listDeadLetters(limit?: number): Promise<DeadLetter[]> {
+    return this.jobs.listDeadLetters(limit);
+  }
+
+  /** Deliberately re-queues a dead letter under its original event identity. */
+  async replayDeadLetter(eventId: string): Promise<boolean> {
+    const replayed = await this.jobs.replayDeadLetter(eventId, this.now());
+    if (replayed && this.autoDispatch) setImmediate(() => void this.pump());
+    return replayed;
+  }
+
+  /**
+   * Claims and delivers due jobs. At most one pump loop runs per dispatcher;
+   * concurrent callers await the same loop.
+   */
+  private async pump(): Promise<void> {
+    if (this.pumping) {
+      await this.pumpPromise;
+      return;
+    }
+    this.pumping = true;
+    this.pumpPromise = this.runPumpLoop().finally(() => {
+      this.pumping = false;
+      this.pumpPromise = null;
+    });
+    try {
+      await this.pumpPromise;
+    } finally {
+      void this.checkIdle();
+    }
+  }
+
+  private async runPumpLoop(): Promise<void> {
+    try {
+      while (this.active < this.concurrency) {
+        const limit = this.concurrency - this.active;
+        const jobs = await this.jobs.claimDue({
+          workerId: this.workerId,
+          now: this.now(),
+          limit,
+          leaseMs: this.leaseMs,
+        });
+        if (jobs.length === 0) break;
+
+        for (const job of jobs) {
+          this.active += 1;
+          void this.run(job).finally(() => {
+            this.active -= 1;
+            void this.pump().then(() => this.checkIdle());
+          });
+        }
+        if (jobs.length < limit) break;
+      }
+    } finally {
+      await this.scheduleWakeupIfIdle();
+    }
+  }
+
+  /** Schedules one future pump when pending retries or leases are not yet due. */
+  private async scheduleWakeupIfIdle(): Promise<void> {
+    if (this.active > 0 || this.wakeupScheduled) return;
+    const next = await this.jobs.nextRunAt(this.leaseMs);
+    if (!next) return;
+    const delayMs = Math.max(0, next.getTime() - this.now().getTime());
+    this.wakeupScheduled = true;
+    this.schedule(() => {
+      this.wakeupScheduled = false;
+      void this.pump();
+    }, delayMs);
+  }
+
+  private async run(job: NotificationJob): Promise<void> {
+    const { eventId, event } = job;
+    const correlationId = job.correlationId ?? event.correlationId;
     try {
       const count = await this.deliver(job);
-      this.pending.delete(job.eventId);
+      const completed = await this.jobs.complete(eventId, this.workerId);
       this.log.info("Dispatched invoice lifecycle notifications.", {
-        event_id: job.eventId,
-        kind: job.event.kind,
-        invoice_id: job.event.invoice.id,
+        event_id: eventId,
+        correlation_id: correlationId,
+        kind: event.kind,
+        invoice_id: event.invoice.id,
         recipient_count: count,
         attempt: job.attempts,
+        worker_id: this.workerId,
+        ownership_kept: completed,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
 
       if (job.attempts < this.maxAttempts) {
         const delay = this.retryDelayMs * 2 ** (job.attempts - 1);
-        this.log.warn("Notification dispatch failed; retrying.", {
-          event_id: job.eventId,
+        const nextAttemptAt = new Date(this.now().getTime() + delay);
+        const persisted = await this.jobs.reschedule(
+          eventId,
+          this.workerId,
+          job.attempts,
+          nextAttemptAt,
+          message
+        );
+        this.log.warn("Notification dispatch failed; retry persisted.", {
+          event_id: eventId,
+          correlation_id: correlationId,
           attempt: job.attempts,
           max_attempts: this.maxAttempts,
-          retry_in_ms: delay,
+          next_attempt_at: nextAttemptAt.toISOString(),
+          worker_id: this.workerId,
+          ownership_kept: persisted,
           error: message,
         });
-        this.scheduledRetries += 1;
-        this.schedule(() => {
-          this.scheduledRetries -= 1;
-          this.queue.push(job);
-          this.pump();
-          this.notifyIfIdle();
-        }, delay);
+        if (!persisted) {
+          this.log.warn("Retry dropped: this worker no longer owns the job.", {
+            event_id: eventId,
+            correlation_id: correlationId,
+            worker_id: this.workerId,
+          });
+        }
         return;
       }
 
-      this.pending.delete(job.eventId);
       const deadLetter: DeadLetter = {
-        eventId: job.eventId,
-        event: job.event,
+        eventId,
+        event,
         attempts: job.attempts,
         error: message,
-        failedAt: new Date(),
+        failedAt: this.now(),
       };
+      const persisted = await this.jobs.markDead(
+        eventId,
+        this.workerId,
+        job.attempts,
+        message,
+        deadLetter.failedAt
+      );
       this.log.error("Notification dispatch dead-lettered.", {
-        event_id: job.eventId,
-        kind: job.event.kind,
-        invoice_id: job.event.invoice.id,
+        event_id: eventId,
+        correlation_id: correlationId,
+        kind: event.kind,
+        invoice_id: event.invoice.id,
         attempts: job.attempts,
+        worker_id: this.workerId,
+        ownership_kept: persisted,
         error: message,
       });
+      if (!persisted) return;
       try {
         await this.options.deadLetters?.record(deadLetter);
       } catch (sinkError) {
         this.log.error("Failed to record notification dead letter.", {
-          event_id: job.eventId,
+          event_id: eventId,
+          correlation_id: correlationId,
           error: sinkError instanceof Error ? sinkError.message : String(sinkError),
         });
       }
     }
   }
 
-  private async deliver({ eventId, event }: Job): Promise<number> {
+  private async deliver({ eventId, event }: Pick<NotificationJob, "eventId" | "event">): Promise<number> {
     const template = TEMPLATES[event.kind];
     const recipients = new Set<string>();
     if (template.audience.includes("seller")) {
@@ -318,8 +486,9 @@ export class NotificationDispatcher {
     return recipients.size;
   }
 
-  private notifyIfIdle(): void {
-    if (this.size > 0) return;
+  private async checkIdle(): Promise<void> {
+    if (this.active > 0 || this.pumping) return;
+    if ((await this.jobs.countActive()) > 0) return;
     for (const resolve of this.idleWaiters.splice(0)) resolve();
   }
 }
@@ -336,9 +505,9 @@ export class InMemoryDeadLetterSink implements DeadLetterSink {
 export function createNotificationDispatchEffect(
   dispatcher: Pick<NotificationDispatcher, "enqueue">
 ): TransitionEffect {
-  return function enqueueLifecycleNotifications(transition) {
+  return async function enqueueLifecycleNotifications(transition) {
     const event = lifecycleEventForTransition(transition);
-    if (event) dispatcher.enqueue(event);
+    if (event) await dispatcher.enqueue(event);
   };
 }
 

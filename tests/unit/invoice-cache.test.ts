@@ -122,6 +122,7 @@ describe("Redis Caching Layer for Invoice Data (#461)", () => {
       // Mock auth middleware setting req.user
       app.use((req, _res, next) => {
         (req as any).user = mockSeller;
+        (req as any).stellarNetwork = { network: req.get("x-stellar-network") ?? "mainnet" };
         next();
       });
 
@@ -207,16 +208,50 @@ describe("Redis Caching Layer for Invoice Data (#461)", () => {
       expect(res.headers["x-cache"]).toBe("MISS");
     });
 
+    it("keeps HTTP cache reads and mutation invalidation in the selected network", async () => {
+      (mockInvoiceService.getInvoicesBySellerId as jest.Mock)
+        .mockResolvedValueOnce({
+          invoices: [{ ...mockInvoice, invoiceNumber: "MAINNET" }],
+          total: 1,
+        })
+        .mockResolvedValueOnce({
+          invoices: [{ ...mockInvoice, invoiceNumber: "TESTNET" }],
+          total: 1,
+        });
+      const main = await request(app).get("/invoices").set("x-stellar-network", "mainnet");
+      const test = await request(app).get("/invoices").set("x-stellar-network", "testnet");
+      expect(main.body.data[0].invoiceNumber).toBe("MAINNET");
+      expect(test.body.data[0].invoiceNumber).toBe("TESTNET");
+      await request(app)
+        .post(`/invoices/${mockInvoice.id}/publish`)
+        .set("x-stellar-network", "mainnet");
+      const retained = await request(app).get("/invoices").set("x-stellar-network", "testnet");
+      expect(retained.headers["x-cache"]).toBe("HIT");
+      expect(retained.body.data[0].invoiceNumber).toBe("TESTNET");
+      const invalidated = await request(app).get("/invoices").set("x-stellar-network", "mainnet");
+      expect(invalidated.headers["x-cache"]).toBe("MISS");
+      expect(mockInvoiceService.getInvoicesBySellerId).toHaveBeenCalledTimes(3);
+    });
+
+    it("coalesces concurrent HTTP invoice misses into one database query", async () => {
+      (mockInvoiceService.getInvoiceById as jest.Mock).mockImplementation(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return mockInvoice;
+      });
+      const responses = await Promise.all(
+        Array.from({ length: 40 }, () => request(app).get(`/invoices/${mockInvoice.id}`))
+      );
+      expect(responses.every((response) => response.status === 200)).toBe(true);
+      expect(mockInvoiceService.getInvoiceById).toHaveBeenCalledTimes(1);
+      expect(responses.some((response) => response.headers["x-cache"] === "COALESCED")).toBe(true);
+    });
+
     it("falls back to database without error when cache fails", async () => {
-      const failingCache = {
-        getInvoicesList: jest.fn(async () => {
-          throw new Error("Redis ECONNREFUSED");
-        }),
-        setInvoicesList: jest.fn(async () => {
-          throw new Error("Redis connection closed");
-        }),
-        invalidateSellerInvoices: jest.fn(async () => {}),
-      } as unknown as InvoiceCacheService;
+      const failingCache = createInvoiceCacheService({
+        redisClient: {
+          get: jest.fn().mockRejectedValue(new Error("Redis ECONNREFUSED")),
+        } as any,
+      });
 
       const failingController = createInvoiceController(mockInvoiceService, failingCache);
       const testApp = express();

@@ -379,6 +379,7 @@ describe("EventIndexerService (Issue #135)", () => {
     it("persists a checkpoint independently of event rows", async () => {
       const service = new EventIndexerService({
         contractIds: [ESCROW_CONTRACT_ID],
+        network: "testnet",
         checkpointRepository: mockCheckpointRepo,
         logger: mockLogger,
       });
@@ -387,10 +388,11 @@ describe("EventIndexerService (Issue #135)", () => {
 
       expect(mockCheckpointRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({
-          checkpointKey: ESCROW_CONTRACT_ID,
+          checkpointKey: service.getCheckpointKey(),
           ledgerSequence: "1200",
         })
       );
+      expect(service.getCheckpointKey()).toMatch(/^soroban:testnet:[0-9a-f]{64}$/);
     });
 
     it("should start and stop timer loop without errors", () => {
@@ -407,6 +409,216 @@ describe("EventIndexerService (Issue #135)", () => {
         expect.any(Object)
       );
       expect(mockLogger.info).toHaveBeenCalledWith("Stopped Soroban event indexer service");
+    });
+  });
+
+  describe("Checkpoint Identity, Network Isolation, and Legacy Migration", () => {
+    const DISTRIBUTOR_CONTRACT_ID = "CC777777777777777777777777777777777777777777777777777777";
+
+    function createInMemoryCheckpointRepo(initialRows: Record<string, string> = {}) {
+      const store = new Map<string, { checkpointKey: string; ledgerSequence: string }>();
+      for (const [checkpointKey, ledgerSequence] of Object.entries(initialRows)) {
+        store.set(checkpointKey, { checkpointKey, ledgerSequence });
+      }
+
+      return {
+        store,
+        create: jest.fn().mockImplementation((data) => ({ ...data })),
+        save: jest.fn().mockImplementation((data) => {
+          store.set(data.checkpointKey, {
+            checkpointKey: data.checkpointKey,
+            ledgerSequence: String(data.ledgerSequence),
+          });
+          return Promise.resolve(data);
+        }),
+        findOne: jest.fn().mockImplementation(({ where }) => {
+          const row = store.get(where?.checkpointKey);
+          return Promise.resolve(row ? { ...row } : null);
+        }),
+      };
+    }
+
+    it("resolves identical contract sets in different orders to the same durable checkpoint key", async () => {
+      const repo = createInMemoryCheckpointRepo();
+
+      const indexerA = new EventIndexerService({
+        contractIds: [ESCROW_CONTRACT_ID, TOKEN_CONTRACT_ID],
+        network: "testnet",
+        checkpointRepository: repo as any,
+        logger: mockLogger,
+      });
+      const indexerB = new EventIndexerService({
+        contractIds: [TOKEN_CONTRACT_ID, ESCROW_CONTRACT_ID, TOKEN_CONTRACT_ID],
+        network: "testnet",
+        checkpointRepository: repo as any,
+        logger: mockLogger,
+      });
+
+      expect(indexerA.getCheckpointKey()).toBe(indexerB.getCheckpointKey());
+
+      await indexerA.saveCheckpoint(4200);
+      const resumedLedger = await indexerB.getLastIndexedLedger();
+
+      expect(resumedLedger).toBe(4200);
+      expect(indexerB.getLastResumeDecision()).toEqual(
+        expect.objectContaining({
+          action: "resume_checkpoint",
+          resumeLedger: 4200,
+          checkpointKey: indexerA.getCheckpointKey(),
+          network: "testnet",
+        })
+      );
+    });
+
+    it("isolates checkpoint rows for different contract sets sharing the same first address", async () => {
+      const repo = createInMemoryCheckpointRepo();
+
+      const streamA = new EventIndexerService({
+        contractIds: [ESCROW_CONTRACT_ID, TOKEN_CONTRACT_ID],
+        network: "testnet",
+        checkpointRepository: repo as any,
+        logger: mockLogger,
+      });
+      const streamB = new EventIndexerService({
+        contractIds: [ESCROW_CONTRACT_ID, DISTRIBUTOR_CONTRACT_ID],
+        network: "testnet",
+        checkpointRepository: repo as any,
+        logger: mockLogger,
+      });
+
+      expect(streamA.getCheckpointKey()).not.toBe(streamB.getCheckpointKey());
+
+      await streamA.saveCheckpoint(8000);
+      expect(await streamB.getLastIndexedLedger()).toBe(0);
+      expect(streamB.getLastResumeDecision()).toEqual(
+        expect.objectContaining({
+          action: "start_from_genesis",
+          resumeLedger: 0,
+        })
+      );
+    });
+
+    it("prevents testnet and mainnet configurations from consuming each other's saved progress", async () => {
+      const repo = createInMemoryCheckpointRepo();
+
+      const testnetIndexer = new EventIndexerService({
+        contractIds: [ESCROW_CONTRACT_ID, TOKEN_CONTRACT_ID],
+        network: "testnet",
+        checkpointRepository: repo as any,
+        logger: mockLogger,
+      });
+      const mainnetIndexer = new EventIndexerService({
+        contractIds: [ESCROW_CONTRACT_ID, TOKEN_CONTRACT_ID],
+        network: "mainnet",
+        checkpointRepository: repo as any,
+        logger: mockLogger,
+      });
+
+      expect(testnetIndexer.getCheckpointKey()).not.toBe(mainnetIndexer.getCheckpointKey());
+      expect(testnetIndexer.getCheckpointKey()).toContain("soroban:testnet:");
+      expect(mainnetIndexer.getCheckpointKey()).toContain("soroban:mainnet:");
+
+      await testnetIndexer.saveCheckpoint(15000);
+      expect(await mainnetIndexer.getLastIndexedLedger()).toBe(0);
+
+      await mainnetIndexer.saveCheckpoint(300);
+      expect(await testnetIndexer.getLastIndexedLedger()).toBe(15000);
+    });
+
+    it("migrates a legacy single-contract checkpoint with an explicit, inspectable resume decision", async () => {
+      const repo = createInMemoryCheckpointRepo({
+        [ESCROW_CONTRACT_ID]: "6500",
+      });
+
+      const service = new EventIndexerService({
+        contractIds: [ESCROW_CONTRACT_ID],
+        network: "testnet",
+        checkpointRepository: repo as any,
+        logger: mockLogger,
+      });
+
+      const resumedLedger = await service.getLastIndexedLedger();
+
+      expect(resumedLedger).toBe(6500);
+      expect(repo.store.get(service.getCheckpointKey())).toEqual({
+        checkpointKey: service.getCheckpointKey(),
+        ledgerSequence: "6500",
+      });
+      expect(service.getLastResumeDecision()).toEqual(
+        expect.objectContaining({
+          action: "migrated_legacy_checkpoint",
+          resumeLedger: 6500,
+          legacyCheckpointKey: ESCROW_CONTRACT_ID,
+          legacyLedger: 6500,
+          checkpointKey: service.getCheckpointKey(),
+        })
+      );
+    });
+
+    it("backfills from genesis by default when a contract is added to a stream with a legacy checkpoint", async () => {
+      const repo = createInMemoryCheckpointRepo({
+        [ESCROW_CONTRACT_ID]: "9000",
+      });
+
+      const expandedIndexer = new EventIndexerService({
+        contractIds: [ESCROW_CONTRACT_ID, TOKEN_CONTRACT_ID],
+        network: "testnet",
+        checkpointRepository: repo as any,
+        logger: mockLogger,
+      });
+
+      const resumedLedger = await expandedIndexer.getLastIndexedLedger();
+
+      expect(resumedLedger).toBe(0);
+      expect(repo.store.has(expandedIndexer.getCheckpointKey())).toBe(false);
+      expect(expandedIndexer.getLastResumeDecision()).toEqual(
+        expect.objectContaining({
+          action: "backfill_expanded_stream",
+          policy: "backfill_from_genesis",
+          resumeLedger: 0,
+          legacyCheckpointKey: ESCROW_CONTRACT_ID,
+          legacyLedger: 9000,
+        })
+      );
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        "Legacy Soroban indexer checkpoint found for expanded contract set; backfilling from genesis",
+        expect.objectContaining({
+          action: "backfill_expanded_stream",
+          legacyCheckpointKey: ESCROW_CONTRACT_ID,
+          legacyLedger: 9000,
+        })
+      );
+    });
+
+    it("supports explicit resume_from_legacy policy for expanded streams", async () => {
+      const repo = createInMemoryCheckpointRepo({
+        [ESCROW_CONTRACT_ID]: "9000",
+      });
+
+      const expandedIndexer = new EventIndexerService({
+        contractIds: [ESCROW_CONTRACT_ID, TOKEN_CONTRACT_ID],
+        network: "testnet",
+        newStreamBackfillPolicy: "resume_from_legacy",
+        checkpointRepository: repo as any,
+        logger: mockLogger,
+      });
+
+      const resumedLedger = await expandedIndexer.getLastIndexedLedger();
+
+      expect(resumedLedger).toBe(9000);
+      expect(repo.store.get(expandedIndexer.getCheckpointKey())).toEqual({
+        checkpointKey: expandedIndexer.getCheckpointKey(),
+        ledgerSequence: "9000",
+      });
+      expect(expandedIndexer.getLastResumeDecision()).toEqual(
+        expect.objectContaining({
+          action: "migrated_legacy_checkpoint",
+          policy: "resume_from_legacy",
+          resumeLedger: 9000,
+          legacyCheckpointKey: ESCROW_CONTRACT_ID,
+          legacyLedger: 9000,
+        })
+      );
     });
   });
 });

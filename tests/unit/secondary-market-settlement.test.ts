@@ -73,6 +73,7 @@ function listing(state: State, overrides: Record<string, unknown> = {}) {
     sellerId: SELLER_ID,
     quantity: "50.0000",
     pricePerFraction: "1.2345",
+    version: 1,
     totalPrice: "61.7250",
     status: ListingStatus.ACTIVE,
     expiresAt: new Date(NOW.getTime() + 86_400_000),
@@ -380,7 +381,7 @@ describe("secondary market purchase settlement (issue #783)", () => {
     const { svc } = service(state);
 
     await expect(
-      svc.cancelListing(row.id, SELLER_WALLET, undefined, SELLER_ID)
+      svc.cancelListing(row.id, SELLER_WALLET, undefined, SELLER_ID, 1)
     ).rejects.toMatchObject({ code: "LISTING_EXPIRED" });
     expect(row.status).toBe(ListingStatus.EXPIRED);
   });

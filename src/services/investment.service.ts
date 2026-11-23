@@ -11,6 +11,7 @@ import { InvoiceStatus, InvestmentStatus } from "../types/enums";
 import { ServiceError } from "../utils/service-error";
 import { isPastDueDate } from "../utils/date.utils";
 import { Decimal } from "decimal.js";
+import { formatPercentage, percentageString } from "../utils/percentage.utils";
 import { getCurrentTermsVersion } from "./investor-acknowledgement.service";
 import {
   createInvoiceStateMachine,
@@ -353,7 +354,7 @@ export class InvestmentService {
     }
 
     const weightedAverageApy = totalDeployedCapital.gt(0)
-      ? weightedYieldSum.dividedBy(totalDeployedCapital).toFixed(2)
+      ? formatPercentage(weightedYieldSum.dividedBy(totalDeployedCapital))
       : "0.00";
 
     const projectedTotalReturn = pendingPayouts.gt(0) ? pendingPayouts : totalDeployedCapital;
@@ -365,7 +366,7 @@ export class InvestmentService {
         returnedAmount: data.returned.toFixed(4),
         profit: data.profit.toFixed(4),
         averageYieldPercent:
-          data.count > 0 ? data.yieldSum.dividedBy(data.count).toFixed(2) : "0.00",
+          data.count > 0 ? formatPercentage(data.yieldSum.dividedBy(data.count)) : "0.00",
       })
     );
 
@@ -566,7 +567,7 @@ export class InvestmentService {
             targetAmount: netAmount.toFixed(4),
             fundedAmount: fundedAmount.toFixed(4),
             remainingCapacity: Decimal.max(netAmount.minus(fundedAmount), 0).toFixed(4),
-            fundedPercent: fundedAmount.dividedBy(netAmount).times(100).toFixed(2),
+            fundedPercent: percentageString(fundedAmount, netAmount),
             version: invoice.version,
           },
         };
@@ -776,7 +777,7 @@ export class InvestmentService {
             investorWallet.length >= 8
               ? `${investorWallet.slice(0, 4)}…${investorWallet.slice(-4)}`
               : investorWallet;
-          const sharePercent = amount.dividedBy(netAmount).times(100).toFixed(2);
+          const sharePercent = percentageString(amount, netAmount);
 
           logger.info("investment.committed", {
             investment_id: savedInvestment.id,

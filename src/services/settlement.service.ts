@@ -33,6 +33,11 @@ import {
 import type { PaymentDistributorContractService } from "./stellar/payment-distributor-contract.service";
 import type { NotificationService } from "./notification.service";
 import type { IssuerReputationService } from "./issuer-reputation.service";
+import {
+  recordSettlementCompleted,
+  recordSettlementFailed,
+  recordSettlementStarted,
+} from "../lib/settlement-metrics";
 
 // settlement.service.ts stores/computes amounts as decimal strings scaled by
 // 10^4 (see decimal-bigint.ts), while stroopsToXlm expects a stroops count
@@ -237,6 +242,18 @@ export class SettlementService {
    * a settlement event for downstream processing.
    */
   async settleInvoice(input: SettleInvoiceInput): Promise<SettleInvoiceResult> {
+    recordSettlementStarted();
+    try {
+      const result = await this.settleInvoiceInternal(input);
+      recordSettlementCompleted();
+      return result;
+    } catch (error) {
+      recordSettlementFailed();
+      throw error;
+    }
+  }
+
+  private async settleInvoiceInternal(input: SettleInvoiceInput): Promise<SettleInvoiceResult> {
     const {
       invoiceId,
       proceeds: proceedsInput,

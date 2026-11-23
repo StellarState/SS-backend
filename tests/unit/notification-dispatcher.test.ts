@@ -6,6 +6,7 @@ import {
   type DedupedNotification,
   type DedupedNotificationStore,
 } from "../../src/lib/notification-dispatcher";
+import { InMemoryNotificationJobStore } from "../../src/lib/notification-job-store";
 import type { InvoiceTransition } from "../../src/lib/invoice-state-machine";
 import type { AppLogger } from "../../src/observability/logger";
 import { InvoiceStatus, NotificationType } from "../../src/types/enums";
@@ -98,23 +99,23 @@ describe("NotificationDispatcher", () => {
     expect(rows[1].message).toContain("Missing documents");
   });
 
-  it("returns before any dispatch work runs", () => {
+  it("persists the job before acknowledging enqueue and defers delivery", async () => {
     const { store, dispatcher } = setup();
 
-    expect(dispatcher.enqueue({ kind: "funded", invoice })).toBe(true);
+    expect(await dispatcher.enqueue({ kind: "funded", invoice })).toBe(true);
 
     expect(store.calls).toBe(0);
-    expect(dispatcher.size).toBe(1);
   });
 
   it("does not duplicate notifications for the same event and wallet", async () => {
     const { store, dispatcher } = setup(["investor-1", "investor-1"]);
 
-    expect(dispatcher.enqueue({ kind: "funded", invoice })).toBe(true);
-    expect(dispatcher.enqueue({ kind: "funded", invoice })).toBe(false);
+    expect(await dispatcher.enqueue({ kind: "funded", invoice })).toBe(true);
+    expect(await dispatcher.enqueue({ kind: "funded", invoice })).toBe(false);
     await dispatcher.drain();
-    // A later re-dispatch of the same event is absorbed by the dedupe key.
-    dispatcher.enqueue({ kind: "funded", invoice });
+    // Once delivered the job is gone, so a later re-dispatch is accepted but
+    // absorbed by the notification dedupe keys.
+    expect(await dispatcher.enqueue({ kind: "funded", invoice })).toBe(true);
     await dispatcher.drain();
 
     expect(store.recipients()).toEqual(["investor-1", "seller-1"]);
@@ -123,8 +124,16 @@ describe("NotificationDispatcher", () => {
   it("treats separate deadline extensions as separate events", async () => {
     const { store, dispatcher } = setup([]);
 
-    dispatcher.enqueue({ kind: "deadline_extended", invoice, newDeadline: new Date("2026-10-01") });
-    dispatcher.enqueue({ kind: "deadline_extended", invoice, newDeadline: new Date("2026-11-01") });
+    await dispatcher.enqueue({
+      kind: "deadline_extended",
+      invoice,
+      newDeadline: new Date("2026-10-01"),
+    });
+    await dispatcher.enqueue({
+      kind: "deadline_extended",
+      invoice,
+      newDeadline: new Date("2026-11-01"),
+    });
     await dispatcher.drain();
 
     expect(store.rows.size).toBe(2);
@@ -157,6 +166,236 @@ describe("NotificationDispatcher", () => {
         error: "db unavailable",
       }),
     ]);
+  });
+});
+
+/** Mirrors a connection loss after the first recipient was already written. */
+class PartialDeliveryStore implements DedupedNotificationStore {
+  readonly rows = new Map<string, DedupedNotification>();
+  calls = 0;
+
+  async insertIgnoringDuplicates(entries: DedupedNotification[]): Promise<void> {
+    this.calls += 1;
+    for (const [index, entry] of entries.entries()) {
+      if (!this.rows.has(entry.dedupeKey)) this.rows.set(entry.dedupeKey, entry);
+      if (this.calls === 1 && index === 0) throw new Error("write lost");
+    }
+  }
+}
+
+function durableSetup(options: {
+  jobs: InMemoryNotificationJobStore;
+  store: DedupedNotificationStore;
+  workerId: string;
+  autoDispatch?: boolean;
+  maxAttempts?: number;
+  retryDelayMs?: number;
+  schedule?: (work: () => void, delayMs: number) => void;
+}) {
+  return new NotificationDispatcher({
+    store: options.store,
+    investors: { findInvestorIds: async () => ["investor-1", "investor-2"] },
+    jobs: options.jobs,
+    logger: silentLogger,
+    workerId: options.workerId,
+    autoDispatch: options.autoDispatch,
+    maxAttempts: options.maxAttempts,
+    retryDelayMs: options.retryDelayMs ?? 0,
+    schedule: options.schedule ?? ((work) => setImmediate(work)),
+  });
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const started = Date.now();
+  while (!predicate()) {
+    if (Date.now() - started > timeoutMs) throw new Error("timed out waiting for state");
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
+describe("NotificationDispatcher durable recovery (issue #772)", () => {
+  it("delivers a job acknowledged before a restart", async () => {
+    const jobs = new InMemoryNotificationJobStore();
+    const store = new FakeStore();
+    const before = durableSetup({ jobs, store, workerId: "before", autoDispatch: false });
+
+    expect(await before.enqueue({ kind: "funded", invoice })).toBe(true);
+    expect(store.calls).toBe(0);
+
+    // The first process disappears without running any delivery work.
+    const after = durableSetup({ jobs, store, workerId: "after", autoDispatch: false });
+    // While the recovered job is still pending, its identity absorbs a retry.
+    expect(await after.enqueue({ kind: "funded", invoice })).toBe(false);
+
+    await after.recover();
+    await after.drain();
+
+    expect(store.recipients()).toEqual(["investor-1", "investor-2", "seller-1"]);
+  });
+
+  it("does not duplicate recipients when racing workers share the queue", async () => {
+    const jobs = new InMemoryNotificationJobStore();
+    const store = new FakeStore();
+    const a = durableSetup({ jobs, store, workerId: "a", autoDispatch: false });
+    const b = durableSetup({ jobs, store, workerId: "b", autoDispatch: false });
+
+    await a.enqueue({ kind: "funded", invoice });
+    await Promise.all([a.recover(), b.recover()]);
+    await Promise.all([a.drain(), b.drain()]);
+
+    expect(store.calls).toBe(1);
+    expect(store.recipients()).toEqual(["investor-1", "investor-2", "seller-1"]);
+  });
+
+  it("persists attempts and the scheduled retry time across worker replacement", async () => {
+    const jobs = new InMemoryNotificationJobStore();
+    const store = new FakeStore();
+    store.failuresRemaining = Infinity;
+    const eventId = "invoice:inv-1:settled";
+
+    const first = durableSetup({
+      jobs,
+      store,
+      workerId: "first",
+      autoDispatch: false,
+      maxAttempts: 3,
+      retryDelayMs: 5_000,
+      schedule: () => undefined, // no retry timer in this test
+    });
+    await first.enqueue({ kind: "settled", invoice });
+    await first.recover();
+    await waitFor(() => jobs.peek(eventId)?.status === "pending");
+
+    const persisted = jobs.peek(eventId)!;
+    expect(persisted.attempts).toBe(1);
+    expect(persisted.nextAttemptAt.getTime()).toBeGreaterThan(Date.now());
+
+    // A replacement worker sees the same attempt count and schedule; the retry
+    // is not due yet, so nothing is claimed or reset.
+    const second = durableSetup({
+      jobs,
+      store,
+      workerId: "second",
+      autoDispatch: false,
+      maxAttempts: 3,
+      retryDelayMs: 0,
+      schedule: () => undefined,
+    });
+    await second.recover();
+
+    const afterReplacement = jobs.peek(eventId)!;
+    expect(afterReplacement.attempts).toBe(1);
+    expect(afterReplacement.nextAttemptAt).toEqual(persisted.nextAttemptAt);
+    expect(store.calls).toBe(1);
+  });
+
+  it("resumes partial delivery without notifying reached recipients again", async () => {
+    const jobs = new InMemoryNotificationJobStore();
+    const store = new PartialDeliveryStore();
+    const dispatcher = durableSetup({ jobs, store, workerId: "partial" });
+
+    await dispatcher.enqueue({ kind: "funded", invoice });
+    await dispatcher.drain();
+
+    expect(store.calls).toBe(2);
+    expect([...store.rows.values()].map((row) => row.userId).sort()).toEqual([
+      "investor-1",
+      "investor-2",
+      "seller-1",
+    ]);
+  });
+
+  it("retains terminal failures for inspection and deliberate replay", async () => {
+    const jobs = new InMemoryNotificationJobStore();
+    const store = new FakeStore();
+    store.failuresRemaining = Infinity;
+    const eventId = "invoice:inv-1:settled";
+
+    const dispatcher = durableSetup({
+      jobs,
+      store,
+      workerId: "dead-letter",
+      maxAttempts: 2,
+    });
+    await dispatcher.enqueue({ kind: "settled", invoice });
+    await dispatcher.drain();
+
+    expect(store.calls).toBe(2);
+    expect(await dispatcher.listDeadLetters()).toEqual([
+      expect.objectContaining({ eventId, attempts: 2, error: "db unavailable" }),
+    ]);
+
+    // The dead letter outlives the worker that produced it.
+    const replacement = durableSetup({
+      jobs,
+      store,
+      workerId: "replacement",
+      maxAttempts: 2,
+      autoDispatch: false,
+    });
+    expect(await replacement.listDeadLetters()).toHaveLength(1);
+
+    store.failuresRemaining = 0;
+    expect(await replacement.replayDeadLetter(eventId)).toBe(true);
+    await replacement.drain();
+
+    expect(store.recipients()).toEqual(["investor-1", "investor-2", "seller-1"]);
+    expect(await replacement.listDeadLetters()).toHaveLength(0);
+  });
+});
+
+describe("NotificationJobStore ownership and retention", () => {
+  const event = { kind: "funded" as const, invoice };
+
+  it("rejects completion or retry writes from a worker that lost the claim", async () => {
+    const jobs = new InMemoryNotificationJobStore();
+    const now = new Date("2026-11-21T12:00:00.000Z");
+    await jobs.create({ eventId: "evt", event, nextAttemptAt: now });
+
+    const [claimed] = await jobs.claimDue({ workerId: "owner", now, limit: 1, leaseMs: 1_000 });
+    expect(claimed.attempts).toBe(1);
+
+    expect(await jobs.complete("evt", "other")).toBe(false);
+    expect(await jobs.reschedule("evt", "other", 1, now, "nope")).toBe(false);
+    expect(await jobs.markDead("evt", "other", 1, "nope", now)).toBe(false);
+    expect(await jobs.complete("evt", "owner")).toBe(true);
+    expect(await jobs.countActive()).toBe(0);
+  });
+
+  it("reclaims an abandoned claim after its lease expires", async () => {
+    const jobs = new InMemoryNotificationJobStore();
+    const claimedAt = new Date("2026-11-21T12:00:00.000Z");
+    await jobs.create({ eventId: "evt", event, nextAttemptAt: claimedAt });
+
+    await jobs.claimDue({ workerId: "gone", now: claimedAt, limit: 1, leaseMs: 1_000 });
+    expect(
+      await jobs.claimDue({
+        workerId: "next",
+        now: new Date(claimedAt.getTime() + 500),
+        limit: 1,
+        leaseMs: 1_000,
+      }),
+    ).toHaveLength(0);
+
+    const [reclaimed] = await jobs.claimDue({
+      workerId: "next",
+      now: new Date(claimedAt.getTime() + 1_001),
+      limit: 1,
+      leaseMs: 1_000,
+    });
+    expect(reclaimed.attempts).toBe(2);
+  });
+
+  it("prunes dead letters after the retention window", async () => {
+    const jobs = new InMemoryNotificationJobStore();
+    const now = new Date("2026-11-01T00:00:00.000Z");
+    await jobs.create({ eventId: "evt", event, nextAttemptAt: now });
+    await jobs.claimDue({ workerId: "w", now, limit: 1, leaseMs: 1_000 });
+    await jobs.markDead("evt", "w", 1, "boom", now);
+
+    expect(await jobs.pruneDeadLetters(new Date(now.getTime() - 1))).toBe(0);
+    expect(await jobs.pruneDeadLetters(new Date(now.getTime() + 1))).toBe(1);
+    expect(await jobs.listDeadLetters()).toHaveLength(0);
   });
 });
 
