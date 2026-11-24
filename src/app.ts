@@ -10,6 +10,7 @@ import { createErrorMiddleware, notFoundMiddleware } from "./middleware/error.mi
 import { applyRateLimiters } from "./middleware/rate-limit.middleware";
 import { createRequestObservabilityMiddleware } from "./middleware/request-observability.middleware";
 import { sanitizeInputMiddleware } from "./middleware/sanitize-input.middleware";
+import { CorsOriginRotationManager } from "./services/cors-rotation.service";
 
 import { logger, type AppLogger } from "./observability/logger";
 import { getMetricsContentType, MetricsRegistry } from "./observability/metrics";
@@ -390,11 +391,31 @@ export function createApp({
 
   app.use(helmet());
 
+  const corsRotationManager = new CorsOriginRotationManager({
+    initialOrigins: http?.corsAllowedOrigins ?? [],
+    allowCredentials: http?.corsAllowCredentials ?? false,
+    nodeEnv: http?.nodeEnv ?? config?.nodeEnv ?? "development",
+    onAudit: (record) => {
+      appLogger?.info("CORS origin rotation event", {
+        action: record.action,
+        actor: record.actor,
+        version: record.version,
+        currentOrigins: record.currentOrigins,
+        nextOrigins: record.nextOrigins,
+      });
+    },
+  });
+  app.locals.corsRotationManager = corsRotationManager;
+
   app.use(
     cors({
-      origin: http?.corsAllowedOrigins && http.corsAllowedOrigins.length > 0
-        ? http.corsAllowedOrigins
-        : false,
+      origin: (origin, callback) => {
+        if (!origin) {
+          callback(null, false);
+          return;
+        }
+        callback(null, corsRotationManager.isOriginAllowed(origin) ? origin : false);
+      },
       credentials: http?.corsAllowCredentials ?? false,
     })
   );
@@ -695,7 +716,10 @@ export function createApp({
   }
 
   if (investorInsightsService && authService) {
-    app.use("/api/v1/investors", createInvestorInsightsRouter(investorInsightsService, authService));
+    app.use(
+      "/api/v1/investors",
+      createInvestorInsightsRouter(investorInsightsService, authService)
+    );
   }
 
   if (watchlistService && authService) {
@@ -729,13 +753,27 @@ export function createApp({
   if (dividendCycleService) {
     app.use(
       "/api/v1/dividends",
-      createDividendsRouter({ dividendCycleService, authService, dividendDistributionService, payoutClaimsService, dividendReconciliationService })
+      createDividendsRouter({
+        dividendCycleService,
+        authService,
+        dividendDistributionService,
+        payoutClaimsService,
+        dividendReconciliationService,
+      })
     );
   }
 
   // ---- Royalties: creator earnings and claim history (issue #537) ----
   if (royaltyEarningsService) {
-    app.use("/api/v1/royalties", createRoyaltiesRouter({ royaltyEarningsService, authService, payoutClaimsService, royaltyStatementsService }));
+    app.use(
+      "/api/v1/royalties",
+      createRoyaltiesRouter({
+        royaltyEarningsService,
+        authService,
+        payoutClaimsService,
+        royaltyStatementsService,
+      })
+    );
   }
 
   // ---- Subscriptions: gated-content access check (issue #539) ----
