@@ -10,6 +10,7 @@ import { createErrorMiddleware, notFoundMiddleware } from "./middleware/error.mi
 import { applyRateLimiters } from "./middleware/rate-limit.middleware";
 import { createRequestObservabilityMiddleware } from "./middleware/request-observability.middleware";
 import { sanitizeInputMiddleware } from "./middleware/sanitize-input.middleware";
+import { createSecurityHeadersMiddleware } from "./middleware/security-headers.middleware";
 
 import { logger, type AppLogger } from "./observability/logger";
 import { getMetricsContentType, MetricsRegistry } from "./observability/metrics";
@@ -389,12 +390,20 @@ export function createApp({
   );
 
   app.use(helmet());
+  app.use(
+    createSecurityHeadersMiddleware({
+      nodeEnv: http?.nodeEnv ?? config?.nodeEnv,
+      corsAllowedOrigins: http?.corsAllowedOrigins,
+      corsAllowCredentials: http?.corsAllowCredentials,
+    })
+  );
 
   app.use(
     cors({
-      origin: http?.corsAllowedOrigins && http.corsAllowedOrigins.length > 0
-        ? http.corsAllowedOrigins
-        : false,
+      origin:
+        http?.corsAllowedOrigins && http.corsAllowedOrigins.length > 0
+          ? http.corsAllowedOrigins
+          : false,
       credentials: http?.corsAllowCredentials ?? false,
     })
   );
@@ -695,7 +704,10 @@ export function createApp({
   }
 
   if (investorInsightsService && authService) {
-    app.use("/api/v1/investors", createInvestorInsightsRouter(investorInsightsService, authService));
+    app.use(
+      "/api/v1/investors",
+      createInvestorInsightsRouter(investorInsightsService, authService)
+    );
   }
 
   if (watchlistService && authService) {
@@ -729,13 +741,27 @@ export function createApp({
   if (dividendCycleService) {
     app.use(
       "/api/v1/dividends",
-      createDividendsRouter({ dividendCycleService, authService, dividendDistributionService, payoutClaimsService, dividendReconciliationService })
+      createDividendsRouter({
+        dividendCycleService,
+        authService,
+        dividendDistributionService,
+        payoutClaimsService,
+        dividendReconciliationService,
+      })
     );
   }
 
   // ---- Royalties: creator earnings and claim history (issue #537) ----
   if (royaltyEarningsService) {
-    app.use("/api/v1/royalties", createRoyaltiesRouter({ royaltyEarningsService, authService, payoutClaimsService, royaltyStatementsService }));
+    app.use(
+      "/api/v1/royalties",
+      createRoyaltiesRouter({
+        royaltyEarningsService,
+        authService,
+        payoutClaimsService,
+        royaltyStatementsService,
+      })
+    );
   }
 
   // ---- Subscriptions: gated-content access check (issue #539) ----
