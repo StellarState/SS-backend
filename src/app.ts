@@ -27,6 +27,8 @@ import { createSettlementRouter } from "./routes/settlement.routes";
 import { createMarketplaceRouter } from "./routes/marketplace.routes";
 import { createSellerRouter } from "./routes/seller.routes";
 import { createAdminRouter } from "./routes/admin/admin.routes";
+import { createAdminAuditLogsRouter } from "./routes/admin/audit-logs.routes";
+import { type AuditService, getActiveAuditService } from "./services/audit-log.service";
 import {
   createDataSourceSuspensionLookup,
   createSuspendedWalletGuard,
@@ -235,6 +237,7 @@ export interface AppDependencies {
   investmentService?: InvestmentService;
   settlementService?: SettlementService;
   adminSettlementService?: AdminSettlementService;
+  auditService?: AuditService;
   marketplaceService?: MarketplaceService;
   sellerService?: SellerService;
   kycService?: KycService;
@@ -316,6 +319,7 @@ export function createApp({
   investmentService,
   settlementService,
   adminSettlementService,
+  auditService,
   marketplaceService,
   sellerService,
   kycService,
@@ -392,9 +396,10 @@ export function createApp({
 
   app.use(
     cors({
-      origin: http?.corsAllowedOrigins && http.corsAllowedOrigins.length > 0
-        ? http.corsAllowedOrigins
-        : false,
+      origin:
+        http?.corsAllowedOrigins && http.corsAllowedOrigins.length > 0
+          ? http.corsAllowedOrigins
+          : false,
       credentials: http?.corsAllowCredentials ?? false,
     })
   );
@@ -695,7 +700,10 @@ export function createApp({
   }
 
   if (investorInsightsService && authService) {
-    app.use("/api/v1/investors", createInvestorInsightsRouter(investorInsightsService, authService));
+    app.use(
+      "/api/v1/investors",
+      createInvestorInsightsRouter(investorInsightsService, authService)
+    );
   }
 
   if (watchlistService && authService) {
@@ -729,13 +737,27 @@ export function createApp({
   if (dividendCycleService) {
     app.use(
       "/api/v1/dividends",
-      createDividendsRouter({ dividendCycleService, authService, dividendDistributionService, payoutClaimsService, dividendReconciliationService })
+      createDividendsRouter({
+        dividendCycleService,
+        authService,
+        dividendDistributionService,
+        payoutClaimsService,
+        dividendReconciliationService,
+      })
     );
   }
 
   // ---- Royalties: creator earnings and claim history (issue #537) ----
   if (royaltyEarningsService) {
-    app.use("/api/v1/royalties", createRoyaltiesRouter({ royaltyEarningsService, authService, payoutClaimsService, royaltyStatementsService }));
+    app.use(
+      "/api/v1/royalties",
+      createRoyaltiesRouter({
+        royaltyEarningsService,
+        authService,
+        payoutClaimsService,
+        royaltyStatementsService,
+      })
+    );
   }
 
   // ---- Subscriptions: gated-content access check (issue #539) ----
@@ -786,6 +808,7 @@ export function createApp({
         extensionService,
         metricsService: adminMetricsService,
         adminSettlementService,
+        auditService,
         adminWallets: config.admin?.wallets || [],
         invoiceEscrowContractService,
         feeScheduleService,
@@ -812,6 +835,17 @@ export function createApp({
   if (secondaryAuctionService) {
     app.use("/api/v1/auctions", createSecondaryAuctionRouter({ secondaryAuctionService }));
     app.use("/api/v1/invoices", createInvoiceAuctionRouter({ secondaryAuctionService }));
+  }
+
+  if (auditService || authService) {
+    app.use(
+      "/api/admin/audit-logs",
+      createAdminAuditLogsRouter({
+        auditService: auditService ?? getActiveAuditService(),
+        authService,
+        enforceAuth: true,
+      })
+    );
   }
 
   app.use(notFoundMiddleware);

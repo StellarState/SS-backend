@@ -10,6 +10,7 @@ import {
 import type { AuthenticatedRequest } from "@/types/auth";
 import { UserType } from "@/types/enums";
 import { AppError, HttpError } from "@/utils/http-error";
+import { Audited } from "@/utils/audited.decorator";
 
 /** Allows the request only for an authenticated user whose current role is admin. */
 export function requireAdmin(req: Request, _res: Response, next: NextFunction): void {
@@ -43,7 +44,11 @@ function parseListQuery(query: Request["query"]) {
   let parsedLimit: number | undefined;
   if (limit !== undefined) {
     parsedLimit = Number(limit);
-    if (!Number.isInteger(parsedLimit) || parsedLimit < 1 || parsedLimit > ADMIN_USER_LIST_MAX_LIMIT) {
+    if (
+      !Number.isInteger(parsedLimit) ||
+      parsedLimit < 1 ||
+      parsedLimit > ADMIN_USER_LIST_MAX_LIMIT
+    ) {
       throw new AppError(
         400,
         `limit must be an integer between 1 and ${ADMIN_USER_LIST_MAX_LIMIT}.`,
@@ -68,6 +73,27 @@ function reasonFrom(body: unknown): string | null {
 function actorFrom(req: Request) {
   const user = (req as AuthenticatedRequest).user!;
   return { id: user.id, stellarAddress: user.stellarAddress };
+}
+
+class AdminUserRoleAuditController {
+  constructor(private readonly adminUserService: AdminUserService) {}
+
+  @Audited("admin.role_change")
+  public async updateRole(req: Request, res: Response): Promise<void> {
+    const role = (req.body as { role?: unknown } | undefined)?.role;
+    if (typeof role !== "string") {
+      throw new AppError(400, "role is required.", "INVALID_ROLE", {
+        allowedRoles: Object.values(UserType),
+      });
+    }
+    const user = await this.adminUserService.updateRole(
+      actorFrom(req),
+      String(req.params.id),
+      role as UserType,
+      reasonFrom(req.body)
+    );
+    res.json({ success: true, data: user });
+  }
 }
 
 export function createAdminUsersRouter(
@@ -97,24 +123,15 @@ export function createAdminUsersRouter(
     res.json({ success: true, data: await adminUserService.getUser(req.params.id) });
   });
 
-  router.patch("/:id/role", async (req, res) => {
-    const role = (req.body as { role?: unknown } | undefined)?.role;
-    if (typeof role !== "string") {
-      throw new AppError(400, "role is required.", "INVALID_ROLE", {
-        allowedRoles: Object.values(UserType),
-      });
-    }
-    const user = await adminUserService.updateRole(
-      actorFrom(req),
-      req.params.id,
-      role as UserType,
-      reasonFrom(req.body)
-    );
-    res.json({ success: true, data: user });
-  });
+  const roleController = new AdminUserRoleAuditController(adminUserService);
+  router.patch("/:id/role", (req, res) => roleController.updateRole(req, res));
 
   router.patch("/:id/suspend", async (req, res) => {
-    const user = await adminUserService.suspend(actorFrom(req), req.params.id, reasonFrom(req.body));
+    const user = await adminUserService.suspend(
+      actorFrom(req),
+      req.params.id,
+      reasonFrom(req.body)
+    );
     res.json({ success: true, data: user });
   });
 
