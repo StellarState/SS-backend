@@ -4,6 +4,7 @@ import { createApp } from "./app";
 
 import dataSource from "./config/database";
 import { getConfig } from "./config/env";
+import { enforceStartupSecretsPolicy, startSecretRotationMonitor } from "./config/secrets-rotation";
 import { logger } from "./observability/logger";
 import { MetricsRegistry } from "./observability/metrics";
 
@@ -68,6 +69,8 @@ export async function bootstrap(): Promise<{
   server: Server;
   settlementEvents: SettlementEventBus;
 }> {
+  enforceStartupSecretsPolicy({ logger });
+  startSecretRotationMonitor({ logger });
   const config = getConfig();
 
   if (!dataSource.isInitialized) {

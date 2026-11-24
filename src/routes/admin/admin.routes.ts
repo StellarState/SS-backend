@@ -30,6 +30,7 @@ import { createAdminRoyaltiesRouter } from "./royalties.routes";
 import { createAnalyticsSnapshotService } from "@/services/analytics-snapshot.service";
 import { createAdminAnalyticsTrendsRouter } from "./analytics-trends.routes";
 import { createAdminSettlementRouter } from "./settlement.routes";
+import { createAdminSecretsRotationRouter } from "./secrets-rotation.routes";
 import { createAdminFeesRouter } from "./fees.routes";
 import { createWaitlistRouter } from "./waitlist.routes";
 import { AppError } from "@/utils/http-error";
@@ -309,6 +310,8 @@ export function createAdminRouter({
       return createAdminAnalyticsTrendsRouter({ analyticsSnapshotService });
     })
   );
+
+  router.use("/secrets", createAdminSecretsRotationRouter());
 
   if (adminSettlementService) {
     router.use("/", createAdminSettlementRouter({ adminSettlementService }));
