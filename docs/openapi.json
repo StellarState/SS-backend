@@ -2265,9 +2265,85 @@
           { "name": "wallet", "in": "path", "required": true, "schema": { "type": "string" } }
         ],
         "responses": {
-          "200": { "description": "Current preferences; missing preference records default to enabled" },
+          "200": { "description": "Current preferences; missing preference records default to enabled. Includes `channels`: the delivery channels per event, defaulting to in_app" },
           "401": { "description": "Authentication required" },
           "403": { "description": "Wallet does not match the authenticated user" }
+        }
+      },
+      "put": {
+        "summary": "Update investor alert preferences",
+        "description": "Partial update: events omitted from `preferences` are unchanged. Each (event, channel) pair is validated against the notification template registry; any unsupported or malformed selection rejects the whole request with per-field errors and nothing is written. See docs/NOTIFICATION_PREFERENCES.md for supported pairs.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "wallet", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["preferences"],
+                "properties": {
+                  "preferences": {
+                    "type": "object",
+                    "description": "Keyed by event: settlement, kyc_expiry, watchlist_change, auto_invest, maturity",
+                    "additionalProperties": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "enabled": { "type": "boolean" },
+                        "channels": {
+                          "type": "array",
+                          "minItems": 1,
+                          "uniqueItems": true,
+                          "items": { "type": "string", "enum": ["in_app", "email"] }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Updated preferences, same shape as GET" },
+          "401": { "description": "Authentication required" },
+          "403": { "description": "Wallet does not match the authenticated user" },
+          "422": { "description": "VALIDATION_ERROR; `error.details` lists `{ field, code, message }` per invalid field, e.g. `preferences.watchlist_change.channels[0]` with code UNSUPPORTED_COMBINATION" }
+        }
+      }
+    },
+    "/api/v1/investors/{wallet}/alert-preferences/preview": {
+      "post": {
+        "summary": "Preview an investor alert",
+        "description": "Renders one (event, channel) pair through the same renderer delivery uses, with contract sample values overridden by any supplied `variables`. Render-only: nothing is stored or sent.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "wallet", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["event", "channel"],
+                "properties": {
+                  "event": { "type": "string", "enum": ["settlement", "kyc_expiry", "watchlist_change", "auto_invest", "maturity"] },
+                  "channel": { "type": "string", "enum": ["in_app", "email"] },
+                  "variables": { "type": "object", "additionalProperties": { "type": "string" } }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Rendered `{ event, channel, title, body, variables, preview: true }`" },
+          "401": { "description": "Authentication required" },
+          "403": { "description": "Wallet does not match the authenticated user" },
+          "422": { "description": "VALIDATION_ERROR with per-field details, including UNSUPPORTED_COMBINATION and UNKNOWN_VARIABLE" }
         }
       }
     },
@@ -2277,7 +2353,7 @@
         "parameters": [
           { "name": "invoice_id", "in": "path", "required": true, "schema": { "type": "string" } }
         ],
-        "responses": { "200": { "description": "Latest settlement yield adjustment" } }
+        "responses": { "200": { "description": "Latest settlement yield adjustment by ledger time. `settled_at` is the settlement event's ledger time; `processed_at` and `processing_lag_ms` report when it was first projected (null for legacy rows)" } }
       }
     },
     "/api/v1/invoices/{invoice_id}/yield-adjustment/history": {
@@ -2286,7 +2362,7 @@
         "parameters": [
           { "name": "invoice_id", "in": "path", "required": true, "schema": { "type": "string" } }
         ],
-        "responses": { "200": { "description": "Per-settlement yield adjustment history" } }
+        "responses": { "200": { "description": "Per-settlement yield adjustment history, ordered by `settled_at` (ledger time) descending, then settlement event id descending. Each entry includes `processed_at` and `processing_lag_ms`" } }
       }
     },
     "/api/v1/admin/onboarding-bonus/pool-balance": {
@@ -2700,6 +2776,7 @@
     "/api/v1/watchlist/{invoiceId}": {
       "post": {
         "summary": "Add an invoice to the watchlist",
+        "description": "Idempotent. Repeating the request never creates a duplicate entry or returns a uniqueness error. Returns 201 when this request created the entry and 200 when it already existed; both carry the final entry and meta.created. Existing notes are not overwritten.",
         "security": [
           {
             "bearerAuth": []
@@ -2711,11 +2788,22 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "format": "uuid"
             }
           }
         ],
         "responses": {
+          "200": {
+            "description": "Already in the watchlist; returns the existing entry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
           "201": {
             "description": "Added",
             "content": {
@@ -2726,13 +2814,23 @@
               }
             }
           },
+          "400": {
+            "description": "invoiceId is not a valid UUID"
+          },
           "401": {
             "description": "Authentication required"
+          },
+          "404": {
+            "description": "Invoice not found"
+          },
+          "409": {
+            "description": "A concurrent remove deleted the entry mid-request; safe to retry"
           }
         }
       },
       "delete": {
         "summary": "Remove an invoice from the watchlist",
+        "description": "Idempotent. Returns 204 whether or not the entry existed, since the final state (absent) is the same.",
         "security": [
           {
             "bearerAuth": []
@@ -2744,16 +2842,38 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "format": "uuid"
             }
           }
         ],
         "responses": {
           "204": {
-            "description": "Removed"
+            "description": "Removed, or was already absent"
+          },
+          "400": {
+            "description": "invoiceId is not a valid UUID"
           },
           "401": {
             "description": "Authentication required"
+          }
+        }
+      }
+    },
+    "/health/live": {
+      "get": {
+        "summary": "Liveness probe",
+        "description": "Reports that the process is running. Does not check dependencies; use /ready for that.",
+        "responses": {
+          "200": {
+            "description": "Process is alive; returns status, timestamp and uptimeSeconds",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           }
         }
       }
@@ -4367,6 +4487,360 @@
             }
           }
         ]
+      }
+    },
+    "/api/v1/invoices/{id}/history": {
+      "get": {
+        "summary": "Invoice lifecycle history, oldest first, cursor-paginated (issue #795)",
+        "description": "Visible to the invoice's seller and to admins; anyone else gets the same 404 as for a missing invoice. Ordered by (createdAt, id). Sellers see actorId only for their own actions; admin and system actors are redacted to null.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "meta.nextCursor from the previous page"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of transitions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "format": "uuid"
+                          },
+                          "fromStatus": {
+                            "type": "string"
+                          },
+                          "toStatus": {
+                            "type": "string"
+                          },
+                          "actorRole": {
+                            "type": "string",
+                            "enum": [
+                              "seller",
+                              "admin",
+                              "system"
+                            ]
+                          },
+                          "actorId": {
+                            "type": "string",
+                            "nullable": true
+                          },
+                          "trigger": {
+                            "type": "string"
+                          },
+                          "reason": {
+                            "type": "string",
+                            "nullable": true
+                          },
+                          "createdAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        }
+                      }
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "limit": {
+                          "type": "integer"
+                        },
+                        "hasMore": {
+                          "type": "boolean"
+                        },
+                        "nextCursor": {
+                          "type": "string",
+                          "nullable": true
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_limit or invalid_cursor"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "404": {
+            "description": "invoice_not_found (also returned when the caller may not see the invoice)"
+          }
+        }
+      }
+    },
+    "/api/v1/investors/{wallet}/settlements": {
+      "get": {
+        "summary": "Settlement history with pro-rata returns, newest first (issue #782)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "wallet",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Must be the caller's own wallet"
+          },
+          {
+            "name": "from_date",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Inclusive. YYYY-MM-DD (start of the UTC day) or a timestamp with a timezone"
+          },
+          {
+            "name": "to_date",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Inclusive. YYYY-MM-DD covers the whole UTC day"
+          },
+          {
+            "name": "invoice_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "description": "Invoice category, case-insensitive"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of settlements",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "invoice_id": {
+                            "type": "string"
+                          },
+                          "invoice_number": {
+                            "type": "string"
+                          },
+                          "settled_at": {
+                            "type": "string"
+                          },
+                          "fractions_held": {
+                            "type": "string"
+                          },
+                          "invested_amount": {
+                            "type": "string"
+                          },
+                          "payout_amount": {
+                            "type": "string"
+                          },
+                          "principal_returned": {
+                            "type": "string"
+                          },
+                          "yield_earned": {
+                            "type": "string"
+                          },
+                          "fees": {
+                            "type": "string"
+                          },
+                          "net_return_usd": {
+                            "type": "string"
+                          },
+                          "net_return_pct": {
+                            "type": "string"
+                          },
+                          "invoice_type": {
+                            "type": "string",
+                            "nullable": true
+                          },
+                          "fee_data_available": {
+                            "type": "boolean"
+                          }
+                        }
+                      }
+                    },
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "limit": {
+                          "type": "integer"
+                        },
+                        "hasMore": {
+                          "type": "boolean"
+                        },
+                        "nextCursor": {
+                          "type": "string",
+                          "nullable": true
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "INVALID_LIMIT, INVALID_CURSOR, INVALID_DATE, INVALID_DATE_RANGE or INVALID_INVOICE_TYPE"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Not the caller's wallet"
+          }
+        }
+      }
+    },
+    "/api/v1/investors/{wallet}/settlements/export": {
+      "get": {
+        "summary": "CSV export of the settlement history (issue #782)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "wallet",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Must be the caller's own wallet"
+          },
+          {
+            "name": "from_date",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Inclusive. YYYY-MM-DD (start of the UTC day) or a timestamp with a timezone"
+          },
+          {
+            "name": "to_date",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Inclusive. YYYY-MM-DD covers the whole UTC day"
+          },
+          {
+            "name": "invoice_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "description": "Invoice category, case-insensitive"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "text/csv, one row per settlement, same fields as the JSON",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid filter"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Not the caller's wallet"
+          },
+          "422": {
+            "description": "EXPORT_TOO_LARGE: more than 10000 rows; narrow the date range"
+          }
+        }
       }
     }
   }

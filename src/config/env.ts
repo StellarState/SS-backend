@@ -1,6 +1,7 @@
 import { config } from "dotenv";
 import "dotenv/config";
 import { Networks } from "@stellar/stellar-sdk";
+import { loadJwtKeyRing, type JwtKeyRing } from "../lib/jwt-keyring";
 
 config();
 
@@ -12,6 +13,7 @@ export interface AppConfig {
   jwt: {
     secret: string;
     expiresIn: string;
+    keyRing?: JwtKeyRing;
   };
   auth: {
     challengeTtlMs: number;
@@ -106,6 +108,15 @@ export interface AppConfig {
   };
   /** Investor accreditation terms version (issue #473). Bumping forces re-ack. */
   termsVersion: string;
+  /**
+   * Issue #741 — suitability is a required precondition for investment.
+   * `required: false` is the only explicit way to disable the gate; a runtime
+   * failure of the risk-profile dependency must never disable it.
+   */
+  suitability: {
+    required: boolean;
+    lookupTimeoutMs: number;
+  };
   cache: {
     redisUrl?: string;
     invoicesListTtlSeconds: number;
@@ -153,6 +164,9 @@ const DEFAULT_IPFS_ALLOWED_MIME_TYPES = [
 
 const DEFAULT_IPFS_UPLOAD_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
 const DEFAULT_IPFS_UPLOAD_RATE_LIMIT_MAX_UPLOADS = 10;
+
+const DEFAULT_SUITABILITY_REQUIRED = true;
+const DEFAULT_SUITABILITY_LOOKUP_TIMEOUT_MS = 5_000;
 
 // ---------------- HELPERS ----------------
 
@@ -244,6 +258,7 @@ export function getConfig(): AppConfig {
     jwt: {
       secret: requireString(process.env.JWT_SECRET, "JWT_SECRET"),
       expiresIn: process.env.JWT_EXPIRES_IN ?? DEFAULT_JWT_EXPIRES_IN,
+      keyRing: loadJwtKeyRing(process.env),
     },
 
     auth: {
@@ -506,6 +521,19 @@ export function getConfig(): AppConfig {
     },
 
     termsVersion: (process.env.TERMS_VERSION?.trim() || "1"),
+
+    suitability: {
+      required: parseBoolean(
+        process.env.REQUIRE_INVESTMENT_SUITABILITY,
+        DEFAULT_SUITABILITY_REQUIRED,
+        "REQUIRE_INVESTMENT_SUITABILITY"
+      ),
+      lookupTimeoutMs: parsePositiveInteger(
+        process.env.INVESTMENT_SUITABILITY_LOOKUP_TIMEOUT_MS,
+        DEFAULT_SUITABILITY_LOOKUP_TIMEOUT_MS,
+        "INVESTMENT_SUITABILITY_LOOKUP_TIMEOUT_MS"
+      ),
+    },
 
     cache: {
       redisUrl: process.env.REDIS_URL || undefined,

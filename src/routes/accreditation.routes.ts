@@ -86,9 +86,22 @@ export function createAccreditationRouter({
       try {
         const wallet = String(req.params.wallet);
         const invoiceId = String(req.params.invoiceId);
+
+        // `amount` is a required query param: the proposed commitment value to
+        // evaluate against the wallet's accreditation tier limit (issue #744).
+        const rawAmount = req.query.amount;
+        if (!rawAmount || typeof rawAmount !== "string") {
+          throw new HttpError(400, "Query parameter 'amount' is required");
+        }
+        const proposedAmount = Number(rawAmount);
+        if (!Number.isFinite(proposedAmount) || proposedAmount <= 0) {
+          throw new HttpError(400, "Query parameter 'amount' must be a positive finite number");
+        }
+
         const eligibility = await accreditationService.checkEligibility(
           wallet,
-          invoiceId
+          invoiceId,
+          proposedAmount
         );
 
         res.json(eligibility);

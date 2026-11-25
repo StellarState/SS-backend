@@ -180,9 +180,20 @@ export class InvestorAccreditationService {
     }
   }
 
+  /**
+   * Evaluates whether a wallet is eligible to make a commitment of
+   * `proposedAmount` on the given invoice.
+   *
+   * The accreditation tier limit is a per-commitment ceiling (not an aggregate
+   * exposure limit), denominated in the same currency as the investment amount.
+   * Comparing the proposed commitment — rather than the invoice face value —
+   * lets a small fractional investor pass a check that the full invoice would
+   * fail, which is the correct policy (issue #744).
+   */
   async checkEligibility(
     walletAddress: string,
-    invoiceId: string
+    invoiceId: string,
+    proposedAmount: Decimal | number | string
   ): Promise<{ eligible: boolean; reason?: string }> {
     const accreditation = await this.getAccreditation(walletAddress);
     const invoice = await this.invoiceRepo.findOne({ where: { id: invoiceId } });
@@ -191,13 +202,17 @@ export class InvestorAccreditationService {
       return { eligible: false, reason: "Invoice not found" };
     }
 
-    const investmentLimit = ACCREDITATION_LIMITS[accreditation.tier];
-    const invoiceAmount = new Decimal(invoice.amount);
+    const investmentLimit = new Decimal(ACCREDITATION_LIMITS[accreditation.tier]);
+    const commitment = new Decimal(proposedAmount);
 
-    if (invoiceAmount.greaterThan(investmentLimit)) {
+    if (!commitment.isFinite() || commitment.lte(0)) {
+      return { eligible: false, reason: "Proposed commitment amount must be a positive number" };
+    }
+
+    if (commitment.greaterThan(investmentLimit)) {
       return {
         eligible: false,
-        reason: `Investment exceeds ${accreditation.tier} tier limit of $${investmentLimit}`,
+        reason: `Proposed commitment of ${commitment.toFixed(4)} exceeds the ${accreditation.tier} tier per-commitment limit of ${investmentLimit.toFixed(0)}`,
       };
     }
 

@@ -162,6 +162,27 @@ suite("durable invoice upload protocol (#826)", () => {
     expect((await service.get(invoice.id, seller.id, id)).upload_complete).toBe(false);
   });
 
+  it("rejects a duplicate checksum before calling IPFS", async () => {
+    await source.getRepository(InvoiceDocument).save({
+      invoiceId: invoice.id,
+      cid: "QmAlreadyPinned",
+      docType: "invoice_pdf",
+      filename: "invoice.pdf",
+      mimeType: "application/pdf",
+      fileSize: bytes.length,
+      contentChecksum: checksum,
+      checksumVerified: true,
+    });
+    const res = await start();
+    const id = res.body.data.upload_session_id;
+    await service.append(invoice.id, seller.id, id, 0, bytes);
+    await expect(service.complete(invoice.id, seller.id, id)).rejects.toMatchObject({
+      code: "duplicate_invoice_document",
+      statusCode: 409,
+    });
+    expect(ipfs.uploadFile).not.toHaveBeenCalled();
+  });
+
   it("restarts from zero and rejects stale chunks from the superseded session", async () => {
     const res = await start().expect(201);
     const id = res.body.data.upload_session_id;

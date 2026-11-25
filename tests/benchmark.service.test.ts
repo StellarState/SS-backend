@@ -1,7 +1,12 @@
 import { DataSource } from "typeorm";
-import { BenchmarkService } from "../src/services/benchmark.service";
+import {
+  BenchmarkService,
+  realizedSettlementDays,
+  scheduledTenorDays,
+} from "../src/services/benchmark.service";
 import { SectorBenchmark } from "../src/models/SectorBenchmark.model";
 import { Invoice } from "../src/models/Invoice.model";
+import { InvoiceStatusHistory } from "../src/models/InvoiceStatusHistory.model";
 import { InvoiceStatus } from "../src/types/enums";
 import { ServiceError } from "../src/utils/service-error";
 
@@ -27,7 +32,11 @@ function makeInvoice(overrides: Partial<Invoice> = {}): Invoice {
   } as Invoice;
 }
 
-function createFakeDataSource(benchmarks: SectorBenchmark[] = [], invoices: Invoice[] = []) {
+function createFakeDataSource(
+  benchmarks: SectorBenchmark[] = [],
+  invoices: Invoice[] = [],
+  settledAtByInvoice: Record<string, Date> = {},
+) {
   const saved = [...benchmarks];
 
   return {
@@ -57,6 +66,22 @@ function createFakeDataSource(benchmarks: SectorBenchmark[] = [], invoices: Invo
         return {
           findOneBy: async (where: { id: string }) =>
             invoices.find((i) => i.id === where.id) ?? null,
+        };
+      }
+      if (entity === InvoiceStatusHistory) {
+        return {
+          findOne: async (options: {
+            where: { invoiceId: string; toStatus: string };
+            order?: { createdAt: "ASC" };
+          }) => {
+            const settledAt = settledAtByInvoice[options.where.invoiceId];
+            if (!settledAt) return null;
+            return {
+              invoiceId: options.where.invoiceId,
+              toStatus: options.where.toStatus,
+              createdAt: settledAt,
+            } as InvoiceStatusHistory;
+          },
         };
       }
       throw new Error(`Unexpected entity in test fake: ${String(entity)}`);
@@ -137,7 +162,11 @@ describe("BenchmarkService", () => {
 
     expect(comparison.sector).toBe("logistics");
     expect(comparison.invoice.yield).toBe("5.00");
-    expect(comparison.invoice.daysToSettle).toBe(31);
+    // PUBLISHED invoices have contractual tenor but no realized settlement.
+    expect(comparison.invoice.scheduledTenorDays).toBe(31);
+    expect(comparison.invoice.realizedSettlementDays).toBeNull();
+    expect(comparison.invoice.daysToSettle).toBeNull();
+    expect(comparison.invoice.settledAt).toBeNull();
     expect(comparison.benchmark?.avgYield).toBe("6.50");
   });
 
@@ -161,5 +190,102 @@ describe("BenchmarkService", () => {
         defaultRate: "0.00",
       }),
     ).rejects.toBeInstanceOf(ServiceError);
+  });
+});
+
+describe("BenchmarkService realized settlement duration (issue #778)", () => {
+  const createdAt = new Date("2026-01-01T00:00:00.000Z");
+  const dueDate = new Date("2026-02-01T00:00:00.000Z");
+
+  function compare(
+    status: InvoiceStatus,
+    settledAt?: Date,
+    overrides: Partial<Invoice> = {},
+  ) {
+    const invoice = makeInvoice({ status, createdAt, dueDate, ...overrides });
+    const service = new BenchmarkService(
+      createFakeDataSource(
+        [],
+        [invoice],
+        settledAt ? { [invoice.id]: settledAt } : {},
+      ),
+    );
+    return service.getInvoiceBenchmark(invoice.id);
+  }
+
+  it("uses the actual settlement time for early repayment", async () => {
+    const result = await compare(
+      InvoiceStatus.SETTLED,
+      new Date("2026-01-06T00:00:00.000Z"),
+    );
+
+    expect(result.invoice.scheduledTenorDays).toBe(31);
+    expect(result.invoice.realizedSettlementDays).toBe(5);
+    expect(result.invoice.daysToSettle).toBe(5);
+    expect(result.invoice.settledAt).toBe("2026-01-06T00:00:00.000Z");
+  });
+
+  it("reports matching scheduled and realized durations on the due date", async () => {
+    const result = await compare(InvoiceStatus.SETTLED, dueDate);
+
+    expect(result.invoice.scheduledTenorDays).toBe(31);
+    expect(result.invoice.realizedSettlementDays).toBe(31);
+  });
+
+  it("keeps late settlement distinguishable from scheduled tenor", async () => {
+    const result = await compare(
+      InvoiceStatus.SETTLED,
+      new Date("2026-02-11T00:00:00.000Z"),
+    );
+
+    expect(result.invoice.scheduledTenorDays).toBe(31);
+    expect(result.invoice.realizedSettlementDays).toBe(41);
+    expect(result.invoice.daysToSettle).not.toBe(result.invoice.scheduledTenorDays);
+  });
+
+  it("exposes unavailable realized duration for unsettled invoices", async () => {
+    // History may exist for other transitions; an unsettled invoice must not
+    // claim a realized settlement time.
+    const result = await compare(
+      InvoiceStatus.FUNDED,
+      new Date("2026-01-10T00:00:00.000Z"),
+    );
+
+    expect(result.invoice.scheduledTenorDays).toBe(31);
+    expect(result.invoice.realizedSettlementDays).toBeNull();
+    expect(result.invoice.daysToSettle).toBeNull();
+    expect(result.invoice.settledAt).toBeNull();
+  });
+
+  it("returns null instead of a zero-day observation for invalid timestamps", async () => {
+    const invalid = new Date("not-a-date");
+    const result = await compare(
+      InvoiceStatus.SETTLED,
+      new Date("2026-01-10T00:00:00.000Z"),
+      { createdAt: invalid, dueDate: invalid },
+    );
+
+    expect(result.invoice.scheduledTenorDays).toBeNull();
+    expect(result.invoice.realizedSettlementDays).toBeNull();
+    expect(result.invoice.daysToSettle).toBeNull();
+  });
+
+  it("ignores an invalid recorded settlement timestamp", async () => {
+    const result = await compare(InvoiceStatus.SETTLED, new Date("invalid"));
+
+    expect(result.invoice.settledAt).toBeNull();
+    expect(result.invoice.realizedSettlementDays).toBeNull();
+    expect(result.invoice.scheduledTenorDays).toBe(31);
+  });
+
+  it("validates tenor and realized helpers against backwards timestamps", () => {
+    const invoice = makeInvoice({
+      createdAt: new Date("2026-02-01T00:00:00.000Z"),
+      dueDate: new Date("2026-01-01T00:00:00.000Z"),
+    });
+
+    expect(scheduledTenorDays(invoice)).toBeNull();
+    expect(realizedSettlementDays(invoice, new Date("2026-01-15T00:00:00.000Z"))).toBeNull();
+    expect(realizedSettlementDays(invoice, invoice.createdAt)).toBe(0);
   });
 });

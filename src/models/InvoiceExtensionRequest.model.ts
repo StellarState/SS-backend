@@ -13,10 +13,16 @@ import type { Invoice } from "./Invoice.model";
 
 /**
  * Seller-requested funding deadline extension, gated by admin approval.
- * Issue #477 — at most one pending request per invoice.
+ * Issue #477 — at most one pending request per invoice. Issue #734 makes
+ * that durable with a partial unique index; reviewed (approved or rejected)
+ * rows are kept for audit and do not block a new proposal.
  */
 @Entity("invoice_extension_requests")
 @Index("idx_extension_requests_invoice_status", ["invoiceId", "status"])
+@Index("uq_extension_requests_one_pending_per_invoice", ["invoiceId"], {
+  unique: true,
+  where: `"status" = 'pending'`,
+})
 export class InvoiceExtensionRequest {
   @PrimaryGeneratedColumn("uuid")
   id!: string;

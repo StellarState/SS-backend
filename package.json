@@ -37,6 +37,8 @@
     "db:migrate:revert": "node -r ts-node/register ./node_modules/typeorm/cli.js migration:revert -d src/config/data-source.ts",
     "db:migrate:show": "node -r ts-node/register ./node_modules/typeorm/cli.js migration:show -d src/config/data-source.ts",
     "verify:openapi": "ts-node -r tsconfig-paths/register scripts/verify-openapi-sync.ts",
+    "audit:retention": "ts-node -r tsconfig-paths/register scripts/audit-log-retention.ts",
+    "jwt:key-status": "ts-node -r tsconfig-paths/register scripts/jwt-key-status.ts",
     "ci": "npm run lint && npm run type-check && npm run build && npm run test:ci",
     "prepare": "husky"
   },

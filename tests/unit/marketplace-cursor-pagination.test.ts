@@ -131,6 +131,41 @@ describe("MarketplaceService.getPublishedInvoicesByCursor", () => {
     );
   });
 
+  it("returns stored fundingDeadline separately from dueDate in cursor-paginated results (#751)", async () => {
+    const fundingDeadline = new Date("2026-02-01T15:30:00.000Z");
+    const dueDate = new Date("2026-05-01T00:00:00.000Z");
+    const invoice = makeInvoice({ dueDate, fundingDeadline });
+
+    repo.findPublishedInvoicesByCursor.mockResolvedValue({
+      invoices: [invoice],
+      nextCursor: null,
+      hasMore: false,
+    });
+
+    const result = await service.getPublishedInvoicesByCursor({}, { sortField: "amount", limit: 10 });
+
+    expect(result.data[0].fundingDeadline).toEqual(fundingDeadline);
+    expect(result.data[0].dueDate).toEqual(dueDate);
+  });
+
+  it("preserves stored yieldBps including explicit 0 in cursor-paginated results (#753)", async () => {
+    const explicitYield = makeInvoice({ discountRate: "10.00", yieldBps: 1111 });
+    const zeroYield = makeInvoice({ discountRate: "5.00", yieldBps: 0 });
+    const legacyNull = makeInvoice({ discountRate: "3.50", yieldBps: null });
+
+    repo.findPublishedInvoicesByCursor.mockResolvedValue({
+      invoices: [explicitYield, zeroYield, legacyNull],
+      nextCursor: null,
+      hasMore: false,
+    });
+
+    const result = await service.getPublishedInvoicesByCursor({}, { sortField: "amount", limit: 10 });
+
+    expect(result.data[0].yieldBps).toBe(1111);
+    expect(result.data[1].yieldBps).toBe(0);
+    expect(result.data[2].yieldBps).toBe(350);
+  });
+
   it("passes through a supplied cursor and custom filters unchanged", async () => {
     repo.findPublishedInvoicesByCursor.mockResolvedValue({
       invoices: [],

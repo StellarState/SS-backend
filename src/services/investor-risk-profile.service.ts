@@ -98,8 +98,17 @@ export class InvestorRiskProfileService {
       throw new ServiceError("INVALID_RESPONSE", "Invalid risk tolerance", 400);
     }
 
-    if (responses.lossTolerancePercentage < 0 || responses.lossTolerancePercentage > 100) {
-      throw new ServiceError("INVALID_RESPONSE", "Loss tolerance must be between 0 and 100", 400);
+    if (
+      typeof responses.lossTolerancePercentage !== "number" ||
+      !Number.isFinite(responses.lossTolerancePercentage) ||
+      responses.lossTolerancePercentage < 0 ||
+      responses.lossTolerancePercentage > 100
+    ) {
+      throw new ServiceError(
+        "INVALID_RESPONSE",
+        "Loss tolerance must be a finite number between 0 and 100",
+        400
+      );
     }
 
     if (!responses.annualIncomeRange || responses.annualIncomeRange.trim().length === 0) {

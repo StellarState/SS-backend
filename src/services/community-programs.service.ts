@@ -6,6 +6,7 @@ import { Referral } from "../models/Referral.model";
 import { WaitlistEntry } from "../models/WaitlistEntry.model";
 import { WaitlistReferralCredit } from "../models/WaitlistReferralCredit.model";
 import { AppError } from "../utils/http-error";
+import { orderWaitlistQueue } from "./waitlist-order";
 
 type WaitlistReferralStatus =
   | "not_provided"
@@ -173,8 +174,25 @@ export class CommunityProgramsService {
   }
 
   async waitlistView(entry: WaitlistEntry) {
-    const ahead = await this.dataSource.getRepository(WaitlistEntry).count({ where: { status: "pending" } });
-    return { wallet: entry.wallet, position: Math.max(1, ahead - entry.referralCount), referralCount: entry.referralCount, referralCode: entry.referralCode, status: entry.status };
+    let position: number | null = null;
+    if (entry.status === "pending") {
+      const pendingEntries = await orderWaitlistQueue(
+        this.dataSource.getRepository(WaitlistEntry).createQueryBuilder("waitlist"),
+        "waitlist",
+      )
+        .where("waitlist.status = :status", { status: "pending" })
+        .getMany();
+      const index = pendingEntries.findIndex((pending) => pending.id === entry.id);
+      if (index >= 0) position = index + 1;
+    }
+
+    return {
+      wallet: entry.wallet,
+      position,
+      referralCount: entry.referralCount,
+      referralCode: entry.referralCode,
+      status: entry.status,
+    };
   }
 
   async recordWaitlistReferral(referralCode: string, signupWallet: string) {

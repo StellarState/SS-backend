@@ -84,7 +84,7 @@ export function createKeyMergeProposalController(
         }
 
         if (!isAdmin && !isCreator) {
-          throw new HttpError(403, "Admin or creator access required.");
+          throw new HttpError(404, "Resource not found.");
         }
 
         const status = req.query.status ? String(req.query.status).toLowerCase() : "all";
@@ -145,7 +145,7 @@ export function createKeyMergeProposalController(
         }
 
         if (!isAdmin && !isCreator) {
-          throw new HttpError(403, "Admin or creator access required.");
+          throw new HttpError(404, "Resource not found.");
         }
 
         const proposalId = req.params.proposalId ?? req.params.id;

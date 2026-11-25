@@ -46,7 +46,7 @@ describe("verifyWebhookSignatureHeaders", () => {
 
   const now = () => NOW_MS;
 
-  function validSignature(timestamp: number = NOW_MS): string {
+  function validSignature(timestamp: number | string = NOW_MS): string {
     return computeWebhookSignatureForTimestamp(PAYLOAD, String(timestamp), SECRET);
   }
 
@@ -313,6 +313,309 @@ describe("verifyWebhookSignatureHeaders", () => {
           }),
         "TIMESTAMP_SKEWED"
       );
+    });
+  });
+
+  describe("seconds and milliseconds disambiguation (#803)", () => {
+    it("accepts 10-digit epoch seconds in auto mode", () => {
+      const tsSeconds = String(Math.floor((NOW_MS - 2_000) / 1_000));
+      const res = verifyWebhookSignatureHeaders({
+        payload: PAYLOAD,
+        signature: validSignature(tsSeconds),
+        timestamp: tsSeconds,
+        secret: SECRET,
+        now,
+      });
+      expect(res).toBe(tsSeconds);
+    });
+
+    it("accepts 13-digit epoch milliseconds in auto mode", () => {
+      const tsMs = String(NOW_MS - 2_000);
+      const res = verifyWebhookSignatureHeaders({
+        payload: PAYLOAD,
+        signature: validSignature(tsMs),
+        timestamp: tsMs,
+        secret: SECRET,
+        now,
+      });
+      expect(res).toBe(tsMs);
+    });
+
+    it("rejects ambiguous digit counts in auto mode", () => {
+      for (const ambiguous of ["12345", "17000000000", "170000000000"]) {
+        expectWebhookError(
+          () =>
+            verifyWebhookSignatureHeaders({
+              payload: PAYLOAD,
+              signature: validSignature(ambiguous),
+              timestamp: ambiguous,
+              secret: SECRET,
+              now,
+            }),
+          "TIMESTAMP_OUT_OF_RANGE"
+        );
+      }
+    });
+
+    it("enforces unit: 's' and rejects millisecond timestamps", () => {
+      const tsSeconds = String(Math.floor((NOW_MS - 1_000) / 1_000));
+      expect(
+        verifyWebhookSignatureHeaders({
+          payload: PAYLOAD,
+          signature: validSignature(tsSeconds),
+          timestamp: tsSeconds,
+          secret: SECRET,
+          unit: "s",
+          now,
+        })
+      ).toBe(tsSeconds);
+
+      const tsMs = String(NOW_MS - 1_000);
+      expectWebhookError(
+        () =>
+          verifyWebhookSignatureHeaders({
+            payload: PAYLOAD,
+            signature: validSignature(tsMs),
+            timestamp: tsMs,
+            secret: SECRET,
+            unit: "s",
+            now,
+          }),
+        "TIMESTAMP_OUT_OF_RANGE"
+      );
+    });
+
+    it("enforces unit: 'ms' and rejects second timestamps", () => {
+      const tsMs = String(NOW_MS - 1_000);
+      expect(
+        verifyWebhookSignatureHeaders({
+          payload: PAYLOAD,
+          signature: validSignature(tsMs),
+          timestamp: tsMs,
+          secret: SECRET,
+          unit: "ms",
+          now,
+        })
+      ).toBe(tsMs);
+
+      const tsSeconds = String(Math.floor((NOW_MS - 1_000) / 1_000));
+      expectWebhookError(
+        () =>
+          verifyWebhookSignatureHeaders({
+            payload: PAYLOAD,
+            signature: validSignature(tsSeconds),
+            timestamp: tsSeconds,
+            secret: SECRET,
+            unit: "ms",
+            now,
+          }),
+        "TIMESTAMP_OUT_OF_RANGE"
+      );
+    });
+  });
+
+  describe("negative and future timestamp rejection (#803)", () => {
+    it("rejects negative timestamps with TIMESTAMP_OUT_OF_RANGE", () => {
+      for (const neg of ["-1", "-100", "-1700000000", "-1700000000000"]) {
+        expectWebhookError(
+          () =>
+            verifyWebhookSignatureHeaders({
+              payload: PAYLOAD,
+              signature: validSignature(neg),
+              timestamp: neg,
+              secret: SECRET,
+              now,
+            }),
+          "TIMESTAMP_OUT_OF_RANGE"
+        );
+      }
+    });
+
+    it("rejects future timestamps with TIMESTAMP_SKEWED", () => {
+      for (const futureMs of [NOW_MS + 1, NOW_MS + 1_000, NOW_MS + 60_000]) {
+        expectWebhookError(
+          () =>
+            verifyWebhookSignatureHeaders({
+              payload: PAYLOAD,
+              signature: validSignature(futureMs),
+              timestamp: String(futureMs),
+              secret: SECRET,
+              now,
+            }),
+          "TIMESTAMP_SKEWED"
+        );
+      }
+    });
+  });
+
+  describe("deterministic boundary skew (#803)", () => {
+    const maxSkew = 5_000;
+
+    it("accepts exact now (skew = 0)", () => {
+      expect(
+        verifyWebhookSignatureHeaders({
+          payload: PAYLOAD,
+          signature: validSignature(NOW_MS),
+          timestamp: String(NOW_MS),
+          secret: SECRET,
+          maxTimestampSkewMs: maxSkew,
+          now,
+        })
+      ).toBe(String(NOW_MS));
+    });
+
+    it("rejects exact now + 1ms (future)", () => {
+      expectWebhookError(
+        () =>
+          verifyWebhookSignatureHeaders({
+            payload: PAYLOAD,
+            signature: validSignature(NOW_MS + 1),
+            timestamp: String(NOW_MS + 1),
+            secret: SECRET,
+            maxTimestampSkewMs: maxSkew,
+            now,
+          }),
+        "TIMESTAMP_SKEWED"
+      );
+    });
+
+    it("accepts exact skew boundary (now - maxTimestampSkewMs)", () => {
+      const boundaryTs = NOW_MS - maxSkew;
+      expect(
+        verifyWebhookSignatureHeaders({
+          payload: PAYLOAD,
+          signature: validSignature(boundaryTs),
+          timestamp: String(boundaryTs),
+          secret: SECRET,
+          maxTimestampSkewMs: maxSkew,
+          now,
+        })
+      ).toBe(String(boundaryTs));
+    });
+
+    it("rejects exact skew boundary + 1ms (now - maxTimestampSkewMs - 1)", () => {
+      const pastBoundaryTs = NOW_MS - maxSkew - 1;
+      expectWebhookError(
+        () =>
+          verifyWebhookSignatureHeaders({
+            payload: PAYLOAD,
+            signature: validSignature(pastBoundaryTs),
+            timestamp: String(pastBoundaryTs),
+            secret: SECRET,
+            maxTimestampSkewMs: maxSkew,
+            now,
+          }),
+        "TIMESTAMP_SKEWED"
+      );
+    });
+  });
+
+  describe("provider format tests (#803)", () => {
+    it("accepts Stripe-style decimal seconds timestamp", () => {
+      const stripeTs = "1699999999.500";
+      const res = verifyWebhookSignatureHeaders({
+        payload: PAYLOAD,
+        signature: validSignature(stripeTs),
+        timestamp: stripeTs,
+        secret: SECRET,
+        now,
+      });
+      expect(res).toBe(stripeTs);
+    });
+
+    it("accepts Svix/Slack 10-digit epoch seconds timestamp", () => {
+      const svixTs = "1699999998";
+      const res = verifyWebhookSignatureHeaders({
+        payload: PAYLOAD,
+        signature: validSignature(svixTs),
+        timestamp: svixTs,
+        secret: SECRET,
+        now,
+      });
+      expect(res).toBe(svixTs);
+    });
+
+    it("accepts ISO-8601 UTC timestamp", () => {
+      const isoTs = new Date(NOW_MS - 2_000).toISOString();
+      const res = verifyWebhookSignatureHeaders({
+        payload: PAYLOAD,
+        signature: validSignature(isoTs),
+        timestamp: isoTs,
+        secret: SECRET,
+        now,
+      });
+      expect(res).toBe(isoTs);
+    });
+
+    it("accepts RFC 2822 date timestamp", () => {
+      const rfcTs = new Date(NOW_MS - 2_000).toUTCString();
+      const res = verifyWebhookSignatureHeaders({
+        payload: PAYLOAD,
+        signature: validSignature(rfcTs),
+        timestamp: rfcTs,
+        secret: SECRET,
+        now,
+      });
+      expect(res).toBe(rfcTs);
+    });
+
+    it("rejects scientific notation and hex strings", () => {
+      for (const malformed of ["1e12", "1.7e12", "0x6554f000"]) {
+        expectWebhookError(
+          () =>
+            verifyWebhookSignatureHeaders({
+              payload: PAYLOAD,
+              signature: validSignature(malformed),
+              timestamp: malformed,
+              secret: SECRET,
+              now,
+            }),
+          "TIMESTAMP_OUT_OF_RANGE"
+        );
+      }
+    });
+  });
+
+  describe("clock source and configuration validation (#803)", () => {
+    it("rejects non-function clock source", () => {
+      expect(() =>
+        verifyWebhookSignatureHeaders({
+          payload: PAYLOAD,
+          signature: validSignature(),
+          timestamp: String(NOW_MS),
+          secret: SECRET,
+          now: "not-a-fn" as unknown as () => number,
+        })
+      ).toThrow("Invalid clock source");
+    });
+
+    it("rejects clock source returning non-finite or non-positive value", () => {
+      for (const badNow of [NaN, Infinity, -100, 0]) {
+        expect(() =>
+          verifyWebhookSignatureHeaders({
+            payload: PAYLOAD,
+            signature: validSignature(),
+            timestamp: String(NOW_MS),
+            secret: SECRET,
+            now: () => badNow,
+          })
+        ).toThrow("Invalid clock source");
+      }
+    });
+
+    it("rejects negative or non-finite maxTimestampSkewMs", () => {
+      for (const badSkew of [-1, NaN, Infinity]) {
+        expect(() =>
+          verifyWebhookSignatureHeaders({
+            payload: PAYLOAD,
+            signature: validSignature(),
+            timestamp: String(NOW_MS),
+            secret: SECRET,
+            maxTimestampSkewMs: badSkew,
+            now,
+          })
+        ).toThrow("maxTimestampSkewMs must be a non-negative finite number");
+      }
     });
   });
 });
