@@ -8,6 +8,7 @@ import { Invoice } from "../../src/models/Invoice.model";
 import { Investment } from "../../src/models/Investment.model";
 import { AuthChallenge } from "../../src/models/AuthChallenge.model";
 import { Transaction } from "../../src/models/Transaction.model";
+import { SettlementRemainder } from "../../src/models/SettlementRemainder.model";
 import { KYCVerification } from "../../src/models/KYCVerification.model";
 import { Notification } from "../../src/models/Notification.model";
 import { KycHistory } from "../../src/models/KycHistory.model";
@@ -145,7 +146,7 @@ describe("Integration: Seller Dashboard Aggregates", () => {
     dataSource = new DataSource({
       type: "sqlite",
       database: ":memory:",
-      entities: [User, Invoice, Investment, AuthChallenge, Transaction, KYCVerification, Notification, KycHistory, SecondaryListing, Watchlist],
+      entities: [User, Invoice, Investment, AuthChallenge, Transaction, SettlementRemainder, KYCVerification, Notification, KycHistory, SecondaryListing, Watchlist],
       synchronize: true,
       dropSchema: true,
     });
@@ -216,7 +217,7 @@ describe("Integration: Seller Dashboard Aggregates", () => {
     );
 
     const invoiceRepo = dataSource.getRepository(Invoice);
-    await invoiceRepo.save([
+    const savedInvoices = await invoiceRepo.save([
       invoiceRepo.create({
         sellerId: sellerA.id,
         invoiceNumber: "INV-A1",
@@ -249,6 +250,16 @@ describe("Integration: Seller Dashboard Aggregates", () => {
       }),
     ]);
 
+    // Seller B's settled invoice raised 480 but recorded a gross repayment of
+    // 500 with a 10 fee: investors received 490.
+    const settledB = savedInvoices.find((inv) => inv.invoiceNumber === "INV-B1")!;
+    await dataSource.getRepository(SettlementRemainder).save({
+      invoiceId: settledB.id,
+      remainderAmount: "0.0000",
+      totalSettlementAmount: "500.0000",
+      totalDistributedAmount: "490.0000",
+    });
+
     const tokenA = makeToken(sellerA);
     const tokenB = makeToken(sellerB);
     const tokenInvestor = makeToken(investor);
@@ -275,7 +286,9 @@ describe("Integration: Seller Dashboard Aggregates", () => {
     expect(resB.status).toBe(200);
     expect(resB.body.data.totalInvoices).toBe(1);
     expect(resB.body.data.totalSettled).toBe(1);
-    expect(resB.body.data.totalRepaid).toBe("480.0000");
+    expect(resB.body.data.totalRepaid).toBe("500.0000");
+    expect(resB.body.data.totalDistributed).toBe("490.0000");
+    expect(resA.body.data.totalRepaid).toBe("0.0000");
 
     // Investor should receive 403 Forbidden
     const resInvestor = await request(app)
