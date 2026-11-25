@@ -1,6 +1,7 @@
 import "reflect-metadata";
 import { DataSource, getMetadataArgsStorage } from "typeorm";
 import { NotificationDispatchJob } from "../../src/models/NotificationDispatchJob.model";
+import { NotificationDeadLetterAudit } from "../../src/models/NotificationDeadLetterAudit.model";
 import { TypeOrmNotificationJobStore } from "../../src/services/notification-job-store.service";
 
 const invoice = { id: "inv-1", sellerId: "seller-1", invoiceNumber: "INV-001" };
@@ -28,7 +29,7 @@ describe("TypeOrmNotificationJobStore", () => {
     dataSource = new DataSource({
       type: "sqlite",
       database: ":memory:",
-      entities: [NotificationDispatchJob],
+      entities: [NotificationDispatchJob, NotificationDeadLetterAudit],
       synchronize: true,
       logging: false,
     });
@@ -83,9 +84,9 @@ describe("TypeOrmNotificationJobStore", () => {
     expect(await store.reschedule("evt", "a", 1, retryAt, "db unavailable")).toBe(true);
 
     const replacement = new TypeOrmNotificationJobStore(dataSource);
-    expect(await replacement.claimDue({ workerId: "b", now, limit: 1, leaseMs: 60_000 })).toHaveLength(
-      0
-    );
+    expect(
+      await replacement.claimDue({ workerId: "b", now, limit: 1, leaseMs: 60_000 })
+    ).toHaveLength(0);
     expect(await replacement.nextRunAt(60_000)).toEqual(retryAt);
 
     const [second] = await replacement.claimDue({
@@ -102,7 +103,7 @@ describe("TypeOrmNotificationJobStore", () => {
       expect.objectContaining({ eventId: "evt", attempts: 2, error: "db unavailable" }),
     ]);
 
-    expect(await replacement.replayDeadLetter("evt", retryAt)).toBe(true);
+    expect(await replacement.replayDeadLetter("evt", "admin", retryAt)).toBe(true);
     expect(await replacement.countActive()).toBe(1);
     expect(await replacement.listDeadLetters()).toHaveLength(0);
   });
