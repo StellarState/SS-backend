@@ -12,6 +12,12 @@ export function createSecondaryAuctionRouter({
   const router = Router();
   const controller = new SecondaryAuctionController(secondaryAuctionService);
 
+  // GET /api/v1/auctions/:auctionId/ownership — ownership projection (#835)
+  router.get("/:auctionId/ownership", controller.getAuctionOwnership);
+
+  // POST /api/v1/auctions/:auctionId/close — close auction & transfer ownership (#835)
+  router.post("/:auctionId/close", controller.closeAuction);
+
   // GET /api/v1/auctions/:auctionId — status, highest bid, countdown (#679)
   router.get("/:auctionId", controller.getAuction);
 

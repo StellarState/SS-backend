@@ -44,6 +44,38 @@ export class SecondaryAuctionController {
       return sendError(res, err);
     }
   };
+
+  /** POST /api/v1/auctions/:auctionId/close (#835) */
+  closeAuction = async (req: Request, res: Response) => {
+    try {
+      const auctionId = String(
+        req.params.auctionId ?? (req.params as Record<string, string>).auction_id
+      );
+      const auction = await this.secondaryAuctionService.closeAuction({
+        auctionId,
+        winner: req.body?.winner,
+        settlementAmount: req.body?.settlementAmount,
+        eventId: req.body?.eventId,
+        occurredAt: req.body?.occurredAt ? new Date(req.body.occurredAt) : undefined,
+      });
+      return res.status(200).json({ success: true, data: auction });
+    } catch (err: unknown) {
+      return sendError(res, err);
+    }
+  };
+
+  /** GET /api/v1/auctions/:auctionId/ownership (#835) */
+  getAuctionOwnership = async (req: Request, res: Response) => {
+    try {
+      const auctionId = String(
+        req.params.auctionId ?? (req.params as Record<string, string>).auction_id
+      );
+      const ownership = await this.secondaryAuctionService.getAuctionOwnership(auctionId);
+      return res.status(200).json({ success: true, data: ownership });
+    } catch (err: unknown) {
+      return sendError(res, err);
+    }
+  };
 }
 
 function sendError(res: Response, err: unknown): Response {
