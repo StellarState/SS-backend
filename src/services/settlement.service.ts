@@ -10,7 +10,7 @@ import { InvoiceStatus, InvestmentStatus, NotificationType } from "../types/enum
 import { TransactionStatus, TransactionType } from "../types/enums";
 import { Transaction } from "../models/Transaction.model";
 import { ServiceError } from "../utils/service-error";
-import { computeInvestorReturn } from "../lib/investor-return";
+import { allocateSettlementProceeds } from "../lib/investor-return";
 import { decimalStringToScaledBigInt, scaledBigIntToDecimalString } from "../lib/decimal-bigint";
 import {
   createInvoiceStateMachine,
@@ -197,7 +197,23 @@ export class SettlementService {
     const feeScaled = feeBps > 0 ? (proceedsScaled * BigInt(feeBps)) / 10_000n : 0n;
     const distributableScaled = proceedsScaled - feeScaled;
 
-    let sumOfReturnsScaled = 0n;
+    // Allocate the distributable proceeds pro-rata using the deterministic
+    // largest-remainder method so every unit is assigned and no rounding dust
+    // is lost or inconsistently assigned (#841).
+    const allocationInputs = investments.map((inv) => ({
+      investmentId: inv.id,
+      investorId: inv.investorId,
+      investmentAmountScaled: decimalStringToScaledBigInt(inv.investmentAmount),
+    }));
+
+    const { allocations } = allocateSettlementProceeds(
+      allocationInputs,
+      distributableScaled,
+      totalFundedScaled
+    );
+
+    const investmentById = new Map(investments.map((inv) => [inv.id, inv]));
+    let sumOfBasesScaled = 0n;
     const returns: Array<{
       investmentId: string;
       investorId: string;
@@ -205,30 +221,32 @@ export class SettlementService {
       returnAmount: string;
     }> = [];
 
-    for (const inv of investments) {
-      const investmentAmountScaled = decimalStringToScaledBigInt(inv.investmentAmount);
-      const returnScaled = computeInvestorReturn(
-        investmentAmountScaled,
-        totalFundedScaled,
-        distributableScaled
-      );
-      sumOfReturnsScaled += returnScaled;
+    for (const alloc of allocations) {
+      sumOfBasesScaled += alloc.baseReturnScaled;
+      const inv = investmentById.get(alloc.investmentId);
       returns.push({
-        investmentId: inv.id,
-        investorId: inv.investorId,
-        investmentAmount: inv.investmentAmount,
-        returnAmount: scaledBigIntToDecimalString(returnScaled),
+        investmentId: alloc.investmentId,
+        investorId: alloc.investorId,
+        investmentAmount: inv?.investmentAmount ?? "",
+        returnAmount: scaledBigIntToDecimalString(alloc.returnAmountScaled),
       });
     }
 
-    const remainderScaled = distributableScaled - sumOfReturnsScaled;
+    // Every unit of `distributableScaled` is allocated, so the unallocated
+    // remainder is zero; the allocated rounding remainder is reported for
+    // audit transparency.
+    const totalDistributedScaled = allocations.reduce(
+      (sum, alloc) => sum + alloc.returnAmountScaled,
+      0n
+    );
+    const allocatedRemainderScaled = distributableScaled - sumOfBasesScaled;
 
     return {
       totalFunded: totalFunded.toFixed(4),
       distributable: scaledBigIntToDecimalString(distributableScaled),
       fee: scaledBigIntToDecimalString(feeScaled),
-      totalDistributed: scaledBigIntToDecimalString(sumOfReturnsScaled),
-      remainder: scaledBigIntToDecimalString(remainderScaled),
+      totalDistributed: scaledBigIntToDecimalString(totalDistributedScaled),
+      remainder: scaledBigIntToDecimalString(allocatedRemainderScaled),
       returns,
     };
   }
@@ -463,6 +481,36 @@ export class SettlementService {
             ? (proceedsScaled * BigInt(this.distributorConfig.feeBps)) / 10_000n
             : 0n;
           const distributableScaled = proceedsScaled - feeScaled;
+
+          // Allocate distributable proceeds pro-rata using the deterministic
+          // largest-remainder method so every unit is assigned to an investor
+          // and no rounding dust is lost or inconsistently assigned (#841).
+          const allocationInputs = investments.map((investment) => ({
+            investmentId: investment.id,
+            investorId: investment.investorId,
+            investmentAmountScaled: decimalStringToScaledBigInt(investment.investmentAmount),
+          }));
+
+          const { allocations } = allocateSettlementProceeds(
+            allocationInputs,
+            distributableScaled,
+            totalFundedScaled
+          );
+
+          const totalDistributedScaled = allocations.reduce(
+            (sum, alloc) => sum + alloc.returnAmountScaled,
+            0n
+          );
+          const totalDistributedStr = scaledBigIntToDecimalString(totalDistributedScaled);
+          // Rounding remainder allocated to investors, reported for audit (#841).
+          const sumOfBasesScaled = allocations.reduce(
+            (sum, alloc) => sum + alloc.baseReturnScaled,
+            0n
+          );
+          const allocatedRemainderScaled = distributableScaled - sumOfBasesScaled;
+          const remainderStr = scaledBigIntToDecimalString(allocatedRemainderScaled);
+
+          const allocationById = new Map(allocations.map((alloc) => [alloc.investmentId, alloc]));
           const settlements: InvestorSettlement[] = [];
           let transactionHash = settlementTransactionHash ?? distributionTransactionHash;
 
@@ -478,15 +526,13 @@ export class SettlementService {
               totalAmountStroops: proceedsScaled * DECIMAL_SCALE_TO_STROOP_FACTOR,
               feeRecipient: this.distributorConfig.feeRecipient,
               feeBps: this.distributorConfig.feeBps,
-              recipients: investments.map((investment) => ({
-                address: investment.investor?.stellarAddress ?? investment.investorId,
-                amountStroops:
-                  computeInvestorReturn(
-                    decimalStringToScaledBigInt(investment.investmentAmount),
-                    totalFundedScaled,
-                    distributableScaled
-                  ) * DECIMAL_SCALE_TO_STROOP_FACTOR,
-              })),
+              recipients: investments.map((investment) => {
+                const alloc = allocationById.get(investment.id);
+                return {
+                  address: investment.investor?.stellarAddress ?? investment.investorId,
+                  amountStroops: (alloc?.returnAmountScaled ?? 0n) * DECIMAL_SCALE_TO_STROOP_FACTOR,
+                };
+              }),
             });
             transactionHash = distribution.transactionHash;
           }
@@ -507,18 +553,9 @@ export class SettlementService {
             );
           }
 
-          let sumOfReturnsScaled = 0n;
-
           for (const investment of investments) {
-            const investmentAmountScaled = decimalStringToScaledBigInt(investment.investmentAmount);
-            // Calculate each investor's share using floor division on total return amount
-            const actualReturnScaled = computeInvestorReturn(
-              investmentAmountScaled,
-              totalFundedScaled,
-              distributableScaled
-            );
-            sumOfReturnsScaled += actualReturnScaled;
-
+            const alloc = allocationById.get(investment.id);
+            const actualReturnScaled = alloc?.returnAmountScaled ?? 0n;
             const actualReturnStr = scaledBigIntToDecimalString(actualReturnScaled);
             investment.actualReturn = actualReturnStr;
             investment.status = InvestmentStatus.SETTLED;
@@ -542,16 +579,10 @@ export class SettlementService {
             });
           }
 
-          // Handle remainder dust after floor division
-          // The remainder is handled and recorded separately from investor returns.
-          const remainderScaled = distributableScaled - sumOfReturnsScaled;
-          const remainderStr = scaledBigIntToDecimalString(remainderScaled);
-          const totalDistributedStr = scaledBigIntToDecimalString(sumOfReturnsScaled);
-
-          // Record remainder on the invoice
+          // Record allocated remainder on the invoice for audit (#841).
           invoice.settlementRemainder = remainderStr;
 
-          // Record remainder in settlement_remainders table
+          // Record allocated remainder in settlement_remainders table (#841).
           const settlementRemainderRecord = transactionalEntityManager.create(SettlementRemainder, {
             invoiceId: invoice.id,
             remainderAmount: remainderStr,
@@ -821,6 +852,24 @@ export class SettlementService {
       const proceedsScaled = decimalStringToScaledBigInt(input.proceeds);
       const feeScaled = (proceedsScaled * BigInt(input.feeBps)) / 10_000n;
       const distributableScaled = proceedsScaled - feeScaled;
+
+      // Allocate distributable proceeds pro-rata using the deterministic
+      // largest-remainder method so every unit is assigned (#841). The intent
+      // payload records the allocated returns so the payout distribution matches.
+      const intentAllocationInputs = investments.map((investment) => ({
+        investmentId: investment.id,
+        investorId: investment.investorId,
+        investmentAmountScaled: decimalStringToScaledBigInt(investment.investmentAmount),
+      }));
+      const { allocations: intentAllocations } = allocateSettlementProceeds(
+        intentAllocationInputs,
+        distributableScaled,
+        totalFundedScaled
+      );
+      const intentAllocationById = new Map(
+        intentAllocations.map((alloc) => [alloc.investmentId, alloc])
+      );
+
       const payload: SettlementIntentPayload = {
         proceeds: input.proceeds,
         actorWallet: input.actorWallet,
@@ -829,19 +878,18 @@ export class SettlementService {
         feeRecipient: input.feeRecipient,
         feeBps: input.feeBps,
         investments: investments
-          .map((investment) => ({
-            id: investment.id,
-            investorId: investment.investorId,
-            investmentAmount: new Decimal(investment.investmentAmount).toFixed(4),
-            recipientAddress: investment.investor?.stellarAddress ?? investment.investorId,
-            returnAmountStroops: (
-              computeInvestorReturn(
-                decimalStringToScaledBigInt(investment.investmentAmount),
-                totalFundedScaled,
-                distributableScaled
-              ) * DECIMAL_SCALE_TO_STROOP_FACTOR
-            ).toString(),
-          }))
+          .map((investment) => {
+            const alloc = intentAllocationById.get(investment.id);
+            return {
+              id: investment.id,
+              investorId: investment.investorId,
+              investmentAmount: new Decimal(investment.investmentAmount).toFixed(4),
+              recipientAddress: investment.investor?.stellarAddress ?? investment.investorId,
+              returnAmountStroops: (
+                (alloc?.returnAmountScaled ?? 0n) * DECIMAL_SCALE_TO_STROOP_FACTOR
+              ).toString(),
+            };
+          })
           .sort((left, right) => left.id.localeCompare(right.id)),
       };
       const intent = manager.create(SettlementIntent, {
