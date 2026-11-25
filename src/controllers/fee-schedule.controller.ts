@@ -3,6 +3,7 @@ import { FeeScheduleService, UpdateFeeScheduleInput } from "../services/fee-sche
 import { AppError } from "../utils/http-error";
 import { logger } from "../observability/logger";
 import type { AuthenticatedRequest } from "../types/auth";
+import { Audited } from "../utils/audited.decorator";
 
 export class FeeScheduleController {
   constructor(private readonly feeScheduleService: FeeScheduleService) {}
@@ -25,7 +26,12 @@ export class FeeScheduleController {
   /**
    * PUT /admin/fees - Updates fee rates, admin only, validates rate bounds.
    */
-  async updateFeeSchedule(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+  @Audited("fee.update")
+  async updateFeeSchedule(
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
     try {
       const body = req.body || {};
       const actorWallet = req.user?.stellarAddress || "admin";
@@ -39,7 +45,11 @@ export class FeeScheduleController {
         changeReason: body.changeReason,
       };
 
-      const updatedSchedule = await this.feeScheduleService.updateFeeSchedule(input, actorWallet, actorRole);
+      const updatedSchedule = await this.feeScheduleService.updateFeeSchedule(
+        input,
+        actorWallet,
+        actorRole
+      );
 
       logger.info("admin.fee_schedule_updated", {
         actor: actorWallet,
@@ -88,6 +98,8 @@ export class FeeScheduleController {
   }
 }
 
-export function createFeeScheduleController(feeScheduleService: FeeScheduleService): FeeScheduleController {
+export function createFeeScheduleController(
+  feeScheduleService: FeeScheduleService
+): FeeScheduleController {
   return new FeeScheduleController(feeScheduleService);
 }

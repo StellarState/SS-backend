@@ -30,6 +30,8 @@ import { createAdminRoyaltiesRouter } from "./royalties.routes";
 import { createAnalyticsSnapshotService } from "@/services/analytics-snapshot.service";
 import { createAdminAnalyticsTrendsRouter } from "./analytics-trends.routes";
 import { createAdminSettlementRouter } from "./settlement.routes";
+import { createAdminAuditLogsRouter } from "./audit-logs.routes";
+import { AuditService, getActiveAuditService } from "@/services/audit-log.service";
 import { createAdminFeesRouter } from "./fees.routes";
 import { createWaitlistRouter } from "./waitlist.routes";
 import { AppError, PublicAppError } from "@/utils/http-error";
@@ -55,6 +57,7 @@ export interface AdminRouterDependencies {
   metricsService?: AdminMetricsService;
   /** Optional: enables POST /invoices/:invoiceId/settle for admin settlement. */
   adminSettlementService?: AdminSettlementService;
+  auditService?: AuditService;
   adminWallets?: string[];
   kycService?: KycService;
   invoiceEscrowContractService?: InvoiceEscrowContractService;
@@ -114,6 +117,7 @@ export function createAdminRouter({
   extensionService: _extensionService,
   metricsService: _metricsService,
   adminSettlementService,
+  auditService,
   adminWallets = [],
   kycService,
   invoiceEscrowContractService,
@@ -244,26 +248,16 @@ export function createAdminRouter({
       const authenticateJWT = createAuthMiddleware(authService);
       const requireAdminJWT = requireAdmin(adminWallets);
 
-      router.get(
-        "/invoices",
-        authenticateJWT,
-        requireAdminJWT,
-        (req, res) => {
-          listInvoices(req, res, invoiceService);
-        }
-      );
+      router.get("/invoices", authenticateJWT, requireAdminJWT, (req, res) => {
+        listInvoices(req, res, invoiceService);
+      });
 
-      router.patch(
-        "/invoices/:invoiceId",
-        authenticateJWT,
-        requireAdminJWT,
-        (req, res) => {
-          reviewInvoice(req, res, invoiceService, invoiceEscrowContractService, async (sellerId) => {
-            const seller = await dataSource.getRepository(User).findOne({ where: { id: sellerId } });
-            return seller?.stellarAddress ?? "UNKNOWN";
-          });
-        }
-      );
+      router.patch("/invoices/:invoiceId", authenticateJWT, requireAdminJWT, (req, res) => {
+        reviewInvoice(req, res, invoiceService, invoiceEscrowContractService, async (sellerId) => {
+          const seller = await dataSource.getRepository(User).findOne({ where: { id: sellerId } });
+          return seller?.stellarAddress ?? "UNKNOWN";
+        });
+      });
     }
   }
 
@@ -368,6 +362,11 @@ export function createAdminRouter({
   if (adminSettlementService) {
     router.use("/", createAdminSettlementRouter({ adminSettlementService }));
   }
+
+  const resolvedAuditService =
+    auditService ??
+    (dataSource?.isInitialized ? new AuditService(dataSource) : getActiveAuditService());
+  router.use("/audit-logs", createAdminAuditLogsRouter({ auditService: resolvedAuditService }));
 
   // ---- Fee schedule management (issue #592) ----
   if (feeScheduleService) {

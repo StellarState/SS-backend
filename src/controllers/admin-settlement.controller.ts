@@ -2,11 +2,15 @@ import { Response } from "express";
 import { AdminSettlementService } from "../services/admin-settlement.service";
 import { AuthenticatedRequest } from "../types/auth";
 import { ServiceError } from "../utils/service-error";
+import { Audited } from "../utils/audited.decorator";
 
 export class AdminSettlementController {
-  constructor(private readonly adminSettlementService: AdminSettlementService) {}
+  constructor(private readonly adminSettlementService: AdminSettlementService) {
+    this.settleInvoice = this.settleInvoice.bind(this);
+  }
 
-  settleInvoice = async (req: AuthenticatedRequest, res: Response) => {
+  @Audited("settlement.manual")
+  async settleInvoice(req: AuthenticatedRequest, res: Response) {
     try {
       if (!req.user || req.user.role !== "admin") {
         return res.status(403).json({
@@ -59,5 +63,5 @@ export class AdminSettlementController {
         },
       });
     }
-  };
+  }
 }
