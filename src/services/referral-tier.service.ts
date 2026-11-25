@@ -84,23 +84,37 @@ export class ReferralTierService {
       throw new ServiceError("INVALID_TIER", `Unknown tier "${event.tier}"`, 400);
     }
 
-    const repo = this.dataSource.getRepository(ReferralTier);
-    let row = await repo.findOneBy({ wallet });
-    if (!row) {
-      row = repo.create({ wallet });
-    }
+    const saved = await this.dataSource.transaction(async (manager) => {
+      const repo = manager.getRepository(ReferralTier);
+      const historyRepo = manager.getRepository(ReferralTierHistory);
+      // Indexer retries must not create a second snapshot/history pair.
+      if (event.eventId) {
+        const existing = await historyRepo.findOneBy({ lastEventId: event.eventId });
+        if (existing) return repo.findOneByOrFail({ wallet });
+      }
+      let row = await repo.findOneBy({ wallet });
+      if (!row) row = repo.create({ wallet });
 
-    row.tier = event.tier;
-    row.commissionRateBps =
-      event.commissionRateBps ?? TIER_COMMISSION_BPS[event.tier];
-    if (event.cumulativeReferredVolume !== undefined) {
-      row.cumulativeReferredVolume = event.cumulativeReferredVolume;
-    }
-    if (event.eventId) row.lastEventId = event.eventId;
-    row.upgradedAt = event.occurredAt ?? new Date();
-
-    const saved = await repo.save(row);
-    await this.appendHistory(saved);
+      row.tier = event.tier;
+      row.commissionRateBps = event.commissionRateBps ?? TIER_COMMISSION_BPS[event.tier];
+      if (event.cumulativeReferredVolume !== undefined) {
+        row.cumulativeReferredVolume = event.cumulativeReferredVolume;
+      }
+      if (event.eventId) row.lastEventId = event.eventId;
+      row.upgradedAt = event.occurredAt ?? new Date();
+      const snapshot = await repo.save(row);
+      await historyRepo.save(
+        historyRepo.create({
+          wallet: snapshot.wallet,
+          tier: snapshot.tier,
+          commissionRateBps: snapshot.commissionRateBps,
+          cumulativeReferredVolume: snapshot.cumulativeReferredVolume,
+          lastEventId: snapshot.lastEventId,
+          upgradedAt: snapshot.upgradedAt,
+        })
+      );
+      return snapshot;
+    });
     this.cache.invalidatePrefix(wallet);
     return saved;
   }
@@ -122,7 +136,7 @@ export class ReferralTierService {
   async getTierHistory(
     wallet: string,
     page = 1,
-    limit = HISTORY_PAGE_SIZE,
+    limit = HISTORY_PAGE_SIZE
   ): Promise<ReferralTierHistoryPage> {
     const normalized = wallet.trim();
     const safePage = Math.max(1, page);
@@ -150,19 +164,6 @@ export class ReferralTierService {
         totalPages: Math.max(1, Math.ceil(total / safeLimit)),
       },
     };
-  }
-
-  private async appendHistory(row: ReferralTier): Promise<void> {
-    const historyRepo = this.dataSource.getRepository(ReferralTierHistory);
-    const entry = historyRepo.create({
-      wallet: row.wallet,
-      tier: row.tier,
-      commissionRateBps: row.commissionRateBps,
-      cumulativeReferredVolume: row.cumulativeReferredVolume,
-      lastEventId: row.lastEventId,
-      upgradedAt: row.upgradedAt,
-    });
-    await historyRepo.save(entry);
   }
 }
 

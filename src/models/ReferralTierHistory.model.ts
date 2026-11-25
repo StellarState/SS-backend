@@ -30,6 +30,7 @@ export class ReferralTierHistory {
   cumulativeReferredVolume!: string;
 
   @Column({ name: "last_event_id", type: "varchar", length: 128, nullable: true })
+  @Index("uq_referral_tier_history_event_id", { unique: true, where: '\"last_event_id\" IS NOT NULL' })
   lastEventId!: string | null;
 
   @Column({ name: "upgraded_at", type: "timestamptz", nullable: true })

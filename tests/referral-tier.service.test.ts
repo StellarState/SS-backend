@@ -4,19 +4,21 @@ import { ReferralTier } from "../src/models/ReferralTier.model";
 import { ReferralTierHistory } from "../src/models/ReferralTierHistory.model";
 import { ReferralTierLevel } from "../src/types/enums";
 
-function createFakeDataSource(
-  tiers: ReferralTier[] = [],
-  history: ReferralTierHistory[] = [],
-) {
+function createFakeDataSource(tiers: ReferralTier[] = [], history: ReferralTierHistory[] = []) {
   const tierRows = [...tiers];
   const historyRows = [...history];
 
-  return {
+  const dataSource = {
     getRepository: (entity: unknown) => {
       if (entity === ReferralTier) {
         return {
           findOneBy: async (where: { wallet: string }) =>
             tierRows.find((t) => t.wallet === where.wallet) ?? null,
+          findOneByOrFail: async (where: { wallet: string }) => {
+            const row = tierRows.find((t) => t.wallet === where.wallet);
+            if (!row) throw new Error("tier not found");
+            return row;
+          },
           create: (data: Partial<ReferralTier>) => ({ ...data }) as ReferralTier,
           save: async (row: ReferralTier) => {
             const idx = tierRows.findIndex((t) => t.wallet === row.wallet);
@@ -34,6 +36,8 @@ function createFakeDataSource(
       }
       if (entity === ReferralTierHistory) {
         return {
+          findOneBy: async (where: { lastEventId: string }) =>
+            historyRows.find((h) => h.lastEventId === where.lastEventId) ?? null,
           create: (data: Partial<ReferralTierHistory>) => ({ ...data }) as ReferralTierHistory,
           save: async (row: ReferralTierHistory) => {
             const full = {
@@ -63,7 +67,11 @@ function createFakeDataSource(
       }
       throw new Error(`Unexpected entity in test fake: ${String(entity)}`);
     },
-  } as unknown as DataSource;
+    transaction: async (
+      callback: (manager: { getRepository: (entity: unknown) => unknown }) => unknown
+    ) => callback({ getRepository: (entity) => dataSource.getRepository(entity) }),
+  };
+  return dataSource as unknown as DataSource;
 }
 
 describe("ReferralTierService", () => {

@@ -709,6 +709,42 @@ export class InvoiceService {
    */
   async publishInvoice(input: PublishInvoiceInput): Promise<InvoiceDTO> {
     try {
+      if (this.dataSource) {
+        const transition = await this.dataSource.transaction(async (manager) => {
+          const invoice = await manager.findOne(Invoice, {
+            where: { id: input.invoiceId },
+            relations: ["seller"],
+            lock: this.invoiceWriteLock(),
+          });
+          if (!invoice) throw new ServiceError("invoice_not_found", "Invoice not found", 404);
+          if (invoice.sellerId !== input.sellerId) {
+            throw new ServiceError(
+              "unauthorized_invoice_access",
+              "You can only publish your own invoices",
+              403
+            );
+          }
+          const seller = invoice.seller as unknown as User;
+          if (!seller || seller.kycStatus !== KYCStatus.APPROVED) {
+            throw new ServiceError(
+              "kyc_approval_required",
+              "KYC approval is required to publish invoices",
+              403
+            );
+          }
+          return this.stateMachine.transition(
+            entityManagerTransitionStore(manager),
+            invoice,
+            InvoiceStatus.PUBLISHED,
+            {
+              actor: { role: "seller", id: input.sellerId, wallet: seller.stellarAddress },
+              trigger: "seller_published",
+            }
+          );
+        });
+        await this.stateMachine.dispatch(transition);
+        return this.toDTO(transition.invoice);
+      }
       const invoice = await this.invoiceRepository.findOne({
         where: { id: input.invoiceId },
         relations: ["seller"],
