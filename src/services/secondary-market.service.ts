@@ -130,17 +130,35 @@ function isListingExpired(listing: SecondaryListing, now: Date): boolean {
   return new Date(listing.expiresAt).getTime() < now.getTime();
 }
 
-/** Parses a positive decimal with at most 4 places; throws a 400 ServiceError otherwise. */
+/** Largest value a NUMERIC(18,4) column holds: 14 integer digits, 4 decimals. */
+export const MAX_AMOUNT = new Decimal("99999999999999.9999");
+const PLAIN_DECIMAL = /^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/;
+
+/**
+ * Parses a positive, finite decimal that fits NUMERIC(18,4): at most 4 decimal
+ * places and at most MAX_AMOUNT. Unsupported precision is rejected, never
+ * rounded, so the stored value is exactly what the caller sent. Throws a
+ * field-specific 400 ServiceError otherwise.
+ */
 function parsePositiveAmount(value: unknown, code: string, label: string): Decimal {
   let parsed: Decimal;
   try {
-    if (typeof value !== "string" && typeof value !== "number") throw new Error("type");
-    parsed = new Decimal(value);
+    if (typeof value === "number") {
+      if (!Number.isFinite(value)) throw new Error("non-finite");
+      parsed = new Decimal(value);
+    } else if (typeof value === "string" && PLAIN_DECIMAL.test(value.trim())) {
+      parsed = new Decimal(value.trim());
+    } else {
+      throw new Error("type");
+    }
   } catch {
     throw new ServiceError(code, `${label} must be a positive number`, 400);
   }
   if (!parsed.isFinite() || parsed.lte(0)) {
     throw new ServiceError(code, `${label} must be greater than zero`, 400);
+  }
+  if (parsed.gt(MAX_AMOUNT)) {
+    throw new ServiceError(code, `${label} must not exceed ${MAX_AMOUNT.toFixed(4)}`, 400);
   }
   if (parsed.decimalPlaces() > MAX_FRACTION_DECIMALS) {
     throw new ServiceError(
@@ -150,6 +168,23 @@ function parsePositiveAmount(value: unknown, code: string, label: string): Decim
     );
   }
   return parsed;
+}
+
+/**
+ * The one rounding rule for listing totals: quantity x price from the exact
+ * validated inputs, rounded half-up to 4 decimal places. Rejects totals that
+ * would overflow the database column.
+ */
+export function computeTotalPrice(quantity: Decimal, price: Decimal): Decimal {
+  const total = quantity.times(price).toDecimalPlaces(4, Decimal.ROUND_HALF_UP);
+  if (total.gt(MAX_AMOUNT)) {
+    throw new ServiceError(
+      "INVALID_TOTAL_PRICE",
+      `Total price must not exceed ${MAX_AMOUNT.toFixed(4)}`,
+      400
+    );
+  }
+  return total;
 }
 
 /** Basis-point share of an amount, rounded half-up to 4 decimal places. */
@@ -248,13 +283,14 @@ export class SecondaryMarketService {
     return this.dataSource.transaction(async (manager: EntityManager) => {
       const { invoiceId, sellerWallet, sellerId, quantity, pricePerFraction, expiresAt } = input;
 
-      // Validate input
+      // Validate the numeric domain first, before any lookup or holdings check
       const quantityDecimal = parsePositiveAmount(quantity, "INVALID_QUANTITY", "Quantity");
       const priceDecimal = parsePositiveAmount(
         pricePerFraction,
         "INVALID_PRICE",
         "Price per fraction"
       );
+      const totalPrice = computeTotalPrice(quantityDecimal, priceDecimal);
 
       const now = this.now();
       if (expiresAt && new Date(expiresAt) <= now) {
@@ -411,8 +447,6 @@ export class SecondaryMarketService {
         );
       }
 
-      // Calculate total price
-      const totalPrice = quantityDecimal.times(priceDecimal);
 
       // Create listing
       const listing = manager.create(SecondaryListing, {
@@ -716,9 +750,7 @@ export class SecondaryMarketService {
 
         // ---- Amount split ----
         const pricePerFraction = new Decimal(listing.pricePerFraction);
-        const grossAmount = buyQuantity
-          .times(pricePerFraction)
-          .toDecimalPlaces(4, Decimal.ROUND_HALF_UP);
+        const grossAmount = computeTotalPrice(buyQuantity, pricePerFraction);
         const royaltyBps = Math.max(0, Number(invoice.secondaryRoyaltyBps ?? 0));
         const royaltyRecipientWallet =
           royaltyBps > 0 ? await this.resolveIssuerWallet(manager, invoice) : null;
@@ -744,7 +776,7 @@ export class SecondaryMarketService {
           transitionListing(listing, ListingStatus.SOLD);
         } else {
           listing.quantity = remaining.toFixed(4);
-          listing.totalPrice = remaining.times(pricePerFraction).toFixed(4);
+          listing.totalPrice = computeTotalPrice(remaining, pricePerFraction).toFixed(4);
         }
         await manager.save(listing);
 
@@ -1074,6 +1106,7 @@ export class SecondaryMarketService {
       "INVALID_PRICE",
       "Price per fraction"
     );
+    const totalPrice = computeTotalPrice(quantity, price);
     return this.dataSource.transaction(async (manager) => {
       const listing = await manager.findOne(SecondaryListing, {
         where: { id: listingId },
@@ -1153,7 +1186,7 @@ export class SecondaryMarketService {
         );
       listing.quantity = quantity.toFixed(4);
       listing.pricePerFraction = price.toFixed(4);
-      listing.totalPrice = quantity.times(price).toFixed(4);
+      listing.totalPrice = totalPrice.toFixed(4);
       return manager.save(listing);
     });
   }
