@@ -1,8 +1,10 @@
 import request from "supertest";
+import { Decimal } from "decimal.js";
 import express from "express";
 import {
   DEFAULT_SECONDARY_MARKET_FEE_BPS,
   SecondaryMarketService,
+  computeTotalPrice,
   createLockUpOnFundingEffect,
   transitionListing,
 } from "../../src/services/secondary-market.service";
@@ -242,6 +244,101 @@ describe("secondary market lock-up (issue #783)", () => {
       })
     ).rejects.toMatchObject({ code, statusCode: 400 });
   });
+});
+
+describe("secondary market numeric domain (issue #746)", () => {
+  it.each([
+    ["NaN", "NaN", "INVALID_QUANTITY"],
+    ["Infinity", "Infinity", "INVALID_QUANTITY"],
+    ["exponent over-precision", "1e-5", "INVALID_QUANTITY"],
+    ["zero", "0", "INVALID_QUANTITY"],
+    ["tiny positive", "0.00001", "INVALID_QUANTITY"],
+    ["over scale max", "100000000000000", "INVALID_QUANTITY"],
+    ["empty", "", "INVALID_QUANTITY"],
+  ])("rejects %s quantity", async (_l, quantity, code) => {
+    const state = newState();
+    const { svc } = service(state);
+    await expect(
+      svc.createListing({
+        invoiceId: "invoice-1",
+        sellerWallet: SELLER_WALLET,
+        quantity,
+        pricePerFraction: "1",
+      })
+    ).rejects.toMatchObject({ code, statusCode: 400 });
+    expect(state.saved).toHaveLength(0);
+  });
+
+  it.each([
+    ["NaN", "NaN"],
+    ["Infinity", "Infinity"],
+    ["zero", "0"],
+    ["negative", "-0.5"],
+    ["too many decimals", "1.23456"],
+    ["garbage", "12abc"],
+  ])("rejects %s price", async (_l, price) => {
+    const state = newState();
+    const { svc } = service(state);
+    await expect(
+      svc.createListing({
+        invoiceId: "invoice-1",
+        sellerWallet: SELLER_WALLET,
+        quantity: "1",
+        pricePerFraction: price,
+      })
+    ).rejects.toMatchObject({ code: "INVALID_PRICE", statusCode: 400 });
+    expect(state.saved).toHaveLength(0);
+  });
+
+  it("accepts the 4-decimal boundary and the smallest quantity", async () => {
+    const { svc } = service(newState());
+    const created = await svc.createListing({
+      invoiceId: "invoice-1",
+      sellerWallet: SELLER_WALLET,
+      sellerId: SELLER_ID,
+      quantity: "0.0001",
+      pricePerFraction: "0.0001",
+    } as any);
+    expect(created.quantity).toBe("0.0001");
+    expect(created.pricePerFraction).toBe("0.0001");
+    expect(created.totalPrice).toBe("0.0000");
+  });
+
+  it("rejects a total that overflows the database column", () => {
+    expect(() =>
+      computeTotalPrice(new Decimal("99999999999999.9999"), new Decimal("2"))
+    ).toThrow(expect.objectContaining({ code: "INVALID_TOTAL_PRICE", statusCode: 400 }));
+    expect(
+      computeTotalPrice(new Decimal("99999999999999"), new Decimal("1")).toFixed(4)
+    ).toBe("99999999999999.0000");
+  });
+
+  it("computes totals with one half-up rule from exact inputs", () => {
+    expect(computeTotalPrice(new Decimal("0.0003"), new Decimal("0.1667")).toFixed(4)).toBe(
+      "0.0001"
+    );
+    expect(computeTotalPrice(new Decimal("3"), new Decimal("1.1111")).toFixed(4)).toBe("3.3333");
+  });
+
+  it.each(["NaN", "Infinity", "0", "-1", "1.00001", "0.00001"])(
+    "rejects partial purchase quantity %s without touching the listing",
+    async (quantity) => {
+      const state = newState();
+      const row = listing(state);
+      const before = JSON.stringify(row);
+      const { svc } = service(state);
+      await expect(
+        svc.buyListing({
+          listingId: row.id as string,
+          buyerWallet: BUYER_WALLET,
+          buyerId: BUYER_ID,
+          quantity,
+        })
+      ).rejects.toMatchObject({ code: "INVALID_QUANTITY", statusCode: 400 });
+      expect(JSON.stringify(row)).toBe(before);
+      expect(state.saved).toHaveLength(0);
+    }
+  );
 });
 
 describe("secondary market purchase settlement (issue #783)", () => {
