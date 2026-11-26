@@ -70,6 +70,7 @@ import { createOnchainEventViewsRouter } from "./routes/onchain-event-views.rout
 import { createFxRouter } from "./routes/fx.routes";
 import { createBenchmarkRouter, createInvoiceBenchmarkRouter } from "./routes/benchmark.routes";
 import { createReferralTierRouter } from "./routes/referral-tier.routes";
+import { createReferralEarningsRouter } from "./routes/referral-earnings.routes";
 import { createYieldBoostRouter } from "./routes/yield-boost.routes";
 import {
   createSecondaryAuctionRouter,
@@ -105,6 +106,7 @@ import type { InvestorRiskProfileService } from "./services/investor-risk-profil
 import type { InvoiceDraftService } from "./services/invoice-draft.service";
 import type { BenchmarkService } from "./services/benchmark.service";
 import type { ReferralTierService } from "./services/referral-tier.service";
+import type { ReferralEarningsService } from "./services/referral-earnings.service";
 import type { YieldBoostService } from "./services/yield-boost.service";
 import type { SecondaryAuctionService } from "./services/secondary-auction.service";
 import type { InvestorAccreditationService } from "./services/investor-accreditation.service";
@@ -280,6 +282,7 @@ export interface AppDependencies {
   invoiceEscrowContractService?: import("./services/stellar/invoice-escrow-contract.service").InvoiceEscrowContractService;
   benchmarkService?: BenchmarkService;
   referralTierService?: ReferralTierService;
+  referralEarningsService?: ReferralEarningsService;
   yieldBoostService?: YieldBoostService;
   secondaryAuctionService?: SecondaryAuctionService;
   /** Issue #780 — accreditation expiry gating and renewal. */
@@ -357,6 +360,7 @@ export function createApp({
   waitlistService,
   benchmarkService,
   referralTierService,
+  referralEarningsService,
   yieldBoostService,
   secondaryAuctionService,
   accreditationService,
@@ -803,6 +807,10 @@ export function createApp({
 
   if (referralTierService) {
     app.use("/api/v1/referrals", createReferralTierRouter({ referralTierService }));
+  }
+
+  if (referralEarningsService) {
+    app.use("/api/v1/referrals", createReferralEarningsRouter({ referralEarningsService }));
   }
 
   if (yieldBoostService) {

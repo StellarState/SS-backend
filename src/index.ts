@@ -43,6 +43,7 @@ import { createAdminUserService } from "./services/admin-user.service";
 import { KycService } from "./services/kyc.service";
 import { PaymentDistributorContractService } from "./services/stellar/payment-distributor-contract.service";
 import { createOnchainProjections } from "./services/onchain-projections.service";
+import { createSorobanReferralReader } from "./services/stellar/soroban-referral-reader";
 import { InvoiceEscrowContractService } from "./services/stellar/invoice-escrow-contract.service";
 import { getSorobanConfig } from "./config/stellar";
 import { EventIndexerService } from "./services/stellar/event-indexer.service";
@@ -250,7 +251,22 @@ export async function bootstrap(): Promise<{
   // Read models projected from Soroban contract events: creator key buy
   // limits, the integration ACL, curve migrations, atomic swap history, creator
   // royalty earnings and holder dividend cycles.
-  const projections = createOnchainProjections({ dataSource, logger });
+  const referralContractId =
+    process.env.SOROBAN_REFERRAL_CONTRACT_ID || sorobanConfig.paymentDistributorContractId;
+  const referralBalanceReader =
+    referralContractId && sorobanConfig.rpcUrl
+      ? createSorobanReferralReader({
+          contractId: referralContractId,
+          rpcUrl: sorobanConfig.rpcUrl,
+          logger,
+        })
+      : undefined;
+
+  const projections = createOnchainProjections({
+    dataSource,
+    logger,
+    referralBalanceReader,
+  });
   const dividendReconciliationService = new DividendReconciliationService(dataSource);
   const payoutReader = new PayoutRpc.Server(sorobanConfig.rpcUrl, {
     allowHttp: sorobanConfig.rpcUrl.startsWith("http://"),
@@ -387,6 +403,7 @@ export async function bootstrap(): Promise<{
     waitlistService,
     benchmarkService,
     referralTierService,
+    referralEarningsService: projections.referralEarningsService,
     yieldBoostService,
     secondaryAuctionService,
     accreditationService,
