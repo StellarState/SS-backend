@@ -41,10 +41,16 @@ export class InvestmentController {
     } catch (err: unknown) {
       const statusCode =
         (err as { status?: number }).status || (err as { statusCode?: number }).statusCode || 400;
+      if (statusCode === 409 || statusCode === 503) {
+        res.setHeader("Retry-After", "1");
+      }
       return res.status(statusCode).json({
         error: {
           code: (err as { code?: string }).code || "INTERNAL_ERROR",
           message: (err as { message?: string }).message || "Internal server error",
+          ...((err as { details?: unknown }).details !== undefined
+            ? { details: (err as { details?: unknown }).details }
+            : {}),
         },
       });
     }

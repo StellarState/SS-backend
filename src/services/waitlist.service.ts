@@ -1,6 +1,7 @@
 import { DataSource, Repository } from "typeorm";
 import { WaitlistEntry } from "../models/WaitlistEntry.model";
 import { logger, type AppLogger } from "../observability/logger";
+import { orderWaitlistQueue } from "./waitlist-order";
 
 export interface WaitlistQueryResult {
   entries: WaitlistEntry[];
@@ -27,9 +28,7 @@ export class WaitlistService {
   ): Promise<WaitlistQueryResult> {
     const skip = (page - 1) * pageSize;
 
-    const query = this.repository
-      .createQueryBuilder("w")
-      .orderBy("w.createdAt", "ASC");
+    const query = orderWaitlistQueue(this.repository.createQueryBuilder("w"), "w");
 
     if (status !== "all") {
       query.where("w.status = :status", { status });
@@ -72,11 +71,13 @@ export class WaitlistService {
   }
 
   async bulkApproveTop(count: number): Promise<WaitlistEntry[]> {
-    const entries = await this.repository.find({
-      where: { status: "pending" },
-      order: { createdAt: "ASC" },
-      take: count,
-    });
+    const entries = await orderWaitlistQueue(
+      this.repository.createQueryBuilder("w"),
+      "w",
+    )
+      .where("w.status = :status", { status: "pending" })
+      .take(count)
+      .getMany();
 
     if (entries.length === 0) {
       this.appLogger.info("waitlist.bulk_approve.no_pending", { requested: count });

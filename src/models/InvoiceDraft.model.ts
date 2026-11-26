@@ -4,6 +4,7 @@ import {
   Column,
   CreateDateColumn,
   Index,
+  VersionColumn,
 } from "typeorm";
 
 @Entity("invoice_drafts")
@@ -19,6 +20,9 @@ export class InvoiceDraft {
 
   @Column({ name: "seller_wallet", type: "varchar", length: 56 })
   sellerWallet!: string;
+
+  @VersionColumn({ name: "revision" })
+  revision!: number;
 
   @Column({ name: "draft_data", type: "jsonb" })
   draftData!: Record<string, unknown>;

@@ -9,7 +9,7 @@ import { HttpError } from "../utils/http-error";
 function requireOwnWallet(req: AuthenticatedRequest, wallet: string): void {
   if (!req.user) throw new HttpError(401, "Authentication required.");
   if (req.user.stellarAddress !== wallet) {
-    throw new HttpError(403, "You may only view insights for your own wallet.");
+    throw new HttpError(404, "Resource not found.");
   }
 }
 
@@ -18,10 +18,14 @@ export function createInvestorInsightsRouter(
   authService: AuthService,
 ): Router {
   const router = Router();
-  router.use(createAuthMiddleware(authService));
+  // Per-route rather than router.use(): this router shares the
+  // /api/v1/investors prefix with the investor router, and a router-level
+  // middleware would run on (and could reject) that router's requests too.
+  const auth = createAuthMiddleware(authService);
 
   router.get(
     "/:wallet/onboarding-bonus",
+    auth,
     async (req: Request<{ wallet: string }>, res: Response, next: NextFunction) => {
       try {
         const authReq = req as AuthenticatedRequest;
@@ -36,12 +40,45 @@ export function createInvestorInsightsRouter(
 
   router.get(
     "/:wallet/alert-preferences",
+    auth,
     async (req: Request<{ wallet: string }>, res: Response, next: NextFunction) => {
       try {
         const authReq = req as AuthenticatedRequest;
         requireOwnWallet(authReq, req.params.wallet);
         const preferences = await service.getAlertPreferences(req.params.wallet);
         res.status(200).json({ success: true, data: preferences });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  // Issue #811 — partial update; unsupported event/channel pairs return 422
+  // with per-field errors and nothing is written.
+  router.put(
+    "/:wallet/alert-preferences",
+    auth,
+    async (req: Request<{ wallet: string }>, res: Response, next: NextFunction) => {
+      try {
+        const authReq = req as AuthenticatedRequest;
+        requireOwnWallet(authReq, req.params.wallet);
+        const preferences = await service.updateAlertPreferences(req.params.wallet, req.body);
+        res.status(200).json({ success: true, data: preferences });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  // Issue #811 — render-only preview through the delivery renderer; never sends.
+  router.post(
+    "/:wallet/alert-preferences/preview",
+    auth,
+    (req: Request<{ wallet: string }>, res: Response, next: NextFunction) => {
+      try {
+        const authReq = req as AuthenticatedRequest;
+        requireOwnWallet(authReq, req.params.wallet);
+        res.status(200).json({ success: true, data: service.previewAlert(req.body) });
       } catch (error) {
         next(error);
       }

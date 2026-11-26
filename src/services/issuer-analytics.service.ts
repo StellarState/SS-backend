@@ -6,6 +6,7 @@ import { User } from "../models/User.model";
 import { InvoiceStatus, InvestmentStatus } from "../types/enums";
 import { ServiceError } from "../utils/service-error";
 import { TtlCache } from "../lib/ttl-cache";
+import { percentageNumber } from "../utils/percentage.utils";
 
 export type AnalyticsRange = "30d" | "90d" | "all";
 
@@ -227,7 +228,10 @@ export class IssuerAnalyticsService {
         const dueDate = new Date(invoice.dueDate);
         return invoice.updatedAt.getTime() <= dueDate.getTime() + 24 * 60 * 60 * 1000 - 1;
       }).length;
-      onTimeRepaymentRate = Number(((onTime / settledInvoices.length) * 100).toFixed(2));
+      onTimeRepaymentRate = percentageNumber(
+        BigInt(onTime),
+        BigInt(settledInvoices.length)
+      );
     }
 
     const reputationScore = onTimeRepaymentRate ?? 0;

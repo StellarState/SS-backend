@@ -178,6 +178,18 @@ export class InvoiceUploadService {
       if (bytes.length !== session.fileSizeBytes)
         throw new ServiceError("upload_incomplete", "Stored bytes do not match upload size", 409);
       const checksum = verifyDocumentChecksum(bytes, session.contentChecksum);
+      const duplicate = await manager.getRepository(InvoiceDocument).findOneBy({
+        invoiceId,
+        contentChecksum: checksum,
+      });
+      if (duplicate) {
+        throw new ServiceError(
+          "duplicate_invoice_document",
+          "This invoice document has already been uploaded",
+          409,
+          { document_id: duplicate.id, cid: duplicate.cid }
+        );
+      }
       // Failure rolls back completion only; acknowledged chunks remain resumable.
       const pinned = await this.ipfs.uploadFile(
         bytes,

@@ -1,3 +1,10 @@
+import { computeInvestorReturn as computeScaledInvestorReturn } from "../lib/investor-return";
+
+/**
+ * Validates stroop-denominated inputs for the settlement flow and delegates
+ * the arithmetic to the single canonical implementation in
+ * `src/lib/investor-return.ts`, so every caller shares one calculation path.
+ */
 export function computeInvestorReturn(
   investorFundedStroops: bigint,
   totalFundedStroops: bigint,
@@ -15,10 +22,9 @@ export function computeInvestorReturn(
     throw new Error("Investor funded amount cannot exceed total funded amount");
   }
 
-  // Calculate: (investorFunded * settledProceeds) / totalFunded
-  // Using floor division by default with bigint
-  const numerator = investorFundedStroops * settledProceedsStroops;
-  const investorReturn = numerator / totalFundedStroops;
-
-  return investorReturn;
+  return computeScaledInvestorReturn(
+    investorFundedStroops,
+    totalFundedStroops,
+    settledProceedsStroops
+  );
 }

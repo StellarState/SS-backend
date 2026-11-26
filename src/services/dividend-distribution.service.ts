@@ -27,6 +27,11 @@ export const DIVIDEND_EVENTS = {
 const AMOUNT_SCALE = 4;
 
 export interface DividendDistributionInput {
+  contractId?: string;
+  cycleId?: string;
+  revision?: number;
+  contractClaimed?: string | null;
+  contractTotal?: string | null;
   issuerWallet: string;
   totalAmount: string;
   recipientCount: number;
@@ -37,6 +42,7 @@ export interface DividendDistributionInput {
 }
 
 export interface DividendAllocationInput {
+  legacyAllocationId?: string;
   allocationId: string;
   distributionId: string | null;
   issuerWallet: string;
@@ -49,6 +55,8 @@ export interface DividendAllocationInput {
 }
 
 export interface DividendClaimInput {
+  contractId?: string;
+  revision?: number;
   claimId: string;
   distributionId: string | null;
   issuerWallet: string | null;
@@ -65,6 +73,7 @@ export interface DividendClaimInput {
  * TypeORM in `onchain-projection-repositories.ts`.
  */
 export interface DividendRepositoryContract {
+  recordSnapshot?(input: DividendDistributionInput, allocations: DividendAllocationInput[]): Promise<void>;
   recordDistribution(input: DividendDistributionInput): Promise<void>;
   recordAllocations(inputs: DividendAllocationInput[]): Promise<void>;
   recordClaim(input: DividendClaimInput): Promise<void>;
@@ -73,6 +82,9 @@ export interface DividendRepositoryContract {
 }
 
 export interface DividendCycleClaimableView {
+  snapshotId: string | null;
+  revision: number;
+  locked: boolean;
   cycleId: string;
   cycleFrequency: string | null;
   distributedAt: string | null;
@@ -127,6 +139,9 @@ export interface DividendDistributionServiceDependencies {
 
 /** Groups the per-wallet accruals and claims of a holder by distribution cycle. */
 interface CycleTotals {
+  snapshotId: string | null;
+  revision: number;
+  locked: boolean;
   cycleId: string;
   cycleFrequency: string | null;
   distributedAt: Date | null;
@@ -267,6 +282,7 @@ export class DividendDistributionService implements ContractEventHandler {
    * the affected caches so the next read is immediately accurate.
    */
   async handle(event: DecodedSorobanEvent): Promise<void> {
+    if (!event.inSuccessfulContractCall) return;
     const topic = normalizeTopic(event.topic);
 
     if (topic === DIVIDEND_EVENTS.distributed) {
@@ -299,25 +315,22 @@ export class DividendDistributionService implements ContractEventHandler {
     const distributedAt = this.eventTimestamp(event);
     const allocations = this.readAllocations(event, issuerWallet, cycleFrequency);
 
-    await this.dividendRepository.recordDistribution({
+    const input: DividendDistributionInput = {
+      contractId: event.contractId,
+      cycleId: readEventString(event, ["distribution_id", "distributionId", "cycle_id", "cycleId"]) ?? event.id,
+      revision: Number(readEventString(event, ["revision"]) ?? 1),
       issuerWallet,
-      totalAmount: this.sumAmounts(allocations),
+      totalAmount: this.readAmount(event, ["total_amount", "totalAmount", "total"]) ?? this.sumAmounts(allocations),
+      contractClaimed: this.readAmount(event, ["claimed_total", "claimedTotal"]),
+      contractTotal: this.readAmount(event, ["total_amount", "totalAmount", "total"]),
       recipientCount: allocations.length,
-      cycleFrequency,
-      txHash,
-      ledgerSequence,
-      distributedAt,
-    });
-
-    if (allocations.length > 0) {
-      await this.dividendRepository.recordAllocations(
-        allocations.map((allocation) => ({
-          ...allocation,
-          txHash,
-          ledgerSequence,
-          distributedAt,
-        }))
-      );
+      cycleFrequency, txHash, ledgerSequence, distributedAt,
+    };
+    if (this.dividendRepository.recordSnapshot) {
+      await this.dividendRepository.recordSnapshot(input, allocations);
+    } else {
+      await this.dividendRepository.recordDistribution(input);
+      if (allocations.length) await this.dividendRepository.recordAllocations(allocations);
     }
 
     await this.invalidateAll();
@@ -351,6 +364,8 @@ export class DividendDistributionService implements ContractEventHandler {
       (event.txHash ? `claim:${event.txHash}` : `claim:${event.id}`);
 
     await this.dividendRepository.recordClaim({
+      contractId: event.contractId,
+      revision: readEventString(event, ["revision"]) === null ? undefined : Number(readEventString(event, ["revision"])),
       claimId,
       distributionId:
         readEventString(event, ["distribution_id", "distributionId", "cycle_id", "cycleId"]) ?? null,
@@ -379,6 +394,7 @@ export class DividendDistributionService implements ContractEventHandler {
     cycleFrequency: string | null
   ): Array<{
     allocationId: string;
+    legacyAllocationId?: string;
     distributionId: string | null;
     issuerWallet: string;
     recipientWallet: string;
@@ -396,10 +412,11 @@ export class DividendDistributionService implements ContractEventHandler {
     // of the allocation id. Reusing a top-level `allocation_id` verbatim would
     // make every row in a distribution collapse onto the same key.
     const eventAllocationId = this.readEventField(event, ["allocation_id", "allocationId"]);
-    const eventKey = eventAllocationId ?? event.txHash ?? event.id;
+    const eventKey = eventAllocationId ?? event.id;
 
     return records.map((record, index) => ({
       allocationId: `${eventKey}:${index}`,
+      legacyAllocationId: `${eventAllocationId ?? event.txHash ?? event.id}:${index}`,
       distributionId: this.readEventField(event, ["distribution_id", "distributionId"]),
       issuerWallet,
       recipientWallet: record.wallet,
@@ -508,6 +525,7 @@ export class DividendDistributionService implements ContractEventHandler {
       const existing = byCycle.get(cycleId);
       if (existing) return existing;
       const created: CycleTotals = {
+        snapshotId: null, revision: 1, locked: false,
         cycleId,
         cycleFrequency: null,
         distributedAt: null,
@@ -523,6 +541,9 @@ export class DividendDistributionService implements ContractEventHandler {
     for (const allocation of allocations) {
       const cycleId = allocation.distributionId ?? allocation.allocationId;
       const cycle = touch(cycleId);
+      cycle.snapshotId = allocation.snapshotId ?? null;
+      cycle.revision = allocation.revision ?? 1;
+      cycle.locked = allocation.cycleLocked ?? false;
       cycle.earned = cycle.earned.plus(this.toDecimal(allocation.amount));
       cycle.cycleFrequency = allocation.cycleFrequency ?? cycle.cycleFrequency;
       cycle.distributedAt = allocation.distributedAt ?? cycle.distributedAt;
@@ -551,13 +572,14 @@ export class DividendDistributionService implements ContractEventHandler {
       const claimed = cycle.claimed.toFixed(AMOUNT_SCALE);
       const claimable = cycle.earned.minus(cycle.claimed);
       return {
+        snapshotId: cycle.snapshotId, revision: cycle.revision, locked: cycle.locked,
         cycleId: cycle.cycleId,
         cycleFrequency: cycle.cycleFrequency,
         distributedAt: cycle.distributedAt ? new Date(cycle.distributedAt).toISOString() : null,
         txHash: cycle.txHash,
         earned,
         claimed,
-        claimable: (claimable.isNegative() ? new Decimal(0) : claimable).toFixed(AMOUNT_SCALE),
+        claimable: (cycle.locked || claimable.isNegative() ? new Decimal(0) : claimable).toFixed(AMOUNT_SCALE),
       };
     });
 

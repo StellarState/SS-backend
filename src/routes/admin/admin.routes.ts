@@ -32,12 +32,14 @@ import { createAdminAnalyticsTrendsRouter } from "./analytics-trends.routes";
 import { createAdminSettlementRouter } from "./settlement.routes";
 import { createAdminFeesRouter } from "./fees.routes";
 import { createWaitlistRouter } from "./waitlist.routes";
-import { AppError } from "@/utils/http-error";
+import { AppError, PublicAppError } from "@/utils/http-error";
+import { ServiceError } from "@/utils/service-error";
 import { logger } from "@/observability/logger";
 import type { AuthenticatedRequest } from "@/types/auth";
 import { listInvoices } from "./list-invoices";
 import { reviewInvoice } from "./review-invoice";
 import type { WaitlistService } from "@/services/waitlist.service";
+import type { NotificationDispatcher } from "@/lib/notification-dispatcher";
 
 export interface AdminRouterDependencies {
   dataSource: DataSource;
@@ -60,6 +62,7 @@ export interface AdminRouterDependencies {
   /** Optional: enables waitlist management endpoints (issue #599) */
   waitlistService?: WaitlistService;
   notificationService?: import("@/services/notification.service").NotificationService;
+  notificationDispatcher?: NotificationDispatcher;
 }
 
 interface ExtensionReviewBody {
@@ -116,7 +119,8 @@ export function createAdminRouter({
   invoiceEscrowContractService,
   feeScheduleService,
   waitlistService: _waitlistService,
-  notificationService: _notificationService
+  notificationService: _notificationService,
+  notificationDispatcher,
 }: AdminRouterDependencies): Router {
   const router = Router();
 
@@ -179,6 +183,51 @@ export function createAdminRouter({
     const controller = createKycController(service);
     return controller.review(req, res, next);
   });
+
+  if (notificationDispatcher) {
+    router.get("/notification-dead-letters", async (req, res, next) => {
+      try {
+        const rawLimit = req.query.limit === undefined ? 100 : Number(req.query.limit);
+        if (!Number.isInteger(rawLimit) || rawLimit < 1 || rawLimit > 500) {
+          throw new AppError(400, "Limit must be between 1 and 500.", "INVALID_LIMIT");
+        }
+        res.status(200).json({
+          success: true,
+          data: await notificationDispatcher.listDeadLetters(rawLimit),
+        });
+      } catch (error) {
+        next(error);
+      }
+    });
+
+    router.post("/notification-dead-letters/:eventId/replay", async (req, res, next) => {
+      try {
+        const actorId = (req as AuthenticatedRequest).user?.id ?? "admin-key";
+        const replayed = await notificationDispatcher.replayDeadLetter(
+          String(req.params.eventId),
+          actorId
+        );
+        if (!replayed) throw new AppError(404, "Dead letter not found.", "DEAD_LETTER_NOT_FOUND");
+        res.status(202).json({ success: true, data: { eventId: req.params.eventId, replayed } });
+      } catch (error) {
+        next(error);
+      }
+    });
+
+    router.delete("/notification-dead-letters/:eventId", async (req, res, next) => {
+      try {
+        const actorId = (req as AuthenticatedRequest).user?.id ?? "admin-key";
+        const discarded = await notificationDispatcher.discardDeadLetter(
+          String(req.params.eventId),
+          actorId
+        );
+        if (!discarded) throw new AppError(404, "Dead letter not found.", "DEAD_LETTER_NOT_FOUND");
+        res.status(200).json({ success: true, data: { eventId: req.params.eventId, discarded } });
+      } catch (error) {
+        next(error);
+      }
+    });
+  }
 
   if (invoiceService) {
     // Legacy x-admin-key routes
@@ -283,6 +332,12 @@ export function createAdminRouter({
 
           res.status(200).json({ success: true, data: result.request });
         } catch (error) {
+          if (error instanceof ServiceError) {
+            // Domain outcomes (not found, already reviewed, expired, beyond
+            // maturity...) keep their status and code instead of becoming 500s.
+            next(new PublicAppError(error.statusCode, error.message, error.code, error.details));
+            return;
+          }
           logger.error("Admin extension review failed", {
             error: error instanceof Error ? error.message : String(error),
           });

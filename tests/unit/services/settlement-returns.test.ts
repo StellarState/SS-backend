@@ -196,10 +196,11 @@ describe("Pro-rata investor return calculation on settlement (#460)", () => {
       expect(remainders.size).toBe(1);
     });
 
-    it("ensures sum of all returns never exceeds total settlement amount with repeating fractional ratios", async () => {
+    it("allocates the rounding remainder deterministically so recipient totals reconcile to proceeds", async () => {
       // 3 equal investors splitting 100 units of proceeds:
-      // Each has 1/3 share. floor(100 / 3) = 33.3333
-      // 3 * 33.3333 = 99.9999. Remainder = 0.0001
+      // Each has 1/3 share. floor(100 / 3) = 33.3333, dust = 0.0001
+      // The largest-remainder method assigns the dust to one investor deterministically
+      // (tie broken by investmentId), so all three returns sum to exactly 100.0000.
       const invoice = createInvoice({ amount: "300.0000", netAmount: "300.0000" });
       const inv1 = createInvestment(invoice.id, "100.0000");
       const inv2 = createInvestment(invoice.id, "100.0000");
@@ -222,21 +223,23 @@ describe("Pro-rata investor return calculation on settlement (#460)", () => {
       const ret2 = result.settlements.find((s) => s.investmentId === inv2.id)?.actualReturn;
       const ret3 = result.settlements.find((s) => s.investmentId === inv3.id)?.actualReturn;
 
-      // Each investor gets floor(100 * 100 / 300) = floor(33.333333...) = 33.3333
-      expect(ret1).toBe("33.3333");
-      expect(ret2).toBe("33.3333");
-      expect(ret3).toBe("33.3333");
+      // Each investor gets floor(100 * 100 / 300) = 33.3333; the 0.0001 dust is assigned
+      // to exactly one investor via largest-remainder so totals reconcile.
+      const dusted = [ret1, ret2, ret3].filter((r) => r === "33.3334").length;
+      const floored = [ret1, ret2, ret3].filter((r) => r === "33.3333").length;
+      expect(dusted).toBe(1);
+      expect(floored).toBe(2);
 
       const sumReturns = Number(ret1) + Number(ret2) + Number(ret3);
-      expect(sumReturns).toBe(99.9999);
-      expect(sumReturns).toBeLessThan(100);
+      expect(sumReturns).toBe(100);
+      expect(sumReturns).toBeLessThanOrEqual(100);
 
-      // Remainder dust handled and recorded separately
+      // Remainder dust is allocated and reported for audit (#841)
       expect(result.remainder).toBe("0.0001");
       expect(result.remainderDust).toBe("0.0001");
-      expect(result.totalDistributed).toBe("99.9999");
+      expect(result.totalDistributed).toBe("100.0000");
 
-      // Verify invoice has remainder recorded
+      // Verify invoice has allocated remainder recorded
       expect(invoices.get(invoice.id)?.settlementRemainder).toBe("0.0001");
 
       // Verify settlement_remainders table has record
@@ -244,22 +247,22 @@ describe("Pro-rata investor return calculation on settlement (#460)", () => {
       const remainderEntry = [...remainders.values()][0];
       expect(remainderEntry.remainderAmount).toBe("0.0001");
       expect(remainderEntry.totalSettlementAmount).toBe("100.0000");
-      expect(remainderEntry.totalDistributedAmount).toBe("99.9999");
+      expect(remainderEntry.totalDistributedAmount).toBe("100.0000");
 
-      // investor_returns table populated with correct amounts
+      // investor_returns table populated with allocated amounts
       expect(investorReturns.size).toBe(3);
       for (const ir of investorReturns.values()) {
-        expect(ir.returnAmount).toBe("33.3333");
-        expect(ir.amount).toBe("33.3333");
+        expect(["33.3333", "33.3334"]).toContain(ir.returnAmount);
+        expect(ir.amount).toBe(ir.returnAmount);
         expect(ir.invoiceId).toBe(invoice.id);
       }
     });
 
-    it("handles uneven investor split (1/3 and 2/3 shares of 10 proceeds)", async () => {
+    it("allocates rounding remainder deterministically for uneven investor split", async () => {
       // 10 proceeds split between 1/3 (amount 100) and 2/3 (amount 200), total 300
-      // 1/3 * 10 = 3.3333... floor = 3.3333
-      // 2/3 * 10 = 6.6666... floor = 6.6666
-      // Sum = 9.9999. Remainder = 0.0001
+      // 1/3 * 10 = 3.3333... floor = 3.3333 (fraction 1/3)
+      // 2/3 * 10 = 6.6666... floor = 6.6666 (fraction 2/3, largest -> gets the dust)
+      // Sum = 9.9999. Dust 0.0001 assigned to the 2/3 investor -> 6.6667
       const invoice = createInvoice({ amount: "300.0000", netAmount: "300.0000" });
       const inv1 = createInvestment(invoice.id, "100.0000");
       const inv2 = createInvestment(invoice.id, "200.0000");
@@ -279,12 +282,13 @@ describe("Pro-rata investor return calculation on settlement (#460)", () => {
       const ret1 = result.settlements.find((s) => s.investmentId === inv1.id)?.actualReturn;
       const ret2 = result.settlements.find((s) => s.investmentId === inv2.id)?.actualReturn;
 
+      // Largest-remainder: the 2/3 investor has the largest fractional remainder
       expect(ret1).toBe("3.3333");
-      expect(ret2).toBe("6.6666");
+      expect(ret2).toBe("6.6667");
       expect(result.remainder).toBe("0.0001");
-      expect(result.totalDistributed).toBe("9.9999");
+      expect(result.totalDistributed).toBe("10.0000");
 
-      // investor_returns table populated with correct amounts
+      // investor_returns table populated with allocated amounts
       expect(investorReturns.size).toBe(2);
       expect(remainders.size).toBe(1);
     });
@@ -394,7 +398,7 @@ describe("Pro-rata investor return calculation on settlement (#460)", () => {
   });
 
   describe("calculateInvestorReturns pure helper", () => {
-    it("purely computes floor division returns, total distributed and remainder dust", () => {
+    it("purely computes largest-remainder allocated returns, total distributed and remainder dust", () => {
       const service = new SettlementService({} as unknown as DataSource);
 
       const investments = [
@@ -407,16 +411,17 @@ describe("Pro-rata investor return calculation on settlement (#460)", () => {
 
       expect(calculation.totalFunded).toBe("300.0000");
       expect(calculation.distributable).toBe("100.0000");
-      expect(calculation.totalDistributed).toBe("99.9999");
+      expect(calculation.totalDistributed).toBe("100.0000");
       expect(calculation.remainder).toBe("0.0001");
       expect(calculation.returns).toHaveLength(3);
-      expect(calculation.returns[0]?.returnAmount).toBe("33.3333");
+      // Largest-remainder: tie broken by investmentId ascending -> inv-1 receives the dust
+      expect(calculation.returns[0]?.returnAmount).toBe("33.3334");
       expect(calculation.returns[1]?.returnAmount).toBe("33.3333");
       expect(calculation.returns[2]?.returnAmount).toBe("33.3333");
 
-      // Verify sum of returns never exceeds proceeds
+      // Verify allocated returns reconcile to the distributable proceeds
       const sum = calculation.returns.reduce((acc, r) => acc + Number(r.returnAmount), 0);
-      expect(sum).toBeLessThanOrEqual(100);
+      expect(sum).toBe(100);
     });
 
     it("rejects invalid proceeds or funded amounts", () => {

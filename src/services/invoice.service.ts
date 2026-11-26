@@ -24,7 +24,16 @@ import { Transaction } from "../models/Transaction.model";
 import { logger } from "../observability/logger";
 import type { IPFSService, IPFSUploadResult } from "./ipfs.service";
 import { decodeInvoiceCursor, encodeInvoiceCursor } from "../utils/invoice-cursor.utils";
+import { percentageString } from "../utils/percentage.utils";
 import { parseContentChecksum, verifyDocumentChecksum } from "../lib/document-checksum";
+import {
+  decodeLifecycleHistoryCursor,
+  encodeLifecycleHistoryCursor,
+  redactLifecycleHistoryRow,
+  type LifecycleHistoryPage,
+  type LifecycleHistoryRow,
+  type LifecycleHistoryViewer,
+} from "../lib/invoice-lifecycle-history";
 
 export interface InvoiceRepositoryContract {
   findOne(options: { where: { id: string }; relations?: string[] }): Promise<Invoice | null>;
@@ -700,6 +709,42 @@ export class InvoiceService {
    */
   async publishInvoice(input: PublishInvoiceInput): Promise<InvoiceDTO> {
     try {
+      if (this.dataSource) {
+        const transition = await this.dataSource.transaction(async (manager) => {
+          const invoice = await manager.findOne(Invoice, {
+            where: { id: input.invoiceId },
+            relations: ["seller"],
+            lock: this.invoiceWriteLock(),
+          });
+          if (!invoice) throw new ServiceError("invoice_not_found", "Invoice not found", 404);
+          if (invoice.sellerId !== input.sellerId) {
+            throw new ServiceError(
+              "unauthorized_invoice_access",
+              "You can only publish your own invoices",
+              403
+            );
+          }
+          const seller = invoice.seller as unknown as User;
+          if (!seller || seller.kycStatus !== KYCStatus.APPROVED) {
+            throw new ServiceError(
+              "kyc_approval_required",
+              "KYC approval is required to publish invoices",
+              403
+            );
+          }
+          return this.stateMachine.transition(
+            entityManagerTransitionStore(manager),
+            invoice,
+            InvoiceStatus.PUBLISHED,
+            {
+              actor: { role: "seller", id: input.sellerId, wallet: seller.stellarAddress },
+              trigger: "seller_published",
+            }
+          );
+        });
+        await this.stateMachine.dispatch(transition);
+        return this.toDTO(transition.invoice);
+      }
       const invoice = await this.invoiceRepository.findOne({
         where: { id: input.invoiceId },
         relations: ["seller"],
@@ -850,6 +895,91 @@ export class InvoiceService {
       logger.error("Failed to fetch invoice status history", { error, invoiceId });
       throw new ServiceError("invoice_history_failed", "Failed to fetch invoice status history", 500);
     }
+  }
+
+  /**
+   * One page of an invoice's lifecycle history (issue #795), oldest first.
+   *
+   * Visible to the invoice's seller and to admins. Anyone else, and any
+   * unknown invoice, gets the same 404, so a caller cannot tell whether an
+   * invoice they may not see exists or has history. Pages are keyset pages
+   * on (created_at, id): see lib/invoice-lifecycle-history.ts for why that
+   * order is total and why the cursor keeps microseconds.
+   */
+  async getInvoiceLifecycleHistory(
+    invoiceId: string,
+    viewer: LifecycleHistoryViewer,
+    options: { limit: number; cursor?: string | null }
+  ): Promise<LifecycleHistoryPage> {
+    const invoice = await this.invoiceRepository.findOne({ where: { id: invoiceId } });
+    if (!invoice || (!viewer.isAdmin && invoice.sellerId !== viewer.id)) {
+      throw new ServiceError("invoice_not_found", "Invoice not found", 404);
+    }
+
+    const after = options.cursor
+      ? decodeLifecycleHistoryCursor(options.cursor, invoiceId)
+      : null;
+
+    if (!this.dataSource) {
+      return { items: [], hasMore: false, nextCursor: null, limit: options.limit };
+    }
+
+    let rows: Array<{
+      id: string;
+      from_status: string;
+      to_status: string;
+      actor_role: string;
+      actor_id: string | null;
+      trigger: string;
+      reason: string | null;
+      created_at: Date;
+      created_at_exact: string;
+    }>;
+    try {
+      rows = await this.dataSource.query(
+        `SELECT "id", "from_status", "to_status", "actor_role", "actor_id", "trigger", "reason",
+                "created_at",
+                to_char("created_at" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
+                  AS "created_at_exact"
+         FROM "invoice_status_history"
+         WHERE "invoice_id" = $1
+           AND ($2::timestamptz IS NULL OR ("created_at", "id") > ($2::timestamptz, $3::uuid))
+         ORDER BY "created_at" ASC, "id" ASC
+         LIMIT $4`,
+        [invoiceId, after?.createdAt ?? null, after?.id ?? null, options.limit + 1]
+      );
+    } catch (error) {
+      logger.error("Failed to fetch invoice lifecycle history", { error, invoiceId });
+      throw new ServiceError("invoice_history_failed", "Failed to fetch invoice status history", 500);
+    }
+
+    const hasMore = rows.length > options.limit;
+    const page = hasMore ? rows.slice(0, options.limit) : rows;
+    const last = page[page.length - 1];
+
+    return {
+      items: page.map((row) =>
+        redactLifecycleHistoryRow(
+          {
+            id: row.id,
+            fromStatus: row.from_status as LifecycleHistoryRow["fromStatus"],
+            toStatus: row.to_status as LifecycleHistoryRow["toStatus"],
+            actorRole: row.actor_role as LifecycleHistoryRow["actorRole"],
+            actorId: row.actor_id,
+            trigger: row.trigger,
+            reason: row.reason,
+            createdAt: new Date(row.created_at),
+          },
+          viewer
+        )
+      ),
+      hasMore,
+      nextCursor:
+        hasMore && last
+          ? encodeLifecycleHistoryCursor({ invoiceId, createdAt: last.created_at_exact, id: last.id })
+          : null,
+      limit: options.limit,
+    };
   }
 
   /**
@@ -1186,12 +1316,7 @@ export class InvoiceService {
 
       return investments.map((investment) => {
         const investor = investment.investor as unknown as User;
-        const percentage = totalInvested.isZero()
-          ? new Decimal(0)
-          : new Decimal(investment.investmentAmount)
-              .dividedBy(totalInvested)
-              .times(100)
-              .toDecimalPlaces(2);
+        const sharePercent = percentageString(investment.investmentAmount, totalInvested);
 
         const address = investor.stellarAddress || "";
         const truncatedWallet = address.length > 8 ? `${address.slice(0, 4)}...${address.slice(-4)}` : address;
@@ -1199,7 +1324,7 @@ export class InvoiceService {
         return {
           wallet: truncatedWallet,
           amount: investment.investmentAmount,
-          share_percent: percentage.toFixed(2),
+          share_percent: sharePercent,
           committed_at: investment.createdAt,
         };
       });

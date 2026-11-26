@@ -1,4 +1,5 @@
 import Decimal from "decimal.js";
+import { createHash } from "node:crypto";
 
 import { TtlCache } from "../lib/ttl-cache";
 import { logger as globalLogger } from "../observability/logger";
@@ -35,6 +36,12 @@ export const ROYALTY_EVENTS = {
 } as const;
 
 export interface RoyaltyPaidInput {
+  eventId?: string;
+  cycleId?: string | null;
+  cycleAt?: Date;
+  revision?: number;
+  gross?: string;
+  platformFee?: string;
   keyAddress: string;
   creatorWallet: string;
   buyerWallet: string | null;
@@ -45,6 +52,8 @@ export interface RoyaltyPaidInput {
 }
 
 export interface RoyaltyClaimInput {
+  cycleId?: string | null;
+  revision?: number;
   claimId: string;
   keyAddress: string | null;
   creatorWallet: string;
@@ -300,6 +309,7 @@ export class RoyaltyEarningsService implements ContractEventHandler {
    * the affected creator's cache, so a new accrual is visible immediately.
    */
   async handle(event: DecodedSorobanEvent): Promise<void> {
+    if (!event.inSuccessfulContractCall) return;
     const topic = normalizeTopic(event.topic);
 
     if (topic === ROYALTY_EVENTS.royaltyPaid) {
@@ -335,7 +345,14 @@ export class RoyaltyEarningsService implements ContractEventHandler {
       return;
     }
 
+    const cycleAt = readEventString(event, ["cycle_at", "cycleAt", "cycle_start"]);
     await this.royaltyRepository.recordRoyaltyPaid({
+      eventId: createHash("sha256").update(JSON.stringify([event.contractId, event.id])).digest("hex"),
+      cycleId: readEventString(event, ["cycle_id", "cycleId"]),
+      cycleAt: cycleAt ? new Date(cycleAt) : this.eventTimestamp(event),
+      revision: Number(readEventString(event, ["revision"]) ?? 1),
+      gross: this.readAmount(event, ["gross", "gross_amount"]) ?? amount,
+      platformFee: this.readAmount(event, ["platform_fee", "platformFee"]) ?? "0.0000",
       keyAddress,
       creatorWallet,
       buyerWallet: readEventString(event, ["buyer_wallet", "buyerWallet", "buyer", "payer", "3"]),
@@ -370,6 +387,8 @@ export class RoyaltyEarningsService implements ContractEventHandler {
       (event.txHash ? `claim:${event.txHash}` : `claim:${event.id}`);
 
     await this.royaltyRepository.recordRoyaltyClaim({
+      cycleId: readEventString(event, ["cycle_id", "cycleId"]),
+      revision: readEventString(event, ["revision"]) === null ? undefined : Number(readEventString(event, ["revision"])),
       claimId,
       keyAddress: readEventString(event, ["key_address", "keyAddress", "key"]),
       creatorWallet,

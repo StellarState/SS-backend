@@ -1,20 +1,36 @@
-import {
-  Entity,
-  PrimaryGeneratedColumn,
-  Column,
-  CreateDateColumn,
-  Index,
-} from "typeorm";
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, Index } from "typeorm";
 
 /**
  * Stores indexed RoyaltyPaid on-chain events.
  * Used to compute platform-wide royalty analytics (total royalties, top earners, per-key volume).
  */
 @Entity("royalty_events")
+@Index("idx_royalty_statement_cursor", ["creatorWallet", "statementSequence"])
 @Index("idx_royalty_events_creator_wallet", ["creatorWallet"])
 @Index("idx_royalty_events_key_address", ["keyAddress"])
 @Index("idx_royalty_events_paid_at", ["paidAt"])
 export class RoyaltyEvent {
+  @Column({ name: "event_id", type: "varchar", length: 64, nullable: true, unique: true })
+  eventId!: string | null;
+
+  @Column({ name: "cycle_id", type: "varchar", length: 128, nullable: true })
+  cycleId!: string | null;
+
+  @Column({ name: "cycle_at", type: "timestamptz", nullable: true })
+  cycleAt!: Date | null;
+
+  @Column({ type: "integer", default: 1 })
+  revision!: number;
+
+  @Column({ type: "decimal", precision: 18, scale: 4, nullable: true })
+  gross!: string | null;
+
+  @Column({ name: "platform_fee", type: "decimal", precision: 18, scale: 4, default: 0 })
+  platformFee!: string;
+
+  @Column({ name: "statement_sequence", type: "bigint", generated: "increment", unique: true })
+  statementSequence!: string;
+
   @PrimaryGeneratedColumn("uuid")
   id!: string;
 

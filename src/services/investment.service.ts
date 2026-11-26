@@ -11,6 +11,7 @@ import { InvoiceStatus, InvestmentStatus } from "../types/enums";
 import { ServiceError } from "../utils/service-error";
 import { isPastDueDate } from "../utils/date.utils";
 import { Decimal } from "decimal.js";
+import { formatPercentage, percentageString } from "../utils/percentage.utils";
 import { getCurrentTermsVersion } from "./investor-acknowledgement.service";
 import {
   createInvoiceStateMachine,
@@ -134,13 +135,66 @@ const ACTIVE_INVESTMENT_STATUSES = [InvestmentStatus.PENDING, InvestmentStatus.C
 const SETTLED_INVESTMENT_STATUSES = [InvestmentStatus.SETTLED];
 const FAILED_INVESTMENT_STATUSES = [InvestmentStatus.CANCELLED];
 
+const DEFAULT_SUITABILITY_LOOKUP_TIMEOUT_MS = 5_000;
+
+export interface SuitabilityCheckOptions {
+  /**
+   * Whether suitability is a required precondition. Defaults to true when a
+   * risk-profile service is injected, so omitting the dependency is the
+   * explicit way to run with suitability disabled.
+   */
+  required?: boolean;
+  /** Bounds how long a dependency lookup may delay an investment commitment. */
+  lookupTimeoutMs?: number;
+}
+
 export class InvestmentService {
+  private readonly suitabilityRequired: boolean;
+  private readonly suitabilityLookupTimeoutMs: number;
+
   constructor(
     private readonly dataSource: DataSource,
     private readonly stateMachine: InvoiceStateMachine = createInvoiceStateMachine(),
     private readonly investmentNotifier?: InvestmentNotifier,
-    private readonly riskProfileService?: InvestorRiskProfileService
-  ) {}
+    private readonly riskProfileService?: InvestorRiskProfileService,
+    suitabilityOptions: SuitabilityCheckOptions = {}
+  ) {
+    this.suitabilityRequired = suitabilityOptions.required ?? Boolean(riskProfileService);
+    this.suitabilityLookupTimeoutMs =
+      suitabilityOptions.lookupTimeoutMs ?? DEFAULT_SUITABILITY_LOOKUP_TIMEOUT_MS;
+  }
+
+  /**
+   * Parses a raw monetary string into a Decimal, enforcing that the value is
+   * finite, positive, and has at most four decimal places.  Both investment
+   * entry-points (createInvestment and investInInvoice) delegate here so the
+   * accepted monetary domain is identical on every route.
+   *
+   * Throws a structured 400 ServiceError for each failure mode so callers
+   * always receive a stable, client-readable error before any side effects.
+   */
+  private parseMonetaryAmount(raw: string): Decimal {
+    let amount: Decimal;
+    try {
+      amount = new Decimal(raw);
+    } catch {
+      throw new ServiceError("INVALID_AMOUNT", "Investment amount must be a number", 400);
+    }
+    if (!amount.isFinite()) {
+      throw new ServiceError("INVALID_AMOUNT", "Investment amount must be a finite number", 400);
+    }
+    if (amount.lte(0)) {
+      throw new ServiceError("INVALID_AMOUNT", "Investment amount must be greater than zero", 400);
+    }
+    if (amount.decimalPlaces() > 4) {
+      throw new ServiceError(
+        "INVALID_AMOUNT",
+        "Investment amount supports at most 4 decimal places",
+        400
+      );
+    }
+    return amount;
+  }
 
   /**
    * Issue #473 — block investment until the wallet has acknowledged the
@@ -167,6 +221,94 @@ export class InvestmentService {
         `Investor must acknowledge terms version ${currentVersion} before investing`,
         403
       );
+    }
+  }
+
+  /**
+   * Issue #741 — suitability is a required precondition. Business ineligibility
+   * remains a 403 (`SUITABILITY_CHECK_FAILED`), while any failure to obtain or
+   * evaluate the profile fails closed with a stable retryable 503. This check
+   * intentionally runs before the funding transaction so no commitment,
+   * `funded_amount` write, or investment row can exist for unknown eligibility.
+   */
+  private async assertInvestmentSuitable(invoiceId: string, investorWallet: string): Promise<void> {
+    if (!this.suitabilityRequired) {
+      // Disabling suitability is an explicit configuration decision, never the
+      // result of a failed lookup. See docs/INVESTMENT_SUITABILITY.md.
+      logger.debug("investment.suitability_disabled", {
+        investor_wallet: truncateWalletAddress(investorWallet),
+        invoice_id: invoiceId,
+      });
+      return;
+    }
+
+    if (!this.riskProfileService) {
+      throw this.suitabilityUnavailable();
+    }
+
+    const startedAt = Date.now();
+    try {
+      const invoice = await this.withSuitabilityTimeout(
+        this.dataSource.getRepository(Invoice).findOne({ where: { id: invoiceId } }),
+        "invoice lookup"
+      );
+      // No invoice means no possible commitment; the transaction rejects it.
+      if (!invoice) return;
+
+      const riskScore = invoice.riskScore ? parseFloat(invoice.riskScore) : 50;
+      let invoiceRiskCategory: "low" | "medium" | "high" = "medium";
+      if (riskScore < 33) invoiceRiskCategory = "low";
+      else if (riskScore > 66) invoiceRiskCategory = "high";
+
+      const suitability = await this.withSuitabilityTimeout(
+        this.riskProfileService.checkSuitability(investorWallet, invoiceRiskCategory),
+        "profile lookup"
+      );
+      if (!suitability.suitable) {
+        throw new ServiceError(
+          "SUITABILITY_CHECK_FAILED",
+          suitability.reason || "Investment not suitable for your risk profile",
+          403
+        );
+      }
+    } catch (error) {
+      if (error instanceof ServiceError && error.code === "SUITABILITY_CHECK_FAILED") {
+        throw error;
+      }
+      // Never log the profile, questionnaire answers, or provider response.
+      logger.warn("investment.suitability_check_unavailable", {
+        investor_wallet: truncateWalletAddress(investorWallet),
+        invoice_id: invoiceId,
+        error_type: error instanceof Error ? error.name : typeof error,
+        duration_ms: Date.now() - startedAt,
+      });
+      throw this.suitabilityUnavailable();
+    }
+  }
+
+  private suitabilityUnavailable(): ServiceError {
+    return new ServiceError(
+      "SUITABILITY_CHECK_UNAVAILABLE",
+      "Investment suitability validation is temporarily unavailable. Please retry.",
+      503,
+      { retryable: true, retryAfterSeconds: 1 }
+    );
+  }
+
+  private async withSuitabilityTimeout<T>(operation: Promise<T>, operationName: string): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        operation,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`Suitability ${operationName} timed out`)),
+            this.suitabilityLookupTimeoutMs
+          );
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 
@@ -353,7 +495,7 @@ export class InvestmentService {
     }
 
     const weightedAverageApy = totalDeployedCapital.gt(0)
-      ? weightedYieldSum.dividedBy(totalDeployedCapital).toFixed(2)
+      ? formatPercentage(weightedYieldSum.dividedBy(totalDeployedCapital))
       : "0.00";
 
     const projectedTotalReturn = pendingPayouts.gt(0) ? pendingPayouts : totalDeployedCapital;
@@ -365,7 +507,7 @@ export class InvestmentService {
         returnedAmount: data.returned.toFixed(4),
         profit: data.profit.toFixed(4),
         averageYieldPercent:
-          data.count > 0 ? data.yieldSum.dividedBy(data.count).toFixed(2) : "0.00",
+          data.count > 0 ? formatPercentage(data.yieldSum.dividedBy(data.count)) : "0.00",
       })
     );
 
@@ -400,23 +542,41 @@ export class InvestmentService {
     const { invoiceId, investorId, walletAddress } = input;
 
     await this.assertAccreditationAcknowledged(walletAddress);
+    await this.assertInvestmentSuitable(invoiceId, walletAddress);
 
-    let amount: Decimal;
-    try {
-      amount = new Decimal(input.amount);
-    } catch {
-      throw new ServiceError("INVALID_AMOUNT", "Investment amount must be a number", 400);
+    // #742 — apply the same risk-profile suitability gate used by createInvestment.
+    if (this.riskProfileService) {
+      try {
+        const invoice = await this.dataSource.getRepository(Invoice).findOne({ where: { id: invoiceId } });
+        if (invoice) {
+          const riskScore = invoice.riskScore ? parseFloat(invoice.riskScore) : 50;
+          let invoiceRiskCategory: "low" | "medium" | "high" = "medium";
+          if (riskScore < 33) invoiceRiskCategory = "low";
+          else if (riskScore > 66) invoiceRiskCategory = "high";
+
+          const suitability = await this.riskProfileService.checkSuitability(walletAddress, invoiceRiskCategory);
+          if (!suitability.suitable) {
+            throw new ServiceError(
+              "SUITABILITY_CHECK_FAILED",
+              suitability.reason || "Investment not suitable for your risk profile",
+              403
+            );
+          }
+        }
+      } catch (error) {
+        if (error instanceof ServiceError && error.code === "SUITABILITY_CHECK_FAILED") {
+          throw error;
+        }
+        logger.warn("investment.suitability_check_error", {
+          investorWallet: walletAddress,
+          invoiceId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
-    if (!amount.isFinite() || amount.lte(0)) {
-      throw new ServiceError("INVALID_AMOUNT", "Investment amount must be greater than zero", 400);
-    }
-    if (amount.decimalPlaces() > 4) {
-      throw new ServiceError(
-        "INVALID_AMOUNT",
-        "Investment amount supports at most 4 decimal places",
-        400
-      );
-    }
+
+    // #743 — use the shared finite-decimal parser (same domain as createInvestment).
+    const amount = this.parseMonetaryAmount(input.amount);
 
     const fundingBlock = String(input.ledgerSequence ?? currentFundingWindow());
     const MAX_ATTEMPTS = 3;
@@ -455,9 +615,41 @@ export class InvestmentService {
               );
             }
 
-            const netAmount = new Decimal(invoice.netAmount);
+            // Validate decimal amounts before and during the database transaction
+            if (!amount.isFinite() || amount.lte(0) || amount.decimalPlaces() > 4) {
+              throw new ServiceError("INVALID_AMOUNT", "Investment amount is invalid", 400);
+            }
+
+            let netAmount: Decimal;
+            try {
+              netAmount = new Decimal(invoice.netAmount);
+            } catch {
+              throw new ServiceError("INVALID_INVOICE", "Invoice net amount is invalid", 500);
+            }
+            if (!netAmount.isFinite() || netAmount.lte(0)) {
+              throw new ServiceError("INVALID_INVOICE", "Invoice net amount must be positive", 500);
+            }
+
             const funded = new Decimal(invoice.fundedAmount ?? 0);
-            const remaining = Decimal.max(netAmount.minus(funded), 0);
+            if (!funded.isFinite() || funded.lt(0)) {
+              throw new ServiceError("INVALID_INVOICE", "Invoice funded amount is invalid", 500);
+            }
+
+            let totalActive = new Decimal(0);
+            if (typeof manager.find === "function") {
+              const activeInvestments = await manager.find(Investment, {
+                where: [
+                  { invoiceId, status: InvestmentStatus.PENDING },
+                  { invoiceId, status: InvestmentStatus.CONFIRMED },
+                ],
+              });
+              totalActive = activeInvestments.reduce(
+                (sum, inv) => sum.plus(new Decimal(inv.investmentAmount)),
+                new Decimal(0)
+              );
+            }
+            const currentFunded = Decimal.max(funded, totalActive);
+            const remaining = Decimal.max(netAmount.minus(currentFunded), 0);
             if (amount.gt(remaining)) {
               throw new ServiceError(
                 "INSUFFICIENT_CAPACITY",
@@ -566,7 +758,7 @@ export class InvestmentService {
             targetAmount: netAmount.toFixed(4),
             fundedAmount: fundedAmount.toFixed(4),
             remainingCapacity: Decimal.max(netAmount.minus(fundedAmount), 0).toFixed(4),
-            fundedPercent: fundedAmount.dividedBy(netAmount).times(100).toFixed(2),
+            fundedPercent: percentageString(fundedAmount, netAmount),
             version: invoice.version,
           },
         };
@@ -585,7 +777,8 @@ export class InvestmentService {
           throw new ServiceError(
             "CONCURRENT_INVESTMENT_CONFLICT",
             "Unable to process investment due to concurrent modifications. Please retry.",
-            409
+            409,
+            { retryAfterMs: 25 * attempt, retryable: true }
           );
         }
         await new Promise((resolve) => setTimeout(resolve, 25 * attempt));
@@ -603,45 +796,10 @@ export class InvestmentService {
 
     await this.assertAccreditationAcknowledged(investorWallet);
 
-    // Check risk profile suitability (issue #595)
-    if (this.riskProfileService) {
-      try {
-        const invoice = await this.dataSource.getRepository(Invoice).findOne({ where: { id: invoiceId } });
-        if (invoice) {
-          // Determine invoice risk category from risk score
-          const riskScore = invoice.riskScore ? parseFloat(invoice.riskScore) : 50;
-          let invoiceRiskCategory: "low" | "medium" | "high" = "medium";
-          if (riskScore < 33) invoiceRiskCategory = "low";
-          else if (riskScore > 66) invoiceRiskCategory = "high";
+    await this.assertInvestmentSuitable(invoiceId, investorWallet);
 
-          const suitability = await this.riskProfileService.checkSuitability(investorWallet, invoiceRiskCategory);
-
-          if (!suitability.suitable) {
-            throw new ServiceError(
-              "SUITABILITY_CHECK_FAILED",
-              suitability.reason || "Investment not suitable for your risk profile",
-              403
-            );
-          }
-        }
-      } catch (error) {
-        if (error instanceof ServiceError && error.code === "SUITABILITY_CHECK_FAILED") {
-          throw error;
-        }
-        // Log but don't fail investment if suitability check fails unexpectedly
-        logger.warn("investment.suitability_check_error", {
-          investorWallet,
-          invoiceId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-
-    // Validate investment amount
-    const amount = new Decimal(investmentAmount);
-    if (amount.isNegative() || amount.isZero()) {
-      throw new ServiceError("INVALID_AMOUNT", "Investment amount must be greater than zero");
-    }
+    // #743 — validate investment amount via the shared finite-decimal parser before the database transaction.
+    const amount = this.parseMonetaryAmount(investmentAmount);
 
     const MAX_RETRIES = 3;
     let attempt = 0;
@@ -697,12 +855,28 @@ export class InvestmentService {
             throw new ServiceError("INVOICE_NOT_FOUND", "Invoice not found", 404);
           }
 
+          // Validate decimal amounts during the database transaction
+          if (!amount.isFinite() || amount.lte(0) || amount.decimalPlaces() > 4) {
+            throw new ServiceError("INVALID_AMOUNT", "Investment amount is invalid", 400);
+          }
+
+          let netAmount: Decimal;
+          try {
+            netAmount = new Decimal(invoice.netAmount);
+          } catch {
+            throw new ServiceError("INVALID_INVOICE", "Invoice net amount is invalid", 500);
+          }
+          if (!netAmount.isFinite() || netAmount.lte(0)) {
+            throw new ServiceError("INVALID_INVOICE", "Invoice net amount must be positive", 500);
+          }
+
           // 2. Validate invoice status
           if (invoice.status !== InvoiceStatus.PUBLISHED) {
             if (invoice.status === InvoiceStatus.FUNDED) {
               throw new ServiceError(
                 "INSUFFICIENT_CAPACITY",
-                "Invoice is already fully funded"
+                "Invoice is already fully funded",
+                400
               );
             }
             throw new ServiceError(
@@ -732,34 +906,82 @@ export class InvestmentService {
 
           // 5. Check remaining capacity
           // We count both PENDING and CONFIRMED investments towards the cap to prevent over-subscription
-          const activeInvestments = await transactionalEntityManager.find(Investment, {
-            where: [
-              { invoiceId, status: InvestmentStatus.PENDING },
-              { invoiceId, status: InvestmentStatus.CONFIRMED },
-            ],
-          });
+          let totalInvested = new Decimal(0);
+          if (typeof transactionalEntityManager.find === "function") {
+            const activeInvestments = await transactionalEntityManager.find(Investment, {
+              where: [
+                { invoiceId, status: InvestmentStatus.PENDING },
+                { invoiceId, status: InvestmentStatus.CONFIRMED },
+              ],
+            });
+            totalInvested = activeInvestments.reduce(
+              (sum, inv) => sum.plus(new Decimal(inv.investmentAmount)),
+              new Decimal(0)
+            );
+          }
 
-          const totalInvested = activeInvestments.reduce(
-            (sum, inv) => sum.plus(new Decimal(inv.investmentAmount)),
-            new Decimal(0)
-          );
-
-          const netAmount = new Decimal(invoice.netAmount);
-          const remainingCapacity = netAmount.minus(totalInvested);
+          const invoiceFunded = new Decimal(invoice.fundedAmount ?? 0);
+          const currentFunded = Decimal.max(totalInvested, invoiceFunded);
+          const remainingCapacity = Decimal.max(netAmount.minus(currentFunded), 0);
 
           if (amount.gt(remainingCapacity)) {
             throw new ServiceError(
               "INSUFFICIENT_CAPACITY",
-              `Investment amount ${amount.toString()} exceeds remaining capacity ${remainingCapacity.toString()}`
+              `Investment amount ${amount.toString()} exceeds remaining capacity ${remainingCapacity.toString()}`,
+              400,
+              { remainingCapacity: remainingCapacity.toFixed(4) }
             );
           }
 
-          // 6. Calculate expected return
+          // 6. Lock or conditionally update remaining capacity on the invoice
+          const newTotalInvested = currentFunded.plus(amount);
+          if (newTotalInvested.gt(netAmount)) {
+            throw new ServiceError(
+              "INSUFFICIENT_CAPACITY",
+              `Investment amount exceeds remaining capacity`,
+              400,
+              { remainingCapacity: remainingCapacity.toFixed(4) }
+            );
+          }
+
+          let conditionallyUpdated = false;
+          const updateQb = typeof transactionalEntityManager.createQueryBuilder === "function"
+            ? transactionalEntityManager.createQueryBuilder(Invoice, "invoice")
+            : invoiceRepo && typeof invoiceRepo.createQueryBuilder === "function"
+            ? invoiceRepo.createQueryBuilder("invoice")
+            : null;
+
+          if (updateQb && "update" in updateQb && typeof updateQb.update === "function") {
+            const updateResult = await updateQb
+              .update(Invoice)
+              .set({
+                fundedAmount: () => "funded_amount + :amount",
+                version: () => "version + 1",
+              })
+              .where("id = :id", { id: invoiceId })
+              .andWhere("version = :version", { version: invoice.version })
+              .andWhere("status = :status", { status: InvoiceStatus.PUBLISHED })
+              .andWhere("funded_amount + :amount <= net_amount")
+              .setParameter("amount", amount.toFixed(4))
+              .execute();
+
+            if (updateResult && typeof updateResult.affected === "number") {
+              if (updateResult.affected !== 1) {
+                throw new FundingConflictError();
+              }
+              conditionallyUpdated = true;
+            }
+          }
+
+          invoice.fundedAmount = newTotalInvested.toFixed(4);
+          invoice.version = (invoice.version ?? 0) + 1;
+
+          // 7. Calculate expected return
           // expectedReturn = investmentAmount * (invoice.amount / invoice.netAmount)
           const faceAmount = new Decimal(invoice.amount);
           const expectedReturn = amount.times(faceAmount.dividedBy(netAmount)).toDecimalPlaces(4);
 
-          // 7. Create investment
+          // 8. Create investment
           const investment = transactionalEntityManager.create(Investment, {
             invoiceId,
             investorId,
@@ -771,12 +993,12 @@ export class InvestmentService {
 
           const savedInvestment = await transactionalEntityManager.save(Investment, investment);
 
-          // 8. Emit structured log for the investment commitment
+          // 9. Emit structured log for the investment commitment
           const truncatedWallet =
             investorWallet.length >= 8
               ? `${investorWallet.slice(0, 4)}…${investorWallet.slice(-4)}`
               : investorWallet;
-          const sharePercent = amount.dividedBy(netAmount).times(100).toFixed(2);
+          const sharePercent = percentageString(amount, netAmount);
 
           logger.info("investment.committed", {
             investment_id: savedInvestment.id,
@@ -787,12 +1009,6 @@ export class InvestmentService {
             committed_at: savedInvestment.createdAt?.toISOString() ?? new Date().toISOString(),
           });
 
-          // 9. Transition invoice to FUNDED if fully subscribed
-          const newTotalInvested = totalInvested.plus(amount);
-          // Keep funded_amount in step with this path too, so it and
-          // POST /invoices/:id/invest agree on remaining capacity. The row is
-          // locked above, so the plain save is safe here.
-          invoice.fundedAmount = newTotalInvested.toFixed(4);
           let fundedTransition: InvoiceTransition | null = null;
           if (newTotalInvested.gte(netAmount)) {
             fundedTransition = await this.stateMachine.transition(
@@ -805,7 +1021,7 @@ export class InvestmentService {
                 context: { fundedAmount: newTotalInvested.toFixed(4) },
               }
             );
-          } else {
+          } else if (!conditionallyUpdated) {
             await transactionalEntityManager.save(Invoice, invoice);
           }
 
@@ -818,7 +1034,10 @@ export class InvestmentService {
         }
         return savedInvestment;
       } catch (error) {
-        if (error instanceof OptimisticLockVersionMismatchError) {
+        const isConflict =
+          error instanceof FundingConflictError ||
+          error instanceof OptimisticLockVersionMismatchError;
+        if (isConflict) {
           attempt++;
           if (attempt >= MAX_RETRIES) {
             logger.warn("Optimistic lock retry exhausted for investment", {
@@ -830,7 +1049,8 @@ export class InvestmentService {
             throw new ServiceError(
               "CONCURRENT_INVESTMENT_CONFLICT",
               "Unable to process investment due to concurrent modifications. Please retry.",
-              409
+              409,
+              { retryAfterMs: 50 * attempt, retryable: true }
             );
           }
           // Brief exponential backoff before retry
@@ -844,7 +1064,8 @@ export class InvestmentService {
     throw new ServiceError(
       "CONCURRENT_INVESTMENT_CONFLICT",
       "Unable to process investment due to concurrent modifications. Please retry.",
-      409
+      409,
+      { retryAfterMs: 50 * MAX_RETRIES, retryable: true }
     );
   }
 }
@@ -853,7 +1074,14 @@ export function createInvestmentService(
   dataSource: DataSource,
   stateMachine?: InvoiceStateMachine,
   investmentNotifier?: InvestmentNotifier,
-  riskProfileService?: InvestorRiskProfileService
+  riskProfileService?: InvestorRiskProfileService,
+  suitabilityOptions?: SuitabilityCheckOptions
 ): InvestmentService {
-  return new InvestmentService(dataSource, stateMachine, investmentNotifier, riskProfileService);
+  return new InvestmentService(
+    dataSource,
+    stateMachine,
+    investmentNotifier,
+    riskProfileService,
+    suitabilityOptions
+  );
 }

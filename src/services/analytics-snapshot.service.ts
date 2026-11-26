@@ -4,6 +4,7 @@ import { Invoice } from "../models/Invoice.model";
 import { Investment } from "../models/Investment.model";
 import { InvoiceStatus, InvestmentStatus } from "../types/enums";
 import { logger } from "../observability/logger";
+import { percentageString } from "../utils/percentage.utils";
 
 export interface AnalyticsSnapshotDTO {
   snapshotDate: string;
@@ -239,10 +240,10 @@ export class AnalyticsSnapshotService {
     // ---- Settlement rate ----
     // Ratio of settled to (settled + funded)
     const totalFundedOrSettled = totalInvoicesSettled + totalInvoicesFunded;
-    const settlementRateNum =
-      totalFundedOrSettled > 0
-        ? ((totalInvoicesSettled / totalFundedOrSettled) * 100).toFixed(2)
-        : "0.00";
+    const settlementRateNum = percentageString(
+      BigInt(totalInvoicesSettled),
+      BigInt(totalFundedOrSettled)
+    );
 
     // Upsert the snapshot (overwrite if already exists for today)
     const existing = await this.snapshotRepo.findOne({ where: { snapshotDate } });
