@@ -240,7 +240,22 @@ export async function bootstrap(): Promise<{
   // Read models projected from Soroban contract events: creator key buy
   // limits, the integration ACL, curve migrations, atomic swap history, creator
   // royalty earnings and holder dividend cycles.
-  const projections = createOnchainProjections({ dataSource, logger });
+  const referralContractId =
+    process.env.SOROBAN_REFERRAL_CONTRACT_ID || sorobanConfig.paymentDistributorContractId;
+  const referralBalanceReader =
+    referralContractId && sorobanConfig.rpcUrl
+      ? createSorobanReferralReader({
+          contractId: referralContractId,
+          rpcUrl: sorobanConfig.rpcUrl,
+          logger,
+        })
+      : undefined;
+
+  const projections = createOnchainProjections({
+    dataSource,
+    logger,
+    referralBalanceReader,
+  });
   const dividendReconciliationService = new DividendReconciliationService(dataSource);
   const payoutReader = new PayoutRpc.Server(sorobanConfig.rpcUrl, {
     allowHttp: sorobanConfig.rpcUrl.startsWith("http://"),
@@ -439,7 +454,6 @@ export async function bootstrap(): Promise<{
     config.sorobanEscrow.rpcUrl
       ? new EventIndexerService({
           contractIds: sorobanEventContractIds,
-          network: config.stellar.network,
           rpcUrl: config.sorobanEscrow.rpcUrl,
           dataSource,
           logger,
