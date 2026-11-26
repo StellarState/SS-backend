@@ -17,7 +17,7 @@ export class InvestorRiskProfileController {
 
       // Ensure wallet matches authenticated user
       if (req.user?.stellarAddress && req.user.stellarAddress !== walletAddress) {
-        throw new AppError(403, "Cannot create risk profile for another wallet", "FORBIDDEN");
+        throw new AppError(404, "Resource not found.", "NOT_FOUND");
       }
 
       const responses: RiskProfileInput = {
@@ -78,7 +78,7 @@ export class InvestorRiskProfileController {
 
       // Ensure wallet matches authenticated user
       if (req.user?.stellarAddress && req.user.stellarAddress !== walletAddress) {
-        throw new AppError(403, "Cannot delete risk profile for another wallet", "FORBIDDEN");
+        throw new AppError(404, "Resource not found.", "NOT_FOUND");
       }
 
       await this.riskProfileService.deleteRiskProfile(walletAddress);

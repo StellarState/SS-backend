@@ -3,6 +3,7 @@ import Decimal from "decimal.js";
 import { User } from "../models/User.model";
 import { InvoiceStatus, UserType } from "../types/enums";
 import { decodeCursor, encodeCursor } from "../utils/cursor-pagination.utils";
+import { formatPercentage } from "../utils/percentage.utils";
 import { ServiceError } from "../utils/service-error";
 import type { TransitionEffect } from "../lib/invoice-state-machine";
 import { logger as defaultLogger, type AppLogger } from "../observability/logger";
@@ -349,7 +350,8 @@ export class IssuerProfileService {
 
     return {
       current_rate_bps: current,
-      current_rate_percent: current === null ? null : current / 100,
+      current_rate_percent:
+        current === null ? null : Number(formatPercentage(new Decimal(current).dividedBy(100))),
       sparkline,
     };
   }

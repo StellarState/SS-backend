@@ -51,6 +51,7 @@ import { InvoiceStatusHistory } from "../../src/models/InvoiceStatusHistory.mode
 import { InvestorReturn } from "../../src/models/InvestorReturn.model";
 import { SettlementRemainder } from "../../src/models/SettlementRemainder.model";
 import { InvestorAcknowledgement } from "../../src/models/InvestorAcknowledgement.model";
+import { WalletSession } from "../../src/models/WalletSession.model";
 import { getCurrentTermsVersion } from "../../src/services/investor-acknowledgement.service";
 import { InvoiceStatus, InvestmentStatus, KYCStatus } from "../../src/types/enums";
 import type { AppConfig } from "../../src/config/env";
@@ -394,6 +395,8 @@ describe("E2E: Complete Invoice Financing Flow", () => {
             InvestorReturn,
             SettlementRemainder,
             InvestorAcknowledgement,
+            // auth/verify records a session per issued token (#919).
+            WalletSession,
           ],
       });
 

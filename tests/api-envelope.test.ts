@@ -119,15 +119,19 @@ describe("Health endpoints", () => {
     expect(response.body.data?.version).toEqual(expect.any(String));
   });
 
-  it("GET /ready returns 200 when database and Redis are healthy without authentication", async () => {
+  it("GET /ready returns 200 when every dependency is healthy without authentication", async () => {
     const authService = createAuthServiceStub();
     const getCurrentUser = jest.fn(authService.getCurrentUser);
     authService.getCurrentUser = getCurrentUser;
     const app = createApp({
       authService,
+      // /ready also checks migrations and Stellar config (#919); stub every
+      // check so the test does not depend on a live database or env.
       readinessChecks: {
         database: jest.fn().mockResolvedValue(undefined),
         redis: jest.fn().mockResolvedValue(undefined),
+        migrations: jest.fn().mockResolvedValue(undefined),
+        stellarConfig: jest.fn().mockResolvedValue(undefined),
       },
       metricsEnabled: false,
       http: { rateLimit: { enabled: false } },
@@ -142,6 +146,8 @@ describe("Health endpoints", () => {
         dependencies: {
           database: { status: "ok" },
           redis: { status: "ok" },
+          migrations: { status: "ok" },
+          stellarConfig: { status: "ok" },
         },
       },
     });

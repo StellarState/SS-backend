@@ -30,6 +30,15 @@ export enum InvoiceDocumentType {
  */
 @Entity("invoice_documents")
 export class InvoiceDocument {
+  @Column({ name: "content_checksum", type: "varchar", length: 64, nullable: true })
+  contentChecksum!: string | null;
+
+  @Column({ name: "upload_session_id", type: "uuid", nullable: true })
+  uploadSessionId!: string | null;
+
+  @Column({ name: "checksum_verified", type: "boolean", default: false })
+  checksumVerified!: boolean;
+
   @PrimaryGeneratedColumn("uuid")
   id!: string;
 

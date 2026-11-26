@@ -10,9 +10,44 @@ export function generateWebhookSignature(payload: string, secret: string): strin
   return crypto.createHmac("sha256", secret).update(payload).digest("hex");
 }
 
+export interface WebhookPendingAuditReconciliation {
+  subscriptionId: string;
+  eventType: string;
+  eventId: string | null;
+  attempt: number;
+  responseStatus: number | null;
+  acknowledged: boolean;
+  errorMessage: string | null;
+  auditError: string;
+  recordedAt: string;
+}
+
+export interface WebhookReconciliationSummary {
+  reconciled: number;
+  failed: number;
+}
+
 export interface WebhookDispatchResult {
   subscriptionId: string;
+  /**
+   * `true` only when the remote endpoint acknowledged the webhook (2xx) and
+   * the delivery audit record was durably persisted.
+   */
   delivered: boolean;
+  /**
+   * `true` when the remote endpoint returned a 2xx response, independent of
+   * whether local audit persistence succeeded.
+   */
+  acknowledged: boolean;
+  /**
+   * `true` when local audit persistence succeeded for the delivery outcome.
+   */
+  auditPersisted: boolean;
+  /**
+   * `true` when local audit persistence failed and reconciliation is required.
+   */
+  reconciliationRequired: boolean;
+  auditError?: string | null;
   attempts: number;
   responseStatus: number | null;
   /**
@@ -24,10 +59,54 @@ export interface WebhookDispatchResult {
 }
 
 export class WebhookDispatcherService {
+  private readonly pendingReconciliations: WebhookPendingAuditReconciliation[] = [];
+
   constructor(
     private readonly dataSource: DataSource,
     private readonly appLogger: AppLogger = logger
   ) {}
+
+  getPendingReconciliations(): WebhookPendingAuditReconciliation[] {
+    return this.pendingReconciliations.map((entry) => ({ ...entry }));
+  }
+
+  async reconcilePendingDeliveries(): Promise<WebhookReconciliationSummary> {
+    let reconciled = 0;
+    let failed = 0;
+
+    for (let i = 0; i < this.pendingReconciliations.length; ) {
+      const entry = this.pendingReconciliations[i];
+      try {
+        await this.logDelivery(
+          entry.subscriptionId,
+          entry.eventType,
+          entry.eventId ?? undefined,
+          entry.attempt,
+          entry.responseStatus,
+          entry.acknowledged,
+          entry.errorMessage
+        );
+        this.pendingReconciliations.splice(i, 1);
+        reconciled++;
+      } catch (error) {
+        entry.auditError =
+          error instanceof Error ? error.message : "Failed to persist webhook delivery audit";
+        this.appLogger.error("webhook.delivery.reconciliation_failed", {
+          subscription_id: entry.subscriptionId,
+          event_type: entry.eventType,
+          event_id: entry.eventId,
+          attempt: entry.attempt,
+          response_status: entry.responseStatus,
+          acknowledged: entry.acknowledged,
+          audit_error: entry.auditError,
+        });
+        failed++;
+        i++;
+      }
+    }
+
+    return { reconciled, failed };
+  }
 
   async dispatchWebhookEvent(
     eventType: string,
@@ -61,6 +140,9 @@ export class WebhookDispatcherService {
       return {
         subscriptionId: subscription.id,
         delivered: false,
+        acknowledged: false,
+        auditPersisted: true,
+        reconciliationRequired: false,
         attempts: 0,
         responseStatus: null,
         duplicate: true,
@@ -76,7 +158,7 @@ export class WebhookDispatcherService {
         url: subscription.url,
         error: errorMsg,
       });
-      await this.logDelivery(
+      const auditResult = await this.tryLogDelivery(
         subscription.id,
         eventType,
         eventId,
@@ -88,6 +170,10 @@ export class WebhookDispatcherService {
       return {
         subscriptionId: subscription.id,
         delivered: false,
+        acknowledged: false,
+        auditPersisted: auditResult.persisted,
+        reconciliationRequired: !auditResult.persisted,
+        ...(auditResult.auditError ? { auditError: auditResult.auditError } : {}),
         attempts: 0,
         responseStatus: null,
         duplicate: false,
@@ -96,10 +182,17 @@ export class WebhookDispatcherService {
 
     let lastStatus: number | null = null;
     let lastError: string | null = null;
+    let lastAuditError: string | null = null;
+    let anyAuditFailure = false;
+
     for (let attempt = 1; attempt <= 3; attempt++) {
+      let responseStatus: number | null = null;
+      let acknowledged = false;
+      let attemptError: string | null = null;
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 5000);
       try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 5000);
         const response = await fetch(subscription.url, {
           method: "POST",
           headers: withCorrelationHeaders({
@@ -110,44 +203,54 @@ export class WebhookDispatcherService {
           body,
           signal: controller.signal,
         });
-        clearTimeout(timer);
+        responseStatus = response.status;
         lastStatus = response.status;
-        const delivered = response.status >= 200 && response.status < 300;
-        await this.logDelivery(
-          subscription.id,
-          eventType,
-          eventId,
-          attempt,
-          response.status,
-          delivered,
-          delivered ? null : `HTTP ${response.status}`
-        );
-        if (delivered) {
-          return {
-            subscriptionId: subscription.id,
-            delivered: true,
-            attempts: attempt,
-            responseStatus: response.status,
-            duplicate: false,
-          };
+        acknowledged = response.status >= 200 && response.status < 300;
+        if (!acknowledged) {
+          attemptError = `HTTP ${response.status}`;
+          lastError = attemptError;
         }
-        lastError = `HTTP ${response.status}`;
       } catch (error) {
-        lastError = error instanceof Error ? error.message : "Webhook request failed";
-        await this.logDelivery(
-          subscription.id,
-          eventType,
-          eventId,
-          attempt,
-          lastStatus,
-          false,
-          lastError
-        );
+        attemptError = error instanceof Error ? error.message : "Webhook request failed";
+        lastError = attemptError;
+      } finally {
+        clearTimeout(timer);
       }
+
+      const auditResult = await this.tryLogDelivery(
+        subscription.id,
+        eventType,
+        eventId,
+        attempt,
+        responseStatus,
+        acknowledged,
+        attemptError
+      );
+
+      if (!auditResult.persisted) {
+        anyAuditFailure = true;
+        lastAuditError = auditResult.auditError;
+      }
+
+      if (acknowledged) {
+        return {
+          subscriptionId: subscription.id,
+          delivered: auditResult.persisted,
+          acknowledged: true,
+          auditPersisted: auditResult.persisted,
+          reconciliationRequired: !auditResult.persisted,
+          ...(auditResult.auditError ? { auditError: auditResult.auditError } : {}),
+          attempts: attempt,
+          responseStatus,
+          duplicate: false,
+        };
+      }
+
       if (attempt < 3) {
         await new Promise((resolve) => setTimeout(resolve, 100 * 2 ** (attempt - 1)));
       }
     }
+
     this.appLogger.warn("webhook.delivery.failed", {
       subscription_id: subscription.id,
       event_type: eventType,
@@ -158,6 +261,10 @@ export class WebhookDispatcherService {
     return {
       subscriptionId: subscription.id,
       delivered: false,
+      acknowledged: false,
+      auditPersisted: !anyAuditFailure,
+      reconciliationRequired: anyAuditFailure,
+      ...(lastAuditError ? { auditError: lastAuditError } : {}),
       attempts: 3,
       responseStatus: lastStatus,
       duplicate: false,
@@ -165,6 +272,16 @@ export class WebhookDispatcherService {
   }
 
   private async alreadyDelivered(subscriptionId: string, eventId: string): Promise<boolean> {
+    if (
+      this.pendingReconciliations.some(
+        (entry) =>
+          entry.subscriptionId === subscriptionId &&
+          entry.eventId === eventId &&
+          entry.acknowledged
+      )
+    ) {
+      return true;
+    }
     const existing = await this.dataSource
       .getRepository(WebhookDeliveryLog)
       .findOne({ where: { subscriptionId, eventId, delivered: true } });
@@ -175,6 +292,54 @@ export class WebhookDispatcherService {
       ["webhook_delivery_logs", subscriptionId, eventId],
     );
     return receipts.length > 0;
+  }
+
+  private async tryLogDelivery(
+    subscriptionId: string,
+    eventType: string,
+    eventId: string | undefined,
+    attempt: number,
+    responseStatus: number | null,
+    acknowledged: boolean,
+    errorMessage: string | null
+  ): Promise<{ persisted: boolean; auditError: string | null }> {
+    try {
+      await this.logDelivery(
+        subscriptionId,
+        eventType,
+        eventId,
+        attempt,
+        responseStatus,
+        acknowledged,
+        errorMessage
+      );
+      return { persisted: true, auditError: null };
+    } catch (error) {
+      const auditError =
+        error instanceof Error ? error.message : "Failed to persist webhook delivery audit";
+      const record: WebhookPendingAuditReconciliation = {
+        subscriptionId,
+        eventType,
+        eventId: eventId ?? null,
+        attempt,
+        responseStatus,
+        acknowledged,
+        errorMessage,
+        auditError,
+        recordedAt: new Date().toISOString(),
+      };
+      this.pendingReconciliations.push(record);
+      this.appLogger.error("webhook.delivery.audit_failed", {
+        subscription_id: subscriptionId,
+        event_type: eventType,
+        event_id: eventId ?? null,
+        attempt,
+        response_status: responseStatus,
+        acknowledged,
+        audit_error: auditError,
+      });
+      return { persisted: false, auditError };
+    }
   }
 
   private async logDelivery(

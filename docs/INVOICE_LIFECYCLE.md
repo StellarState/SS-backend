@@ -67,7 +67,72 @@ Each transition writes a row to `invoice_status_history` in the same
 database transaction as the status update: `from_status`, `to_status`,
 `actor_role`, `actor_id`, `trigger` (e.g. `fully_funded`), `reason` and
 `created_at`. The current status stays on `invoices.status`.
-`GET /api/v1/invoices/:id/history` returns an invoice's history to its seller.
+
+### History API (#795)
+
+`GET /api/v1/invoices/:id/history?limit=&cursor=` returns one page of the
+history, oldest first.
+
+- **Access.** The invoice's seller and admins only. Any other caller, and any
+  unknown invoice, gets the same `404 invoice_not_found`, so a caller cannot
+  tell whether an invoice they may not see exists or has history. A cursor
+  does not change that.
+- **Order.** `(created_at, id)` ascending. Transitions written in one
+  transaction share `created_at` (Postgres `now()` is fixed per transaction),
+  so `id` breaks ties and the order is the same on every request.
+- **Pages.** `limit` is 1–100, default 50. Pass `meta.nextCursor` back as
+  `cursor` until `meta.hasMore` is false. Cursors are keyset positions that
+  keep `created_at` to the microsecond, so pages have no gaps or repeats,
+  and rows added later appear on later pages. A cursor is only valid for the
+  invoice it came from.
+- **Redaction.** `actorRole` (`seller`, `admin` or `system`), `trigger` and
+  `reason` are always returned. `actorId` is returned to admins; sellers see
+  it only for their own actions, and `null` for admin and system actors.
+
+```http
+GET /api/v1/invoices/6f1c9a52-8a0e-4d3c-9b0a-0c7c1f3e2a11/history?limit=2
+Authorization: Bearer <seller token>
+```
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "0d4f3c2a-…",
+      "fromStatus": "draft",
+      "toStatus": "pending",
+      "actorRole": "seller",
+      "actorId": "a1b2c3d4-…",
+      "trigger": "seller_submitted",
+      "reason": null,
+      "createdAt": "2026-11-20T09:12:44.123Z"
+    },
+    {
+      "id": "7e9a1b5c-…",
+      "fromStatus": "pending",
+      "toStatus": "rejected",
+      "actorRole": "admin",
+      "actorId": null,
+      "trigger": "admin_rejected",
+      "reason": "Document is unreadable",
+      "createdAt": "2026-11-20T11:03:02.456Z"
+    }
+  ],
+  "meta": { "limit": 2, "hasMore": true, "nextCursor": "eyJ2IjoxLC…" }
+}
+```
+
+```http
+GET /api/v1/invoices/6f1c9a52-8a0e-4d3c-9b0a-0c7c1f3e2a11/history?limit=2&cursor=eyJ2IjoxLC…
+```
+
+| Status | Code                | When                                              |
+| ------ | ------------------- | ------------------------------------------------- |
+| 400    | `invalid_limit`     | `limit` is not an integer from 1 to 100           |
+| 400    | `invalid_cursor`    | Malformed cursor, or one from a different invoice |
+| 401    |                     | No or invalid bearer token                        |
+| 404    | `invoice_not_found` | Unknown invoice, or not the caller's to see       |
 
 ## Side effects
 
@@ -120,3 +185,17 @@ Authenticated users read their notifications through:
 | `POST /api/v1/invoices/:id/invest`        | published → funded, when the investment fills the invoice |
 | `POST /api/v1/investments`                | published → funded, when the investment completes funding |
 | `POST /api/v1/settlements/:invoiceId`     | funded → settled                                          |
+
+
+## Draft deletion (#827)
+
+`DELETE /api/v1/invoices/{id}` locks the invoice row and checks ownership and
+the lifecycle graph inside one transaction. Deletion is limited to drafts and
+records a draft to cancelled transition before soft deletion. Any investment
+(including pending, cancelled, settled or soft deleted records), transaction,
+secondary listing or trade, registered document, upload session, or attached
+invoice CID prevents deletion with HTTP 409 `invoice_has_dependents`.
+The standard error envelope includes `invoice_id` and the linked tables.
+A draft with no dependents is cancelled, audited and deleted atomically.
+Concurrent investment or document writers must use the same invoice row lock
+or version precondition; they cannot attach activity to a deleted invoice.

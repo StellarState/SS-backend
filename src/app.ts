@@ -1,3 +1,6 @@
+import type { PayoutClaimsService } from "./services/payout-claims.service";
+import type { DividendReconciliationService } from "./services/dividend-reconciliation.service";
+import type { RoyaltyStatementsService } from "./services/royalty-statements.service";
 import type { InvoiceCacheService } from "./services/invoice-cache.service";
 import cors from "cors";
 import helmet from "helmet";
@@ -31,12 +34,14 @@ import {
 } from "./middleware/suspended-wallet.middleware";
 import type { AdminUserService } from "./services/admin-user.service";
 import { createInvestorRouter } from "./routes/investor.routes";
+import type { InvestorSettlementHistoryService } from "./services/investor-settlement-history.service";
 import { createPortfolioRouter } from "./routes/portfolio.routes";
 import { createContractGuardService } from "./services/stellar/contract-guard.service";
 import { createKeysRouter } from "./routes/keys.routes";
 import { createDividendsRouter } from "./routes/dividends.routes";
 import { createSecondaryMarketRouter } from "./routes/secondary-market.routes";
 import { createWatchlistRouter } from "./routes/watchlist.routes";
+import { createInvestorInsightsRouter } from "./routes/investor-insights.routes";
 import type { RatingsLeaderboardService } from "./services/ratings-leaderboard.service";
 import type { DividendCycleService } from "./services/dividend-cycle.service";
 import type { DividendDistributionService } from "./services/dividend-distribution.service";
@@ -55,7 +60,12 @@ import { createOnboardingRouter } from "./routes/onboarding.routes";
 import { createCommunityProgramsRouter } from "./routes/community-programs.routes";
 import { createIssuerReputationRouter } from "./routes/issuer-reputation.routes";
 import { createIssuerProfileRouter } from "./routes/issuer-profile.routes";
+import { createSecondaryDepthRouter } from "./routes/secondary-depth.routes";
+import type { SecondaryDepthService } from "./services/secondary-depth.service";
+import { createInvoiceUploadsRouter } from "./routes/invoice-uploads.routes";
+import type { InvoiceUploadService } from "./services/invoice-upload.service";
 import { createInvoiceDocumentsRouter } from "./routes/invoice-documents.routes";
+import { createDocumentExportRouter } from "./routes/document-export.routes";
 import { createOnchainEventViewsRouter } from "./routes/onchain-event-views.routes";
 import { createFxRouter } from "./routes/fx.routes";
 import { createBenchmarkRouter, createInvoiceBenchmarkRouter } from "./routes/benchmark.routes";
@@ -69,6 +79,7 @@ import {
 import type { AuthService } from "./services/auth.service";
 import type { WaitlistService } from "./services/waitlist.service";
 import type { NotificationService } from "./services/notification.service";
+import type { NotificationDispatcher } from "./lib/notification-dispatcher";
 import type { InvoiceService } from "./services/invoice.service";
 import type { InvestmentService } from "./services/investment.service";
 import type { SettlementService } from "./services/settlement.service";
@@ -83,11 +94,13 @@ import type { AdminMetricsService } from "./services/admin-metrics.service";
 import type { PortfolioService } from "./services/portfolio.service";
 import type { SecondaryMarketService } from "./services/secondary-market.service";
 import type { WatchlistService } from "./services/watchlist.service";
+import type { InvestorInsightsService } from "./services/investor-insights.service";
 import type { SettlementWorker } from "./workers/settlement.worker";
 import type { FeeScheduleService } from "./services/fee-schedule.service";
 import type { IssuerReputationService } from "./services/issuer-reputation.service";
 import type { IssuerProfileService } from "./services/issuer-profile.service";
 import type { InvoiceDocumentService } from "./services/invoice-document.service";
+import type { DocumentExportService } from "./services/document-export.service";
 import type { InvestorRiskProfileService } from "./services/investor-risk-profile.service";
 import type { InvoiceDraftService } from "./services/invoice-draft.service";
 import type { BenchmarkService } from "./services/benchmark.service";
@@ -97,6 +110,7 @@ import type { SecondaryAuctionService } from "./services/secondary-auction.servi
 import type { InvestorAccreditationService } from "./services/investor-accreditation.service";
 
 import dataSource from "./config/database";
+import { getStellarNetworksConfig } from "./config/stellar-networks";
 import { getRedisClient } from "./config/redis";
 import packageInfo from "../package.json";
 
@@ -105,17 +119,26 @@ const READINESS_CHECK_TIMEOUT_MS = 80;
 export interface ReadinessChecks {
   database: () => Promise<unknown>;
   redis: () => Promise<unknown>;
+  migrations?: () => Promise<unknown>;
+  stellarConfig?: () => Promise<unknown>;
+}
+
+interface ReadinessFailure {
+  code: string;
+  error: string;
 }
 
 interface DependencyHealth {
   status: "ok" | "unhealthy";
+  code?: string;
   error?: string;
 }
 
 async function checkDependency(
-  name: "database" | "redis",
+  name: string,
   check: () => Promise<unknown>,
-  appLogger: AppLogger
+  appLogger: AppLogger,
+  failure: ReadinessFailure
 ): Promise<DependencyHealth> {
   let timer: NodeJS.Timeout | undefined;
   try {
@@ -137,7 +160,8 @@ async function checkDependency(
     });
     return {
       status: "unhealthy",
-      error: `${name} connectivity check failed`,
+      code: failure.code,
+      error: failure.error,
     };
   } finally {
     if (timer) clearTimeout(timer);
@@ -205,6 +229,7 @@ async function probeHorizon(): Promise<"ok" | "degraded"> {
 export interface AppDependencies {
   authService: AuthService;
   notificationService?: NotificationService;
+  notificationDispatcher?: NotificationDispatcher;
   invoiceService?: InvoiceService;
   invoiceCacheService?: InvoiceCacheService;
   investmentService?: InvestmentService;
@@ -221,6 +246,9 @@ export interface AppDependencies {
   dividendCycleService?: DividendCycleService;
   dividendDistributionService?: DividendDistributionService;
   royaltyEarningsService?: RoyaltyEarningsService;
+  payoutClaimsService?: PayoutClaimsService;
+  dividendReconciliationService?: DividendReconciliationService;
+  royaltyStatementsService?: RoyaltyStatementsService;
   subscriptionStatusService?: SubscriptionStatusService;
   onboardingService?: OnboardingService;
   swapService?: AtomicSwapService;
@@ -229,7 +257,10 @@ export interface AppDependencies {
   curveMigrationService?: CurveMigrationService;
   keyMergeProposalService?: KeyMergeProposalService;
   secondaryMarketService?: SecondaryMarketService;
+  secondaryDepthService?: SecondaryDepthService;
   watchlistService?: WatchlistService;
+  /** Issue #811 — alert preferences (read/update) and render-only preview. */
+  investorInsightsService?: InvestorInsightsService;
   settlementWorker?: SettlementWorker;
   acknowledgementService?: InvestorAcknowledgementService;
   extensionService?: InvoiceExtensionService;
@@ -241,6 +272,9 @@ export interface AppDependencies {
   issuerProfileService?: IssuerProfileService;
   /** Issue #781 — invoice document registration by IPFS CID. */
   invoiceDocumentService?: InvoiceDocumentService;
+  /** Shared-database document export jobs and archives. */
+  documentExportService?: DocumentExportService;
+  invoiceUploadService?: InvoiceUploadService;
   investorRiskProfileService?: InvestorRiskProfileService;
   draftService?: InvoiceDraftService;
   invoiceEscrowContractService?: import("./services/stellar/invoice-escrow-contract.service").InvoiceEscrowContractService;
@@ -250,6 +284,8 @@ export interface AppDependencies {
   secondaryAuctionService?: SecondaryAuctionService;
   /** Issue #780 — accreditation expiry gating and renewal. */
   accreditationService?: InvestorAccreditationService;
+  /** Issue #782 — investor settlement history and CSV export. */
+  settlementHistoryService?: InvestorSettlementHistoryService;
   logger?: AppLogger;
   metricsEnabled?: boolean;
   metricsRegistry?: MetricsRegistry;
@@ -274,6 +310,7 @@ export interface AppDependencies {
 export function createApp({
   authService,
   notificationService,
+  notificationDispatcher,
   invoiceService,
   invoiceCacheService,
   investmentService,
@@ -289,6 +326,9 @@ export function createApp({
   dividendCycleService,
   dividendDistributionService,
   royaltyEarningsService,
+  payoutClaimsService,
+  dividendReconciliationService,
+  royaltyStatementsService,
   subscriptionStatusService,
   onboardingService,
   swapService,
@@ -297,7 +337,9 @@ export function createApp({
   curveMigrationService,
   keyMergeProposalService,
   secondaryMarketService,
+  secondaryDepthService,
   watchlistService,
+  investorInsightsService,
   settlementWorker,
   acknowledgementService,
   portfolioService,
@@ -307,6 +349,8 @@ export function createApp({
   issuerReputationService,
   issuerProfileService,
   invoiceDocumentService,
+  documentExportService,
+  invoiceUploadService,
   investorRiskProfileService,
   draftService,
   invoiceEscrowContractService,
@@ -316,6 +360,7 @@ export function createApp({
   yieldBoostService,
   secondaryAuctionService,
   accreditationService,
+  settlementHistoryService,
   logger: appLogger = logger,
   metricsEnabled = true,
   metricsRegistry = new MetricsRegistry(),
@@ -403,29 +448,75 @@ export function createApp({
     });
   });
 
+  app.get("/health/live", (_req, res) => {
+    res.status(200).json({
+      success: true,
+      data: {
+        status: "alive",
+        timestamp: new Date().toISOString(),
+        uptimeSeconds: Number(process.uptime().toFixed(3)),
+      },
+    });
+  });
+
   app.get("/ready", async (_req, res) => {
-    const checks: ReadinessChecks = readinessChecks ?? {
-      database: async () => {
-        if (!dataSource.isInitialized) {
-          throw new Error("Database connection is not initialized");
-        }
-        await dataSource.query("SELECT 1");
-      },
-      redis: async () => {
-        await getRedisClient().ping();
-      },
+    const checks = {
+      database:
+        readinessChecks?.database ??
+        (async () => {
+          if (!dataSource.isInitialized) {
+            throw new Error("Database connection is not initialized");
+          }
+          await dataSource.query("SELECT 1");
+        }),
+      redis:
+        readinessChecks?.redis ??
+        (async () => {
+          await getRedisClient().ping();
+        }),
+      migrations:
+        readinessChecks?.migrations ??
+        (async () => {
+          if (!dataSource.isInitialized) {
+            throw new Error("Database connection is not initialized");
+          }
+          if (await dataSource.showMigrations()) {
+            throw new Error("Pending migrations");
+          }
+        }),
+      stellarConfig:
+        readinessChecks?.stellarConfig ??
+        (async () => {
+          getStellarNetworksConfig();
+        }),
     };
-    const [database, redis] = await Promise.all([
-      checkDependency("database", checks.database, appLogger),
-      checkDependency("redis", checks.redis, appLogger),
+
+    const [database, redis, migrations, stellarConfig] = await Promise.all([
+      checkDependency("database", checks.database, appLogger, {
+        code: "DATABASE_UNAVAILABLE",
+        error: "database connectivity check failed",
+      }),
+      checkDependency("redis", checks.redis, appLogger, {
+        code: "REDIS_UNAVAILABLE",
+        error: "redis connectivity check failed",
+      }),
+      checkDependency("migrations", checks.migrations, appLogger, {
+        code: "MIGRATIONS_PENDING",
+        error: "database migrations are pending or could not be verified",
+      }),
+      checkDependency("stellarConfig", checks.stellarConfig, appLogger, {
+        code: "STELLAR_CONFIG_INVALID",
+        error: "stellar configuration is missing or invalid",
+      }),
     ]);
-    const ready = database.status === "ok" && redis.status === "ok";
+    const dependencies = { database, redis, migrations, stellarConfig };
+    const ready = Object.values(dependencies).every((dependency) => dependency.status === "ok");
 
     res.status(ready ? 200 : 503).json({
       success: ready,
       data: {
         status: ready ? "ready" : "not_ready",
-        dependencies: { database, redis },
+        dependencies,
       },
     });
   });
@@ -506,6 +597,12 @@ export function createApp({
     app.use("/invoices", invoiceRouter);
   }
 
+  if (invoiceUploadService) {
+    const uploads = createInvoiceUploadsRouter(invoiceUploadService, authService);
+    app.use("/api/v1/invoices", uploads);
+    app.use("/invoices", uploads);
+  }
+
   // Issue #781 — invoice document registration and retrieval
   if (invoiceDocumentService) {
     const invoiceDocumentsRouter = createInvoiceDocumentsRouter({
@@ -514,6 +611,15 @@ export function createApp({
     });
     app.use("/api/v1/invoices", invoiceDocumentsRouter);
     app.use("/invoices", invoiceDocumentsRouter);
+  }
+
+  if (documentExportService) {
+    const documentExportRouter = createDocumentExportRouter({
+      documentExportService,
+      authService,
+    });
+    app.use("/api/v1/invoices", documentExportRouter);
+    app.use("/invoices", documentExportRouter);
   }
 
   if (investmentService) {
@@ -530,12 +636,13 @@ export function createApp({
   }
 
   // Issue #473 — accreditation acknowledgement; issue #780 — renewal
-  if (acknowledgementService || accreditationService) {
+  if (acknowledgementService || accreditationService || settlementHistoryService) {
     const investorRouter = createInvestorRouter({
       authService,
       acknowledgementService,
       riskProfileService: investorRiskProfileService,
       accreditationService,
+      settlementHistoryService,
     });
     app.use("/api/v1/investors", investorRouter);
     app.use("/investors", investorRouter);
@@ -570,6 +677,12 @@ export function createApp({
     app.use("/seller", createSellerRouter({ sellerService, authService }));
   }
 
+  if (secondaryDepthService) {
+    const depth = createSecondaryDepthRouter(secondaryDepthService);
+    app.use("/api/v1/secondary-market", depth);
+    app.use("/api/v1/secondary", depth);
+  }
+
   if (secondaryMarketService && authService) {
     const secondaryMarketRouter = createSecondaryMarketRouter({
       secondaryMarketService,
@@ -579,6 +692,10 @@ export function createApp({
     app.use("/api/v1/secondary-market", secondaryMarketRouter);
     app.use("/secondary-market", secondaryMarketRouter);
     app.use("/api/v1/secondary", secondaryMarketRouter);
+  }
+
+  if (investorInsightsService && authService) {
+    app.use("/api/v1/investors", createInvestorInsightsRouter(investorInsightsService, authService));
   }
 
   if (watchlistService && authService) {
@@ -612,13 +729,13 @@ export function createApp({
   if (dividendCycleService) {
     app.use(
       "/api/v1/dividends",
-      createDividendsRouter({ dividendCycleService, authService, dividendDistributionService })
+      createDividendsRouter({ dividendCycleService, authService, dividendDistributionService, payoutClaimsService, dividendReconciliationService })
     );
   }
 
   // ---- Royalties: creator earnings and claim history (issue #537) ----
   if (royaltyEarningsService) {
-    app.use("/api/v1/royalties", createRoyaltiesRouter({ royaltyEarningsService, authService }));
+    app.use("/api/v1/royalties", createRoyaltiesRouter({ royaltyEarningsService, authService, payoutClaimsService, royaltyStatementsService }));
   }
 
   // ---- Subscriptions: gated-content access check (issue #539) ----
@@ -673,6 +790,7 @@ export function createApp({
         invoiceEscrowContractService,
         feeScheduleService,
         waitlistService,
+        notificationDispatcher,
       })
     );
   }

@@ -6,7 +6,8 @@ import { ServiceError } from "../utils/service-error";
 import { AuthenticatedRequest } from "../types/auth";
 import { invoiceCacheContext } from "../lib/cache-key";
 import { requireEnumValue } from "../utils/enum-validation";
-import { InvoiceStatus } from "@/types/enums";
+import { InvoiceStatus, UserType } from "@/types/enums";
+import { parseLifecycleHistoryLimit } from "../lib/invoice-lifecycle-history";
 import { calculateInvoiceTerms } from "../utils/discount-calculator.utils";
 
 export interface UploadDocumentRequest extends Request {
@@ -387,7 +388,7 @@ export function createInvoiceController(
             next(new HttpError(404, "Invoice not found"));
             return;
           }
-          next(new HttpError(error.statusCode, error.message));
+          next(new PublicAppError(error.statusCode, error.message, error.code, error.details));
           return;
         }
 
@@ -438,12 +439,26 @@ export function createInvoiceController(
           throw new HttpError(401, "Authentication required");
         }
 
-        const history = await invoiceService.getInvoiceStatusHistory(req.params.id, req.user.id);
+        const cursor = typeof req.query.cursor === "string" ? req.query.cursor : null;
+        const page = await invoiceService.getInvoiceLifecycleHistory(
+          req.params.id,
+          {
+            id: req.user.id,
+            stellarAddress: req.user.stellarAddress,
+            isAdmin: req.user.userType === UserType.ADMIN,
+          },
+          { limit: parseLifecycleHistoryLimit(req.query.limit), cursor }
+        );
 
-        res.status(200).json({ success: true, data: history });
+        res.status(200).json({
+          success: true,
+          data: page.items,
+          meta: { limit: page.limit, hasMore: page.hasMore, nextCursor: page.nextCursor },
+        });
       } catch (error) {
         if (error instanceof ServiceError) {
-          next(new HttpError(error.statusCode, error.message));
+          // Keep the code (invalid_cursor, invalid_limit, invoice_not_found).
+          next(new PublicAppError(error.statusCode, error.message, error.code));
           return;
         }
         next(error);
@@ -561,6 +576,7 @@ export function createInvoiceController(
           fileBuffer: req.file.buffer,
           filename: req.file.originalname,
           mimeType: req.file.mimetype,
+          contentChecksum: req.body?.content_checksum,
         });
 
         if (cacheService) {
@@ -577,7 +593,7 @@ export function createInvoiceController(
         });
       } catch (error) {
         if (error instanceof ServiceError) {
-          next(new HttpError(error.statusCode, error.message));
+          next(new PublicAppError(error.statusCode, error.message, error.code, error.details));
           return;
         }
 

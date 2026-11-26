@@ -66,6 +66,9 @@ export function createInvoiceInvestmentController(investmentService: InvestmentS
         });
       } catch (error) {
         if (error instanceof ServiceError) {
+          if (error.statusCode === 409 || error.statusCode === 503) {
+            res.setHeader("Retry-After", "1");
+          }
           next(
             new PublicAppError(
               error.statusCode,

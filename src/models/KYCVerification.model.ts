@@ -1,4 +1,12 @@
-import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, Index } from "typeorm";
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  ManyToOne,
+  JoinColumn,
+  Index,
+  CreateDateColumn,
+} from "typeorm";
 import { KYCStatus, KYCVerificationType } from "../types/enums";
 
 @Entity("kyc_verifications")
@@ -41,6 +49,13 @@ export class KYCVerification {
 
   @Column({ name: "verified_at", type: "timestamptz", nullable: true })
   verifiedAt!: Date | null;
+
+  /**
+   * Creation time is the deterministic ordering key for the active attempt.
+   * `verifiedAt` is null for pending rows and therefore cannot break ties.
+   */
+  @CreateDateColumn({ name: "created_at", type: "timestamp" })
+  createdAt!: Date;
 
   @ManyToOne("User", "kycVerifications", { onDelete: "CASCADE" })
   @JoinColumn({ name: "user_id" })

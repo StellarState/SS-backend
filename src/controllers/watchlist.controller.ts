@@ -23,16 +23,19 @@ export class WatchlistController {
         });
       }
 
-      const entry = await this.watchlistService.addToWatchlist(
+      const { entry, created } = await this.watchlistService.addToWatchlist(
         req.user.stellarAddress,
         Array.isArray(invoiceId) ? invoiceId[0] : invoiceId,
         req.user.id,
         notes
       );
 
-      return res.status(201).json({
+      // Idempotent add: 201 when this request created the entry, 200 when it
+      // was already present. The body always carries the final entry.
+      return res.status(created ? 201 : 200).json({
         success: true,
         data: entry,
+        meta: { created },
       });
     } catch (err: unknown) {
       const statusCode =
@@ -63,7 +66,12 @@ export class WatchlistController {
         });
       }
 
-      await this.watchlistService.removeFromWatchlist(req.user.stellarAddress, Array.isArray(invoiceId) ? invoiceId[0] : invoiceId);
+      // Idempotent remove: 204 whether or not the entry existed, since the
+      // final state (absent) is the same either way.
+      await this.watchlistService.removeFromWatchlist(
+        req.user.stellarAddress,
+        Array.isArray(invoiceId) ? invoiceId[0] : invoiceId
+      );
 
       return res.status(204).send();
     } catch (err: unknown) {
@@ -91,10 +99,7 @@ export class WatchlistController {
         limit: Math.min(100, Math.max(1, Number(Array.isArray(limit) ? limit[0] : limit))),
       };
 
-      const result = await this.watchlistService.getWatchlist(
-        req.user.stellarAddress,
-        pagination
-      );
+      const result = await this.watchlistService.getWatchlist(req.user.stellarAddress, pagination);
 
       return res.status(200).json({
         success: true,

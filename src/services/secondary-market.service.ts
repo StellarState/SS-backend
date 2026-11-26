@@ -17,7 +17,7 @@ import {
 } from "../types/enums";
 import { ServiceError } from "../utils/service-error";
 import { logger } from "../observability/logger";
-import { isPastDueDate } from "../utils/date.utils";
+import { isPastSecondaryTradingCutoff, secondaryTradingCutoff } from "../utils/date.utils";
 import type { NotificationService } from "./notification.service";
 import type { FeeScheduleService } from "./fee-schedule.service";
 import type { TransitionEffect } from "../lib/invoice-state-machine";
@@ -55,6 +55,7 @@ export interface BuyListingInput {
 
 export interface ListingResult {
   id: string;
+  version: number;
   invoiceId: string;
   sellerWallet: string;
   quantity: string;
@@ -156,6 +157,78 @@ function bpsOf(amount: Decimal, bps: number): Decimal {
   return amount.times(bps).dividedBy(BPS_DENOMINATOR).toDecimalPlaces(4, Decimal.ROUND_HALF_UP);
 }
 
+/** A seller holding as the transfer sees it. */
+export interface TransferableHolding {
+  investmentAmount: string;
+  expectedReturn: string;
+}
+
+export interface HoldingTransfer {
+  /** New values for each holding, in input order (unchanged rows included). */
+  holdings: Array<{ investmentAmount: string; expectedReturn: string }>;
+  /** Principal moved to the buyer; always equal to the requested quantity. */
+  principal: Decimal;
+  /** Projected settlement entitlement (expectedReturn) moved to the buyer. */
+  expectedReturn: Decimal;
+}
+
+/**
+ * Moves `quantity` of principal, and the matching share of projected
+ * settlement entitlement, out of a seller's holdings (issues #749, #750).
+ *
+ * Entitlement follows principal on the primary investment's own basis: taking
+ * `take` of a holding with principal A and expectedReturn R moves
+ * R × take / A, rounded down to 4 decimals. The seller keeps the rounding
+ * dust until a later fill empties the holding, which moves everything left,
+ * so a fully exited holding keeps no entitlement and the seller's plus the
+ * buyer's entitlement always equals what the seller had. The secondary price
+ * plays no part: what the buyer paid is recorded on the trade, not here.
+ *
+ * Holdings are consumed in order; rows with no positive principal are
+ * skipped. If the positive principal cannot cover `quantity`, this throws
+ * 409 UNBACKED_FILL and nothing should be written: the caller runs inside the
+ * purchase transaction, so every write already made is rolled back.
+ */
+export function transferHoldings(
+  holdings: readonly TransferableHolding[],
+  quantity: Decimal
+): HoldingTransfer {
+  let remaining = new Decimal(quantity);
+  let movedReturn = new Decimal(0);
+  const next = holdings.map((holding) => {
+    const amount = new Decimal(holding.investmentAmount);
+    const expected = new Decimal(holding.expectedReturn ?? 0);
+    if (remaining.lte(0) || amount.lte(0)) {
+      return { investmentAmount: holding.investmentAmount, expectedReturn: holding.expectedReturn };
+    }
+    const take = Decimal.min(amount, remaining);
+    const exits = take.eq(amount);
+    const moved = exits
+      ? expected
+      : expected.times(take).dividedBy(amount).toDecimalPlaces(4, Decimal.ROUND_DOWN);
+    remaining = remaining.minus(take);
+    movedReturn = movedReturn.plus(moved);
+    return {
+      investmentAmount: amount.minus(take).toFixed(4),
+      expectedReturn: expected.minus(moved).toFixed(4),
+    };
+  });
+
+  if (!remaining.isZero()) {
+    throw new ServiceError(
+      "UNBACKED_FILL",
+      "The seller's holdings do not cover this fill; nothing was transferred",
+      409,
+      {
+        requested: new Decimal(quantity).toFixed(4),
+        backed: new Decimal(quantity).minus(remaining).toFixed(4),
+      }
+    );
+  }
+
+  return { holdings: next, principal: new Decimal(quantity), expectedReturn: movedReturn };
+}
+
 export class SecondaryMarketService {
   private readonly now: () => Date;
 
@@ -183,7 +256,8 @@ export class SecondaryMarketService {
         "Price per fraction"
       );
 
-      if (expiresAt && new Date(expiresAt) <= new Date()) {
+      const now = this.now();
+      if (expiresAt && new Date(expiresAt) <= now) {
         throw new ServiceError("INVALID_EXPIRY", "Expiry date must be in the future", 400);
       }
 
@@ -196,13 +270,11 @@ export class SecondaryMarketService {
         throw new ServiceError("INVOICE_NOT_FOUND", "Invoice not found", 404);
       }
 
-      // Check if invoice has matured (reject with 422)
+      // Matured (422): the same cutoff purchase and relisting use (issue #747).
       const isMatured =
         invoice.status === InvoiceStatus.SETTLED ||
         invoice.status === InvoiceStatus.FAILED ||
-        (invoice.dueDate
-          ? isPastDueDate(invoice.dueDate) || new Date(invoice.dueDate).getTime() <= Date.now()
-          : false);
+        isPastSecondaryTradingCutoff(invoice.dueDate, now);
 
       if (isMatured) {
         throw new ServiceError(
@@ -255,13 +327,22 @@ export class SecondaryMarketService {
         );
       }
 
+      // A listing cannot outlive the trading cutoff; without a custom expiry
+      // it expires exactly at the cutoff (issue #747).
+      const tradingCutoff = invoice.dueDate ? secondaryTradingCutoff(invoice.dueDate) : null;
+      if (expiresAt && tradingCutoff && new Date(expiresAt) > tradingCutoff) {
+        throw new ServiceError(
+          "INVALID_EXPIRY",
+          "Listing expiry cannot be later than the invoice's trading cutoff",
+          400,
+          { trading_cutoff: tradingCutoff.toISOString() }
+        );
+      }
       const effectiveExpiresAt = expiresAt
         ? new Date(expiresAt)
-        : invoice.dueDate
-          ? new Date(invoice.dueDate)
-          : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+        : (tradingCutoff ?? new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000));
 
-      if (effectiveExpiresAt <= new Date()) {
+      if (effectiveExpiresAt <= now) {
         throw new ServiceError("INVALID_EXPIRY", "Expiry date must be in the future", 400);
       }
 
@@ -313,9 +394,9 @@ export class SecondaryMarketService {
       const currentlyListed = activeListings
         .filter((l) => {
           if (typeof l.isExpired === "function") {
-            return !l.isExpired();
+            return !l.isExpired(now);
           }
-          return !l.expiresAt || new Date(l.expiresAt).getTime() >= Date.now();
+          return !l.expiresAt || new Date(l.expiresAt).getTime() >= now.getTime();
         })
         .reduce((sum, l) => sum.plus(new Decimal(l.quantity)), new Decimal(0));
 
@@ -376,7 +457,12 @@ export class SecondaryMarketService {
       .leftJoinAndSelect("listing.invoice", "invoice")
       .where("listing.deleted_at IS NULL")
       .andWhere("listing.status = :status", { status: ListingStatus.ACTIVE })
-      .andWhere("listing.expires_at > :now", { now: new Date() });
+      .andWhere("listing.expires_at > :now", { now: this.now() })
+      // Matured invoices are not tradable whatever the listing's own expiry
+      // (issue #747): due_date > today is now < the start of the due day.
+      .andWhere("(invoice.due_date IS NULL OR invoice.due_date > :today)", {
+        today: this.now().toISOString().slice(0, 10),
+      });
 
     // Apply filters
     if (filters.invoiceId) {
@@ -417,6 +503,7 @@ export class SecondaryMarketService {
 
     const data: ListingResult[] = listings.map((listing) => ({
       id: listing.id,
+      version: listing.version,
       invoiceId: listing.invoiceId,
       sellerWallet: listing.sellerWallet,
       quantity: listing.quantity,
@@ -454,6 +541,7 @@ export class SecondaryMarketService {
 
     return {
       id: listing.id,
+      version: listing.version,
       invoiceId: listing.invoiceId,
       sellerWallet: listing.sellerWallet,
       quantity: listing.quantity,
@@ -547,6 +635,18 @@ export class SecondaryMarketService {
             400
           );
         }
+        // An invoice can stay FUNDED past maturity while it awaits settlement,
+        // and a listing can carry an expiry later than maturity. Neither makes
+        // it tradable: the cutoff is checked here, on the locked invoice, with
+        // the same rule as listing creation (issue #747).
+        if (isPastSecondaryTradingCutoff(invoice.dueDate, now)) {
+          throw new ServiceError(
+            "INVOICE_MATURED",
+            "The invoice has reached maturity; its fractions can no longer be traded",
+            422,
+            { trading_cutoff: secondaryTradingCutoff(invoice.dueDate).toISOString() }
+          );
+        }
         const settlementIntent = await manager.findOne(SettlementIntent, {
           where: {
             invoiceId: invoice.id,
@@ -601,8 +701,9 @@ export class SecondaryMarketService {
           ],
           lock: { mode: "pessimistic_write" },
         });
+        // Only positive principal can back a fill (issue #750).
         const sellerHoldings = sellerInvestments.reduce(
-          (sum, inv) => sum.plus(new Decimal(inv.investmentAmount)),
+          (sum, inv) => sum.plus(Decimal.max(new Decimal(inv.investmentAmount), 0)),
           new Decimal(0)
         );
         if (sellerHoldings.lt(buyQuantity)) {
@@ -647,18 +748,21 @@ export class SecondaryMarketService {
         }
         await manager.save(listing);
 
-        // ---- Fraction transfer: seller -> buyer ----
-        let remainingToDeduct = new Decimal(buyQuantity);
-        for (const inv of sellerInvestments) {
-          if (remainingToDeduct.lte(0)) break;
-          const currentInvAmount = new Decimal(inv.investmentAmount);
-          if (currentInvAmount.lte(remainingToDeduct)) {
-            inv.investmentAmount = "0.0000";
-            remainingToDeduct = remainingToDeduct.minus(currentInvAmount);
-          } else {
-            inv.investmentAmount = currentInvAmount.minus(remainingToDeduct).toFixed(4);
-            remainingToDeduct = new Decimal(0);
+        // ---- Fraction transfer: seller -> buyer (issues #749, #750) ----
+        // Principal and projected entitlement move together; an unbacked
+        // fill throws before anything is credited, rolling back the listing
+        // update above with the rest of the transaction.
+        const transfer = transferHoldings(sellerInvestments, buyQuantity);
+        for (const [index, inv] of sellerInvestments.entries()) {
+          const updated = transfer.holdings[index];
+          if (
+            updated.investmentAmount === inv.investmentAmount &&
+            updated.expectedReturn === inv.expectedReturn
+          ) {
+            continue;
           }
+          inv.investmentAmount = updated.investmentAmount;
+          inv.expectedReturn = updated.expectedReturn;
           await manager.save(inv);
         }
 
@@ -673,7 +777,10 @@ export class SecondaryMarketService {
 
         if (buyerInvestment) {
           buyerInvestment.investmentAmount = new Decimal(buyerInvestment.investmentAmount)
-            .plus(buyQuantity)
+            .plus(transfer.principal)
+            .toFixed(4);
+          buyerInvestment.expectedReturn = new Decimal(buyerInvestment.expectedReturn ?? 0)
+            .plus(transfer.expectedReturn)
             .toFixed(4);
           if (buyerWallet && !buyerInvestment.investorWallet) {
             buyerInvestment.investorWallet = buyerWallet;
@@ -685,8 +792,8 @@ export class SecondaryMarketService {
               invoiceId: listing.invoiceId,
               investorId: buyerId,
               investorWallet: buyerWallet,
-              investmentAmount: buyQuantity.toFixed(4),
-              expectedReturn: buyQuantity.toFixed(4),
+              investmentAmount: transfer.principal.toFixed(4),
+              expectedReturn: transfer.expectedReturn.toFixed(4),
               status: InvestmentStatus.CONFIRMED,
             })
           );
@@ -882,8 +989,16 @@ export class SecondaryMarketService {
     listingId: string,
     sellerWallet: string,
     reason?: string,
-    sellerId?: string
+    sellerId?: string,
+    expectedVersion?: unknown
   ): Promise<SecondaryListing> {
+    if (reason !== undefined && (typeof reason !== "string" || reason.length > 2000))
+      throw new ServiceError(
+        "INVALID_CANCELLATION_REASON",
+        "reason must be a string of at most 2000 characters",
+        400
+      );
+    const revision = this.parseRevision(expectedVersion);
     const outcome = await this.dataSource.transaction(async (manager: EntityManager) => {
       const listing = await manager.findOne(SecondaryListing, {
         where: { id: listingId },
@@ -902,8 +1017,22 @@ export class SecondaryMarketService {
         throw new ServiceError("FORBIDDEN", "Only the listing owner can cancel this listing", 403);
       }
 
+      if (
+        listing.status === ListingStatus.CANCELLED &&
+        listing.version === revision + 1 &&
+        listing.cancellationReason === (reason || null)
+      )
+        return { expired: false as const, listing };
+      this.assertRevision(listing, revision);
       if (listing.status !== ListingStatus.ACTIVE) {
-        throw new ServiceError("LISTING_NOT_ACTIVE", "Only active listings can be cancelled", 400);
+        throw this.listingConflict(listing, revision, "Only active listings can be cancelled");
+      }
+      if (await manager.findOne(SecondaryTrade, { where: { listingId } })) {
+        throw this.listingConflict(
+          listing,
+          revision,
+          "A listing with completed purchases cannot be cancelled"
+        );
       }
 
       if (isListingExpired(listing, this.now())) {
@@ -929,6 +1058,143 @@ export class SecondaryMarketService {
     });
 
     return outcome.listing;
+  }
+
+  /** Update an active ask using the same revision precondition as cancellation. */
+  async relistListing(
+    listingId: string,
+    sellerWallet: string,
+    sellerId: string,
+    body: Record<string, unknown>
+  ): Promise<SecondaryListing> {
+    const revision = this.parseRevision(body.expected_version);
+    const quantity = parsePositiveAmount(body.quantity, "INVALID_QUANTITY", "Quantity");
+    const price = parsePositiveAmount(
+      body.price_per_fraction,
+      "INVALID_PRICE",
+      "Price per fraction"
+    );
+    return this.dataSource.transaction(async (manager) => {
+      const listing = await manager.findOne(SecondaryListing, {
+        where: { id: listingId },
+        lock: { mode: "pessimistic_write" },
+      });
+      if (!listing) throw new ServiceError("LISTING_NOT_FOUND", "Listing not found", 404);
+      if (listing.sellerWallet !== sellerWallet && listing.sellerId !== sellerId)
+        throw new ServiceError("FORBIDDEN", "Only the listing owner can relist", 403);
+      const traded = await manager.findOne(SecondaryTrade, { where: { listingId } });
+      if (
+        listing.status !== ListingStatus.ACTIVE ||
+        isListingExpired(listing, this.now()) ||
+        traded
+      )
+        throw this.listingConflict(
+          listing,
+          revision,
+          "Only an active listing without purchases can be relisted"
+        );
+      if (
+        listing.version === revision + 1 &&
+        new Decimal(listing.quantity).eq(quantity) &&
+        new Decimal(listing.pricePerFraction).eq(price)
+      )
+        return listing;
+      this.assertRevision(listing, revision);
+      const invoice = await manager.findOne(Invoice, {
+        where: { id: listing.invoiceId },
+        lock: { mode: "pessimistic_write" },
+      });
+      if (
+        !invoice ||
+        invoice.status !== InvoiceStatus.FUNDED ||
+        isPastSecondaryTradingCutoff(invoice.dueDate, this.now())
+      )
+        throw this.listingConflict(listing, revision, "Invoice is no longer tradable");
+      const settling = await manager.findOne(SettlementIntent, {
+        where: {
+          invoiceId: invoice.id,
+          status: In([
+            SettlementIntentStatus.PREPARED,
+            SettlementIntentStatus.SUBMITTING,
+            SettlementIntentStatus.DISTRIBUTED,
+          ]),
+        },
+      });
+      if (settling)
+        throw this.listingConflict(listing, revision, "Invoice settlement is in progress");
+      const holdings = await manager.find(Investment, {
+        where: [
+          { invoiceId: invoice.id, investorId: sellerId, status: InvestmentStatus.CONFIRMED },
+          {
+            invoiceId: invoice.id,
+            investorWallet: sellerWallet,
+            status: InvestmentStatus.CONFIRMED,
+          },
+        ],
+        lock: { mode: "pessimistic_write" },
+      });
+      const otherListings = await manager.find(SecondaryListing, {
+        where: [
+          { invoiceId: invoice.id, sellerId, status: ListingStatus.ACTIVE },
+          { invoiceId: invoice.id, sellerWallet, status: ListingStatus.ACTIVE },
+        ],
+      });
+      const reserved = otherListings
+        .filter((row) => row.id !== listingId && !isListingExpired(row, this.now()))
+        .reduce((sum, row) => sum.plus(row.quantity), new Decimal(0));
+      const available = holdings
+        .reduce((sum, row) => sum.plus(row.investmentAmount), new Decimal(0))
+        .minus(reserved);
+      if (quantity.gt(available))
+        throw new ServiceError(
+          "INSUFFICIENT_HOLDINGS",
+          "Requested quantity exceeds available holdings",
+          409
+        );
+      listing.quantity = quantity.toFixed(4);
+      listing.pricePerFraction = price.toFixed(4);
+      listing.totalPrice = quantity.times(price).toFixed(4);
+      return manager.save(listing);
+    });
+  }
+
+  private parseRevision(value: unknown): number {
+    if (value === undefined || value === null)
+      throw new ServiceError(
+        "LISTING_PRECONDITION_REQUIRED",
+        "expected_version is required; fetch the listing version before changing it",
+        428
+      );
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1)
+      throw new ServiceError(
+        "INVALID_LISTING_VERSION",
+        "expected_version must be a positive integer",
+        400
+      );
+    return value;
+  }
+
+  private assertRevision(listing: SecondaryListing, expected: number): void {
+    if (listing.version !== expected)
+      throw this.listingConflict(
+        listing,
+        expected,
+        "Listing changed; fetch its current version before retrying"
+      );
+  }
+
+  private listingConflict(
+    listing: SecondaryListing,
+    expected: number,
+    message: string
+  ): ServiceError {
+    return new ServiceError("LISTING_CONFLICT", message, 409, {
+      listing_id: listing.id,
+      expected_version: expected,
+      current_version: listing.version,
+      status: listing.status,
+      quantity: listing.quantity,
+    });
   }
 
   private getSortColumn(sort: string): string {

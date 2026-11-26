@@ -2,6 +2,7 @@ import { DataSource, Repository } from "typeorm";
 import { Invoice } from "../models/Invoice.model";
 import { InvoiceStatus } from "../types/enums";
 import { paginateQuery } from "../utils/query-pagination.utils";
+import { percentageNumber, percentageToBasisPoints } from "../utils/percentage.utils";
 
 export interface MarketplaceFilters {
   status?: InvoiceStatus[];
@@ -175,10 +176,13 @@ export class MarketplaceService {
   }
 
   private toPublicInvoice(invoice: Invoice): PublicInvoice {
-    const target = parseFloat(invoice.netAmount || invoice.amount || "0");
-    const raised = parseFloat(invoice.fundedAmount || "0");
-    const fundingPercentage = target > 0 ? Math.min(100, Math.round((raised / target) * 10000) / 100) : 0;
-    const yieldBps = Math.round(parseFloat(invoice.discountRate || "0") * 100);
+    const target = invoice.netAmount || invoice.amount || "0";
+    const raised = invoice.fundedAmount || "0";
+    const fundingPercentage = percentageNumber(raised, target, { maximum: 100 });
+    // Preserve canonical stored yieldBps (including explicit 0); fall back to
+    // discountRate-derived basis points only for legacy rows where yieldBps is null.
+    const yieldBps =
+      invoice.yieldBps ?? percentageToBasisPoints(invoice.discountRate || "0");
 
     return {
       id: invoice.id,
@@ -199,7 +203,8 @@ export class MarketplaceService {
       fundingPercentage,
       netAmount: invoice.netAmount,
       dueDate: invoice.dueDate,
-      fundingDeadline: invoice.dueDate,
+      // Fall back to dueDate only for legacy rows where fundingDeadline is null.
+      fundingDeadline: invoice.fundingDeadline ?? invoice.dueDate,
       status: invoice.status,
       createdAt: invoice.createdAt,
     };

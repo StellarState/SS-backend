@@ -81,6 +81,14 @@ export function validateInvoiceForPublish(
 ): ValidationError[] {
   const errors: ValidationError[] = [];
 
+  if (invoice.uploadComplete === false || (invoice.contentChecksum && !invoice.checksumVerified)) {
+    errors.push({
+      field: "document",
+      code: "DOCUMENT_NOT_VERIFIED",
+      message: "Document upload must be complete and its checksum verified before publishing.",
+    });
+  }
+
   const faceValue = new Decimal(invoice.amount);
   if (faceValue.lessThan(MIN_FACE_VALUE_XLM)) {
     errors.push({

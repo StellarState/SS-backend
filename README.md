@@ -122,7 +122,7 @@ All application routes use the `/api/v1` prefix.
 - `/api/v1/notifications` — user notifications
 - `/api/v1/keys` — creator key config, per-transaction buy limit, and curve migration status
 - `/api/v1/swaps` — atomic swap history and lookup
-- `/api/v1/royalties` — creator royalty earnings, per-transfer breakdown and claim history
+- `/api/v1/royalties` — creator royalty earnings, claim reservations, paginated statements and CSV/JSON exports (see [payout reliability](docs/PAYOUT_RELIABILITY.md))
 - `/api/v1/dividends` — issuer cycle config plus holder claimable balances, claim history and summary
 - `/api/v1/subscriptions` — public gated-content subscription status (`?wallet=&key_id=`)
 - `/api/v1/onboarding` — onboarding tour completion state
@@ -137,6 +137,8 @@ Feature-specific references are available under [`docs/`](./docs/):
 | [`docs/INVOICE_LIFECYCLE.md`](./docs/INVOICE_LIFECYCLE.md) | Invoice state machine |
 | [`docs/INVOICE_DOCUMENT_UPLOAD.md`](./docs/INVOICE_DOCUMENT_UPLOAD.md) | Document upload flow |
 | [`docs/INVOICE_INVEST_API.md`](./docs/INVOICE_INVEST_API.md) | Fractional investment flow |
+| [`docs/INVOICE_EXTENSIONS.md`](./docs/INVOICE_EXTENSIONS.md) | Funding deadline extensions |
+| [`docs/INVESTOR_SETTLEMENTS.md`](./docs/INVESTOR_SETTLEMENTS.md) | Investor settlement history and CSV export |
 | [`docs/SOROBAN_INTEGRATION_GUIDE.md`](./docs/SOROBAN_INTEGRATION_GUIDE.md) | Escrow/funding integration |
 | [`docs/DB_WORKFLOW.md`](./docs/DB_WORKFLOW.md) | Migration workflow |
 | [`docs/IPFS.md`](./docs/IPFS.md) | IPFS pinning details |

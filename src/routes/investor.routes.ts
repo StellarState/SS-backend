@@ -7,6 +7,12 @@ import { ServiceError } from "../utils/service-error";
 import { HttpError, PublicAppError } from "../utils/http-error";
 import type { InvestorRiskProfileService } from "@/services/investor-risk-profile.service";
 import type { InvestorAccreditationService } from "../services/investor-accreditation.service";
+import {
+  parseSettlementFilters,
+  parseSettlementLimit,
+  settlementsToCsv,
+  type InvestorSettlementHistoryService,
+} from "../services/investor-settlement-history.service";
 
 export interface InvestorRouterDependencies {
   authService: AuthService;
@@ -15,6 +21,8 @@ export interface InvestorRouterDependencies {
   riskProfileService?: InvestorRiskProfileService;
   /** Enables PUT /:wallet/accreditation renewal submissions (issue #780). */
   accreditationService?: InvestorAccreditationService;
+  /** Enables GET /:wallet/settlements and its CSV export (issue #782). */
+  settlementHistoryService?: InvestorSettlementHistoryService;
 }
 
 const MAX_DOCUMENT_REFERENCE_LENGTH = 512;
@@ -29,9 +37,72 @@ export function createInvestorRouter({
   acknowledgementService,
   riskProfileService,
   accreditationService,
+  settlementHistoryService,
 }: InvestorRouterDependencies): Router {
   const router = Router();
   const auth = createAuthMiddleware(authService);
+
+  // ---- Settlement history (issue #782) ----
+  if (settlementHistoryService) {
+    /** The wallet in the path, which must be the caller's own. */
+    const ownWallet = (req: AuthenticatedRequest): string => {
+      const raw = Array.isArray(req.params.wallet) ? req.params.wallet[0] : req.params.wallet;
+      const wallet = raw?.trim();
+      if (!wallet || wallet !== req.user!.stellarAddress) {
+        throw new PublicAppError(
+          403,
+          "You can only view the settlement history of your own wallet.",
+          "FORBIDDEN"
+        );
+      }
+      return wallet;
+    };
+
+    router.get(
+      "/:wallet/settlements",
+      auth,
+      async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+        try {
+          const wallet = ownWallet(req);
+          const page = await settlementHistoryService.listSettlements(wallet, {
+            limit: parseSettlementLimit(req.query.limit),
+            cursor: typeof req.query.cursor === "string" ? req.query.cursor : null,
+            filters: parseSettlementFilters(req.query),
+          });
+          res.status(200).json({
+            success: true,
+            data: page.items,
+            meta: { limit: page.limit, hasMore: page.hasMore, nextCursor: page.nextCursor },
+          });
+        } catch (error) {
+          next(mapServiceError(error));
+        }
+      }
+    );
+
+    router.get(
+      "/:wallet/settlements/export",
+      auth,
+      async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+        try {
+          const wallet = ownWallet(req);
+          const records = await settlementHistoryService.exportSettlements(
+            wallet,
+            parseSettlementFilters(req.query)
+          );
+          res.setHeader("Content-Type", "text/csv; charset=utf-8");
+          res.setHeader(
+            "Content-Disposition",
+            `attachment; filename="settlements-${wallet.slice(0, 8)}.csv"`
+          );
+          res.setHeader("Cache-Control", "no-store");
+          res.status(200).send(settlementsToCsv(records));
+        } catch (error) {
+          next(mapServiceError(error));
+        }
+      }
+    );
+  }
 
   // ---- Accreditation renewal (issue #780) ----
   if (accreditationService) {

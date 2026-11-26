@@ -136,24 +136,25 @@ export function createKeysRouter({
             return;
           }
 
-          const result = await curveMigrationService.listForKey(String(req.params.id));
           const isCreator = isCreatorRole(req.user?.userType);
 
           // Asking for the pending list outright is a creator-only request.
           if (status === "pending" && !isCreator) {
             next(
-              new AppError(403, "Only the key creator can see pending migrations.", "FORBIDDEN")
+              new AppError(404, "Resource not found.", "NOT_FOUND")
             );
             return;
           }
 
           if (isCreator) {
+            const result = await curveMigrationService.listForKey(String(req.params.id));
             res.status(200).json({ success: true, data: result });
             return;
           }
 
           // Everyone else still gets published history, just without the
           // in-flight proposals.
+          const result = await curveMigrationService.listForKey(String(req.params.id));
           res.status(200).json({
             success: true,
             data: { pending: [], executed: result.executed, total: result.executed.length },
@@ -202,7 +203,7 @@ export function createKeysRouter({
           }
 
           if (!isAdmin && !isCreator) {
-            next(new AppError(403, "Admin or creator access required.", "FORBIDDEN"));
+            next(new AppError(404, "Resource not found.", "NOT_FOUND"));
             return;
           }
 
@@ -271,7 +272,7 @@ export function createKeysRouter({
           }
 
           if (!isAdmin && !isCreator) {
-            next(new AppError(403, "Admin or creator access required.", "FORBIDDEN"));
+            next(new AppError(404, "Resource not found.", "NOT_FOUND"));
             return;
           }
 

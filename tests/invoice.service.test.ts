@@ -677,7 +677,18 @@ describe("InvoiceService", () => {
   });
 
   // ============ DELETE INVOICE TESTS ============
+  function atomicDeletionService() {
+    const manager = {
+      findOne: jest.fn((entity: unknown, options: unknown) => entity === Invoice ? mockInvoiceRepository.findOne(options) : null),
+      save: jest.fn((entity: unknown, value: unknown) => entity === Invoice ? mockInvoiceRepository.save(value) : Promise.resolve(value)),
+      getRepository: jest.fn(() => ({ count: jest.fn().mockResolvedValue(0) })),
+      connection: { getMetadata: () => ({ tableName: "dependent" }) },
+    };
+    return new InvoiceService({ invoiceRepository: mockInvoiceRepository, ipfsService: mockIPFSService, dataSource: { transaction: async (fn: (m: unknown) => unknown) => fn(manager) } as never });
+  }
+
   describe("deleteInvoice", () => {
+    beforeEach(() => { invoiceService = atomicDeletionService(); });
     it("should soft delete draft invoice", async () => {
       mockInvoiceRepository.findOne.mockResolvedValue(mockInvoice);
       mockInvoiceRepository.save.mockResolvedValue({
@@ -702,7 +713,7 @@ describe("InvoiceService", () => {
 
       await expect(invoiceService.deleteInvoice("invoice-123", "seller-456")).rejects.toMatchObject({
         code: "invalid_invoice_status",
-        statusCode: 400,
+        statusCode: 409,
       });
       expect(mockInvoiceRepository.save).not.toHaveBeenCalled();
     });
@@ -747,7 +758,7 @@ describe("InvoiceService", () => {
       await expect(invoiceService.deleteInvoice("invoice-123", "seller-456")).rejects.toMatchObject(
         {
           code: "invalid_invoice_status",
-          statusCode: 400,
+          statusCode: 409,
         }
       );
     });
@@ -967,8 +978,10 @@ describe("InvoiceService", () => {
       expect(result).toEqual({
         invoiceId: "invoice-123",
         ipfsHash: "QmTestHash123",
-        fileSize: 1024,
+        fileSize: uploadInput.fileBuffer.length,
         uploadedAt: "2024-01-01T00:00:00.000Z",
+        contentChecksum: expect.stringMatching(/^[a-f0-9]{64}$/),
+        uploadComplete: true,
       });
 
       expect(mockInvoiceRepository.findOne).toHaveBeenCalledWith({
@@ -1139,6 +1152,7 @@ describe("InvoiceService", () => {
     });
 
     it("should propagate database errors on deleteInvoice", async () => {
+      invoiceService = atomicDeletionService();
       mockInvoiceRepository.findOne.mockResolvedValue(mockInvoice);
       mockInvoiceRepository.save.mockRejectedValue(new Error("Storage full"));
 
@@ -1359,7 +1373,7 @@ describe("InvoiceService", () => {
     describe("transactional persistence", () => {
       it("should run the transition inside a database transaction and dispatch after it commits", async () => {
         const order: string[] = [];
-        const manager = { save: jest.fn() };
+        const manager = { save: jest.fn(), findOne: (_entity: unknown, options: unknown) => mockInvoiceRepository.findOne(options) };
         const dataSource = {
           transaction: jest.fn(async (work: (m: unknown) => Promise<unknown>) => {
             order.push("transaction:start");
@@ -1510,7 +1524,7 @@ describe("InvoiceService", () => {
         dispatch: jest.fn().mockResolvedValue(undefined),
       };
       dataSource = {
-        transaction: jest.fn(async (work: (m: unknown) => Promise<unknown>) => work({})),
+        transaction: jest.fn(async (work: (m: unknown) => Promise<unknown>) => work({ findOne: async (_entity: unknown, { where }: { where: { id: string } }) => (await mockInvoiceRepository.find.mock.results.at(-1)?.value ?? []).find((row: Invoice) => row.id === where.id) ?? null })),
       };
       service = new InvoiceService({
         invoiceRepository: mockInvoiceRepository,

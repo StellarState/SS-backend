@@ -73,6 +73,11 @@ class SecondsHistogram {
 }
 
 export class MetricsRegistry {
+  private depthSnapshotLagSeconds = 0;
+
+  setDepthSnapshotLagSeconds(seconds: number): void {
+    this.depthSnapshotLagSeconds = Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
+  }
   private readonly requestCounters = new Map<string, CounterMetric>();
   private readonly requestDurationHistograms = new Map<string, HistogramMetric>();
   private readonly customCounters = new Map<string, number>();
@@ -144,6 +149,9 @@ export class MetricsRegistry {
 
   renderPrometheusMetrics(): string {
     const lines = [
+      "# HELP stellarsettle_secondary_depth_snapshot_lag_seconds Seconds of observed depth snapshot lag.",
+      "# TYPE stellarsettle_secondary_depth_snapshot_lag_seconds gauge",
+      `stellarsettle_secondary_depth_snapshot_lag_seconds ${this.depthSnapshotLagSeconds}`,
       "# HELP stellarsettle_http_requests_total Total completed HTTP requests.",
       "# TYPE stellarsettle_http_requests_total counter",
     ];

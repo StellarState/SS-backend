@@ -2,6 +2,7 @@ import { DataSource, Repository } from "typeorm";
 import Decimal from "decimal.js";
 import { Invoice } from "../models/Invoice.model";
 import { InvoiceStatus } from "../types/enums";
+import { percentageNumber } from "../utils/percentage.utils";
 
 export interface SellerDashboardSummary {
   totalInvoices: number;
@@ -63,9 +64,7 @@ export class SellerService {
       totalRaisedDec = totalRaisedDec.plus(raised);
 
       const targetDec = new Decimal(inv.netAmount || inv.amount || "0");
-      const percentage = targetDec.gt(0)
-        ? Math.min(100, Math.round(raised.dividedBy(targetDec).toNumber() * 10000) / 100)
-        : 0;
+      const percentage = percentageNumber(raised, targetDec, { maximum: 100 });
 
       return {
         id: inv.id,
@@ -78,7 +77,8 @@ export class SellerService {
         fundedAmount: inv.fundedAmount || "0",
         fundingTarget: inv.netAmount || inv.amount,
         fundingPercentage: percentage,
-        fundingDeadline: inv.dueDate,
+        // Fall back to dueDate only for legacy rows where fundingDeadline is null.
+        fundingDeadline: inv.fundingDeadline ?? inv.dueDate,
         dueDate: inv.dueDate,
         createdAt: inv.createdAt,
       };

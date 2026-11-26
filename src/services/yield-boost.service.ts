@@ -1,4 +1,5 @@
 import { DataSource } from "typeorm";
+import Decimal from "decimal.js";
 import { YieldBoost } from "../models/YieldBoost.model";
 import { Invoice } from "../models/Invoice.model";
 import { LoyaltyTier } from "../types/enums";
@@ -101,9 +102,9 @@ export class YieldBoostService {
     const tier = boostRow?.tier ?? null;
     const eligible = tier !== null && tier !== LoyaltyTier.BRONZE && TIER_BOOST_BPS[tier] !== undefined;
     const boostBps = eligible ? (boostRow?.boostBps ?? TIER_BOOST_BPS[tier!] ?? 0) : 0;
-    const baseYield = Number(invoice.discountRate);
+    const baseYield = new Decimal(invoice.discountRate || "0");
     const boostedYield = eligible
-      ? (baseYield + boostBps / 100).toFixed(2)
+      ? baseYield.plus(new Decimal(boostBps).dividedBy(100)).toFixed(2)
       : invoice.discountRate;
 
     const view: YieldBoostView = {

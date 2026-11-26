@@ -35,7 +35,8 @@ export class InvestorReturn {
   @Column({ type: "decimal", precision: 18, scale: 4 })
   amount!: string;
 
-  @CreateDateColumn({ name: "created_at" })
+  /** Settlement time. timestamptz, as created by migration 1732700000000. */
+  @CreateDateColumn({ name: "created_at", type: "timestamptz" })
   createdAt!: Date;
 
   @UpdateDateColumn({ name: "updated_at" })
