@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { createWriteStream, promises as fs } from "fs";
+import { createWriteStream, existsSync, promises as fs } from "fs";
 import path from "path";
 import { finished } from "stream/promises";
 import archiver from "archiver";
@@ -18,6 +18,8 @@ import {
   advanceProgress,
   boundExportUrlExpiry,
   canTransitionExportState,
+  isExportRetentionExpired,
+  needsExportObjectCleanup,
   progressForDocuments,
   type ExportJobState,
 } from "./export-job-state";
@@ -58,6 +60,8 @@ export interface DocumentExportServiceDependencies {
   signingSecret: string;
   urlTtlMinutes: number;
   retentionMs?: number;
+  /** Clock override, so retention and cleanup races can be tested deterministically. */
+  now?: () => number;
   logger?: AppLogger;
 }
 
@@ -101,6 +105,9 @@ function toExportJob(job: DocumentExportJob): ExportJob {
     createdAt: job.createdAt.getTime(),
     ...(job.completedAt ? { completedAt: job.completedAt.getTime() } : {}),
     ...(job.cancelledAt ? { cancelledAt: job.cancelledAt.getTime() } : {}),
+    ...(job.expiresAt ? { retentionExpiresAt: job.expiresAt.getTime() } : {}),
+    ...(job.deletedAt ? { deletedAt: job.deletedAt.getTime() } : {}),
+    ...(job.cleanupError ? { cleanupError: job.cleanupError } : {}),
   };
 }
 
@@ -109,11 +116,13 @@ export class DocumentExportService {
   private readonly jobs: Repository<DocumentExportJob>;
   private readonly ownerId = randomUUID();
   private readonly retentionMs: number;
+  private readonly now: () => number;
   private readonly appLogger: AppLogger;
 
   constructor(private readonly dependencies: DocumentExportServiceDependencies) {
     this.jobs = dependencies.dataSource.getRepository(DocumentExportJob);
     this.retentionMs = dependencies.retentionMs ?? DEFAULT_RETENTION_MS;
+    this.now = dependencies.now ?? Date.now;
     this.appLogger = dependencies.logger ?? logger;
   }
 
@@ -124,7 +133,7 @@ export class DocumentExportService {
     if (!invoice) throw new ServiceError("invoice_not_found", "Invoice not found", 404);
     await this.assertEligible(invoice, requestingUserId);
 
-    const jobId = `exp_${invoiceId}_${Date.now()}_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+    const jobId = `exp_${invoiceId}_${this.now()}_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
     const job = this.jobs.create({
       id: jobId,
       invoiceId,
@@ -140,6 +149,8 @@ export class DocumentExportService {
       leaseOwner: null,
       leaseExpiresAt: null,
       expiresAt: null,
+      deletedAt: null,
+      cleanupError: null,
       completedAt: null,
       cancelledAt: null,
     });
@@ -161,7 +172,7 @@ export class DocumentExportService {
       throw new ServiceError("export_not_cancellable", `A ${job.status} export job cannot be cancelled`, 409);
     }
 
-    const cancelledAt = new Date();
+    const cancelledAt = new Date(this.now());
     const result = await this.jobs.update(
       { id: jobId, requesterId: requestingUserId, status: job.status },
       {
@@ -350,22 +361,31 @@ export class DocumentExportService {
         return;
       }
 
-      const { token, expiresAt } = createSignedDownloadToken(
-        this.dependencies.signingSecret,
-        jobId,
+      const completedAt = new Date();
+      const retentionExpiresAt = completedAt.getTime() + this.retentionMs;
+      // A signed URL must never outlive the archive it points at (#809).
+      const urlExpiresAt = boundExportUrlExpiry(
+        completedAt.getTime(),
         this.dependencies.urlTtlMinutes,
         retentionExpiresAt,
       );
-      const completedAt = new Date();
+      const signedDownload = urlExpiresAt === null
+        ? null
+        : createSignedDownloadToken(
+            this.dependencies.signingSecret,
+            jobId,
+            (urlExpiresAt - completedAt.getTime()) / (60 * 1000),
+            completedAt,
+          );
       await this.jobs.update(
         { id: jobId, status: "running", leaseOwner: this.ownerId },
         {
           status: "completed",
           progress: 100,
-          downloadToken: token,
-          downloadTokenExpiresAt: new Date(expiresAt),
+          downloadToken: signedDownload?.token ?? null,
+          downloadTokenExpiresAt: signedDownload ? new Date(signedDownload.expiresAt) : null,
           completedAt,
-          expiresAt: new Date(Math.max(expiresAt, completedAt.getTime() + this.retentionMs)),
+          expiresAt: new Date(retentionExpiresAt),
           leaseOwner: null,
           leaseExpiresAt: null,
         },
