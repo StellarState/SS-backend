@@ -102,7 +102,7 @@ describe("TypeOrmNotificationJobStore", () => {
       expect.objectContaining({ eventId: "evt", attempts: 2, error: "db unavailable" }),
     ]);
 
-    expect(await replacement.replayDeadLetter("evt", retryAt)).toBe(true);
+    expect(await replacement.replayDeadLetter("evt", "system", retryAt)).toBe(true);
     expect(await replacement.countActive()).toBe(1);
     expect(await replacement.listDeadLetters()).toHaveLength(0);
   });

@@ -2,6 +2,7 @@ import { promises as fs } from "fs";
 import os from "os";
 import path from "path";
 import { DocumentExportService } from "../src/services/document-export.service";
+import { DocumentExportJob } from "../src/models/DocumentExportJob.model";
 import { Invoice } from "../src/models/Invoice.model";
 import { InvoiceDocument } from "../src/models/InvoiceDocument.model";
 import { Investment } from "../src/models/Investment.model";
@@ -28,12 +29,59 @@ function makeService(
   tempDir: string,
   options: {
     now: () => number;
-    retentionMinutes?: number;
+    retentionMs?: number;
     urlTtlMinutes?: number;
   },
 ): DocumentExportService {
+  const jobs: DocumentExportJob[] = [];
   const dataSource = {
     getRepository: (entity: unknown) => {
+      if (entity === DocumentExportJob) {
+        return {
+          create: (input: Partial<DocumentExportJob>) =>
+            Object.assign(new DocumentExportJob(), input),
+          save: async (job: DocumentExportJob) => {
+            job.createdAt = new Date(options.now());
+            jobs.push(job);
+            return job;
+          },
+          findOneBy: async (criteria: Partial<DocumentExportJob>) =>
+            jobs.find((job) =>
+              Object.entries(criteria).every(
+                ([key, value]) => job[key as keyof DocumentExportJob] === value,
+              ),
+            ) ?? null,
+          findOneByOrFail: async (criteria: Partial<DocumentExportJob>) => {
+            const job = jobs.find((candidate) =>
+              Object.entries(criteria).every(
+                ([key, value]) => candidate[key as keyof DocumentExportJob] === value,
+              ),
+            );
+            if (!job) throw new Error("job not found");
+            return job;
+          },
+          update: async (
+            criteria: Partial<DocumentExportJob>,
+            changes: Partial<DocumentExportJob>,
+          ) => {
+            const job = jobs.find((candidate) =>
+              Object.entries(criteria).every(
+                ([key, value]) => candidate[key as keyof DocumentExportJob] === value,
+              ),
+            );
+            if (!job) return { affected: 0 };
+            Object.assign(job, changes);
+            return { affected: 1 };
+          },
+          find: async () => jobs,
+          delete: async (criteria: Partial<DocumentExportJob>) => {
+            const index = jobs.findIndex((job) => job.id === criteria.id);
+            if (index < 0) return { affected: 0 };
+            jobs.splice(index, 1);
+            return { affected: 1 };
+          },
+        };
+      }
       if (entity === Invoice) {
         return {
           findOneBy: async () =>
@@ -42,7 +90,8 @@ function makeService(
       }
       if (entity === User) {
         return {
-          findOneBy: async () => ({ id: OWNER, kycStatus: KYCStatus.APPROVED }) as unknown as User,
+          findOneBy: async () =>
+            ({ id: OWNER, kycStatus: KYCStatus.APPROVED }) as unknown as User,
         };
       }
       if (entity === Investment) return { exists: async () => false };
@@ -57,23 +106,30 @@ function makeService(
     tempDir,
     signingSecret: "test-secret",
     urlTtlMinutes: options.urlTtlMinutes ?? 10,
-    retentionMinutes: options.retentionMinutes,
+    retentionMs: options.retentionMs,
     now: options.now,
   });
 }
 
-async function waitFor(condition: () => boolean, timeoutMs = 3000): Promise<void> {
+async function waitFor(
+  condition: () => boolean | Promise<boolean>,
+  timeoutMs = 3000,
+): Promise<void> {
   const start = Date.now();
-  while (!condition()) {
+  while (!(await condition())) {
     if (Date.now() - start > timeoutMs) throw new Error("timed out waiting for condition");
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
 }
 
-function expectServiceError(fn: () => unknown, code: string, statusCode?: number): void {
+async function expectServiceError(
+  fn: () => Promise<unknown>,
+  code: string,
+  statusCode?: number,
+): Promise<void> {
   let caught: { code?: string; statusCode?: number } | undefined;
   try {
-    fn();
+    await fn();
   } catch (error) {
     caught = error as { code?: string; statusCode?: number };
   }
@@ -96,22 +152,25 @@ describe("DocumentExportService retention and cleanup (#809)", () => {
   });
 
   async function completedJob(options: {
-    retentionMinutes: number;
+    retentionMs: number;
     urlTtlMinutes: number;
   }): Promise<{ service: DocumentExportService; jobId: string }> {
     const service = makeService(tempDir, {
       now: () => clock,
-      retentionMinutes: options.retentionMinutes,
+      retentionMs: options.retentionMs,
       urlTtlMinutes: options.urlTtlMinutes,
     });
     const { jobId } = await service.requestExport(INVOICE_ID, OWNER);
-    await waitFor(() => service.getJobStatus(jobId, OWNER)!.status === "completed");
+    await waitFor(async () => (await service.getJobStatus(jobId, OWNER))?.status === "completed");
     return { service, jobId };
   }
 
   it("bounds the signed URL TTL by the retention window, not just the configured TTL", async () => {
-    const { service, jobId } = await completedJob({ retentionMinutes: 5, urlTtlMinutes: 180 });
-    const job = service.getJobStatus(jobId, OWNER)!;
+    const { service, jobId } = await completedJob({
+      retentionMs: 5 * MINUTE,
+      urlTtlMinutes: 180,
+    });
+    const job = (await service.getJobStatus(jobId, OWNER))!;
 
     expect(job.retentionExpiresAt).toBe(job.completedAt! + 5 * MINUTE);
     // The 180-minute TTL is cut down to the 5-minute retention window.
@@ -120,76 +179,93 @@ describe("DocumentExportService retention and cleanup (#809)", () => {
   });
 
   it("keeps the configured TTL when it is shorter than retention", async () => {
-    const { service, jobId } = await completedJob({ retentionMinutes: 60, urlTtlMinutes: 2 });
-    const job = service.getJobStatus(jobId, OWNER)!;
+    const { service, jobId } = await completedJob({
+      retentionMs: 60 * MINUTE,
+      urlTtlMinutes: 2,
+    });
+    const job = (await service.getJobStatus(jobId, OWNER))!;
 
     expect(job.downloadTokenExpiresAt).toBe(job.completedAt! + 2 * MINUTE);
     expect(job.downloadTokenExpiresAt!).toBeLessThan(job.retentionExpiresAt!);
   });
 
   it("refuses to stream a deleted export even with the token it was issued", async () => {
-    const { service, jobId } = await completedJob({ retentionMinutes: 5, urlTtlMinutes: 30 });
-    const job = service.getJobStatus(jobId, OWNER)!;
-    const token = job.downloadToken!;
-    const zipPath = job.zipPath!;
+    const { service, jobId } = await completedJob({
+      retentionMs: 5 * MINUTE,
+      urlTtlMinutes: 30,
+    });
+    const original = (await service.getJobStatus(jobId, OWNER))!;
+    const token = original.downloadToken!;
+    const zipPath = original.zipPath!;
 
     clock += 6 * MINUTE;
     await service.cleanupExport(jobId);
+    const job = (await service.getJobStatus(jobId, OWNER))!;
 
     expect(job.deletedAt).toBe(clock);
     expect(job.status).toBe("completed");
     expect(job.downloadToken).toBeUndefined();
     expect(job.zipPath).toBeUndefined();
-    expect(service.getJobStatus(jobId, OWNER)).toBeDefined();
+    expect(await service.getJobStatus(jobId, OWNER)).toBeDefined();
     await expect(fs.access(zipPath)).rejects.toThrow();
-    expectServiceError(() => service.getDownloadPath(jobId, token), "export_deleted", 410);
+    await expectServiceError(() => service.getDownloadPath(jobId, token), "export_deleted", 410);
   });
 
   it("refuses an expired export whose object cleanup has not caught up yet", async () => {
-    const { service, jobId } = await completedJob({ retentionMinutes: 5, urlTtlMinutes: 30 });
-    const job = service.getJobStatus(jobId, OWNER)!;
-    const token = job.downloadToken!;
+    const { service, jobId } = await completedJob({
+      retentionMs: 5 * MINUTE,
+      urlTtlMinutes: 30,
+    });
+    const original = (await service.getJobStatus(jobId, OWNER))!;
+    const token = original.downloadToken!;
 
     clock += 6 * MINUTE;
 
     // Storage lag: the ZIP is still on disk, but the metadata says the
     // retention window has passed. The download must be refused anyway.
-    await expect(fs.access(job.zipPath!)).resolves.toBeUndefined();
-    expectServiceError(() => service.getDownloadPath(jobId, token), "export_expired", 410);
+    await expect(fs.access(original.zipPath!)).resolves.toBeUndefined();
+    await expectServiceError(() => service.getDownloadPath(jobId, token), "export_expired", 410);
   });
 
   it("keeps blocking downloads when object cleanup fails, without marking metadata deleted", async () => {
-    const { service, jobId } = await completedJob({ retentionMinutes: 5, urlTtlMinutes: 30 });
-    const job = service.getJobStatus(jobId, OWNER)!;
-    const token = job.downloadToken!;
+    const { service, jobId } = await completedJob({
+      retentionMs: 5 * MINUTE,
+      urlTtlMinutes: 30,
+    });
+    const original = (await service.getJobStatus(jobId, OWNER))!;
+    const token = original.downloadToken!;
 
     clock += 6 * MINUTE;
     // A non-empty directory in the ZIP's place makes `fs.rm(..., { force: true })`
     // fail, standing in for a storage backend that rejects the delete.
-    await fs.rm(job.zipPath!, { force: true });
-    await fs.mkdir(job.zipPath!, { recursive: true });
-    await fs.writeFile(path.join(job.zipPath!, "blocker"), "x");
+    await fs.rm(original.zipPath!, { force: true });
+    await fs.mkdir(original.zipPath!, { recursive: true });
+    await fs.writeFile(path.join(original.zipPath!, "blocker"), "x");
 
     await service.cleanupExport(jobId);
+    const job = (await service.getJobStatus(jobId, OWNER))!;
 
     expect(job.deletedAt).toBeUndefined();
     expect(job.cleanupError).toBeDefined();
     expect(job.status).toBe("completed");
     // Downloads are already blocked by retention, so the lag cannot be exploited.
-    expectServiceError(() => service.getDownloadPath(jobId, token), "export_expired", 410);
+    await expectServiceError(() => service.getDownloadPath(jobId, token), "export_expired", 410);
   });
 
   it("treats cleanup retries as no-ops so deleted metadata is not resurrected", async () => {
-    const { service, jobId } = await completedJob({ retentionMinutes: 5, urlTtlMinutes: 30 });
-    const job = service.getJobStatus(jobId, OWNER)!;
+    const { service, jobId } = await completedJob({
+      retentionMs: 5 * MINUTE,
+      urlTtlMinutes: 30,
+    });
 
     clock += 6 * MINUTE;
     await service.cleanupExport(jobId);
-    const deletedAt = job.deletedAt;
+    const deletedAt = (await service.getJobStatus(jobId, OWNER))!.deletedAt;
 
     clock += 60 * MINUTE;
     await service.cleanupExport(jobId);
     await service.cleanupExport(jobId);
+    const job = (await service.getJobStatus(jobId, OWNER))!;
 
     expect(job.deletedAt).toBe(deletedAt);
     expect(job.deletedAt).not.toBe(clock);
@@ -201,29 +277,37 @@ describe("DocumentExportService retention and cleanup (#809)", () => {
   });
 
   it("does not delete objects before retention elapses, and sweeps only expired jobs", async () => {
-    const { service, jobId } = await completedJob({ retentionMinutes: 5, urlTtlMinutes: 30 });
-    const job = service.getJobStatus(jobId, OWNER)!;
+    const { service, jobId } = await completedJob({
+      retentionMs: 5 * MINUTE,
+      urlTtlMinutes: 30,
+    });
+    const original = (await service.getJobStatus(jobId, OWNER))!;
 
     clock += 1 * MINUTE;
     expect(await service.cleanupExpiredExports()).toEqual([]);
-    await expect(fs.access(job.zipPath!)).resolves.toBeUndefined();
+    await expect(fs.access(original.zipPath!)).resolves.toBeUndefined();
 
     clock += 5 * MINUTE;
     expect(await service.cleanupExpiredExports()).toEqual([jobId]);
+    const job = (await service.getJobStatus(jobId, OWNER))!;
     expect(job.deletedAt).toBe(clock);
-    await expect(fs.access(job.zipPath ?? path.join(tempDir, `${jobId}.zip`))).rejects.toThrow();
+    await expect(fs.access(original.zipPath!)).rejects.toThrow();
   });
 
   it("refuses a download whose file disappeared before metadata caught up", async () => {
-    const { service, jobId } = await completedJob({ retentionMinutes: 60, urlTtlMinutes: 30 });
-    const job = service.getJobStatus(jobId, OWNER)!;
-    const token = job.downloadToken!;
+    const { service, jobId } = await completedJob({
+      retentionMs: 60 * MINUTE,
+      urlTtlMinutes: 30,
+    });
+    const original = (await service.getJobStatus(jobId, OWNER))!;
+    const token = original.downloadToken!;
 
     clock += 1 * MINUTE;
     // Storage lost the object first; metadata is still "completed".
-    await fs.rm(job.zipPath!, { force: true });
+    await fs.rm(original.zipPath!, { force: true });
 
+    const job = (await service.getJobStatus(jobId, OWNER))!;
     expect(job.deletedAt).toBeUndefined();
-    expectServiceError(() => service.getDownloadPath(jobId, token), "export_file_missing", 410);
+    await expectServiceError(() => service.getDownloadPath(jobId, token), "export_file_missing", 410);
   });
 });
