@@ -140,9 +140,7 @@ export function createKeysRouter({
 
           // Asking for the pending list outright is a creator-only request.
           if (status === "pending" && !isCreator) {
-            next(
-              new AppError(404, "Resource not found.", "NOT_FOUND")
-            );
+            next(new AppError(403, "Creator access required.", "FORBIDDEN"));
             return;
           }
 
@@ -203,7 +201,7 @@ export function createKeysRouter({
           }
 
           if (!isAdmin && !isCreator) {
-            next(new AppError(404, "Resource not found.", "NOT_FOUND"));
+            next(new AppError(403, "Admin or creator access required.", "FORBIDDEN"));
             return;
           }
 
@@ -272,7 +270,7 @@ export function createKeysRouter({
           }
 
           if (!isAdmin && !isCreator) {
-            next(new AppError(404, "Resource not found.", "NOT_FOUND"));
+            next(new AppError(403, "Admin or creator access required.", "FORBIDDEN"));
             return;
           }
 

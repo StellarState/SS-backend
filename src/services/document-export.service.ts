@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { createWriteStream, promises as fs } from "fs";
+import { createWriteStream, existsSync, promises as fs } from "fs";
 import path from "path";
 import { finished } from "stream/promises";
 import archiver from "archiver";
@@ -16,7 +16,10 @@ import type { IPFSService } from "./ipfs.service";
 import { createSignedDownloadToken, verifySignedDownloadToken } from "../lib/signed-url";
 import {
   advanceProgress,
+  boundExportUrlExpiry,
   canTransitionExportState,
+  isExportRetentionExpired,
+  needsExportObjectCleanup,
   progressForDocuments,
   type ExportJobState,
 } from "./export-job-state";
@@ -34,6 +37,15 @@ export interface ExportJob {
   zipPath?: string;
   downloadToken?: string;
   downloadTokenExpiresAt?: number;
+  /** Absolute time after which the ZIP is no longer downloadable (#809). */
+  retentionExpiresAt?: number;
+  /**
+   * Set once the stored object has been deleted. A job marked deleted never
+   * becomes downloadable again, and cleanup retries never clear this.
+   */
+  deletedAt?: number;
+  /** Last object-cleanup failure, kept so a retry can finish the delete. */
+  cleanupError?: string;
   error?: string;
   createdAt: number;
   completedAt?: number;
@@ -48,6 +60,8 @@ export interface DocumentExportServiceDependencies {
   signingSecret: string;
   urlTtlMinutes: number;
   retentionMs?: number;
+  /** Clock override, so retention and cleanup races can be tested deterministically. */
+  now?: () => number;
   logger?: AppLogger;
 }
 
@@ -91,6 +105,9 @@ function toExportJob(job: DocumentExportJob): ExportJob {
     createdAt: job.createdAt.getTime(),
     ...(job.completedAt ? { completedAt: job.completedAt.getTime() } : {}),
     ...(job.cancelledAt ? { cancelledAt: job.cancelledAt.getTime() } : {}),
+    ...(job.expiresAt ? { retentionExpiresAt: job.expiresAt.getTime() } : {}),
+    ...(job.deletedAt ? { deletedAt: job.deletedAt.getTime() } : {}),
+    ...(job.cleanupError ? { cleanupError: job.cleanupError } : {}),
   };
 }
 
@@ -99,11 +116,13 @@ export class DocumentExportService {
   private readonly jobs: Repository<DocumentExportJob>;
   private readonly ownerId = randomUUID();
   private readonly retentionMs: number;
+  private readonly now: () => number;
   private readonly appLogger: AppLogger;
 
   constructor(private readonly dependencies: DocumentExportServiceDependencies) {
     this.jobs = dependencies.dataSource.getRepository(DocumentExportJob);
     this.retentionMs = dependencies.retentionMs ?? DEFAULT_RETENTION_MS;
+    this.now = dependencies.now ?? Date.now;
     this.appLogger = dependencies.logger ?? logger;
   }
 
@@ -114,7 +133,7 @@ export class DocumentExportService {
     if (!invoice) throw new ServiceError("invoice_not_found", "Invoice not found", 404);
     await this.assertEligible(invoice, requestingUserId);
 
-    const jobId = `exp_${invoiceId}_${Date.now()}_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+    const jobId = `exp_${invoiceId}_${this.now()}_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
     const job = this.jobs.create({
       id: jobId,
       invoiceId,
@@ -130,6 +149,8 @@ export class DocumentExportService {
       leaseOwner: null,
       leaseExpiresAt: null,
       expiresAt: null,
+      deletedAt: null,
+      cleanupError: null,
       completedAt: null,
       cancelledAt: null,
     });
@@ -151,7 +172,7 @@ export class DocumentExportService {
       throw new ServiceError("export_not_cancellable", `A ${job.status} export job cannot be cancelled`, 409);
     }
 
-    const cancelledAt = new Date();
+    const cancelledAt = new Date(this.now());
     const result = await this.jobs.update(
       { id: jobId, requesterId: requestingUserId, status: job.status },
       {
@@ -173,19 +194,108 @@ export class DocumentExportService {
 
   async getDownloadPath(jobId: string, token: string): Promise<string> {
     const job = await this.jobs.findOneBy({ id: jobId });
-    if (!job || job.status !== "completed" || !job.zipPath) {
+    if (!job) {
       throw new ServiceError("export_not_ready", "Export job is not ready for download", 404);
+    }
+
+    const now = this.now();
+    if (job.deletedAt) {
+      throw new ServiceError("export_deleted", "This export has been deleted", 410);
+    }
+    if (
+      isExportRetentionExpired(
+        { retentionExpiresAt: job.expiresAt?.getTime() },
+        now,
+      )
+    ) {
+      throw new ServiceError("export_expired", "This export has expired", 410);
+    }
+    if (job.status !== "completed" || !job.zipPath) {
+      throw new ServiceError("export_not_ready", "Export job is not ready for download", 404);
+    }
+    if (job.downloadTokenExpiresAt && job.downloadTokenExpiresAt.getTime() <= now) {
+      throw new ServiceError("export_expired", "This export has expired", 410);
     }
     if (
       token !== job.downloadToken ||
-      !verifySignedDownloadToken(this.dependencies.signingSecret, jobId, token)
+      !verifySignedDownloadToken(this.dependencies.signingSecret, jobId, token, new Date(now))
     ) {
       throw new ServiceError("invalid_download_token", "Download link is invalid or has expired", 403);
+    }
+    if (!existsSync(job.zipPath)) {
+      throw new ServiceError("export_file_missing", "Export file is no longer available", 410);
     }
     return job.zipPath;
   }
 
-  async cleanupExpiredJobs(now: Date = new Date()): Promise<{ jobsDeleted: number; archivesDeleted: number }> {
+  /**
+   * Removes a completed export's archive once its retention window has elapsed,
+   * then marks the job deleted and revokes its download token. Retrying after a
+   * successful delete is a no-op; a failed delete keeps `cleanupError` so a
+   * later sweep can finish it (#809).
+   */
+  async cleanupExport(
+    jobId: string,
+    now: Date = new Date(this.now()),
+  ): Promise<ExportJob | undefined> {
+    const job = await this.jobs.findOneBy({ id: jobId });
+    if (
+      !job ||
+      !job.zipPath ||
+      !needsExportObjectCleanup(
+        {
+          status: job.status,
+          deletedAt: job.deletedAt?.getTime(),
+          retentionExpiresAt: job.expiresAt?.getTime(),
+          zipPath: job.zipPath ?? undefined,
+        },
+        now.getTime(),
+      )
+    ) {
+      return job ? toExportJob(job) : undefined;
+    }
+
+    try {
+      await this.removeArchive(job);
+    } catch (error) {
+      await this.jobs.update(
+        { id: job.id },
+        {
+          cleanupError: error instanceof Error ? error.message : "Unknown cleanup error",
+        },
+      );
+      return toExportJob(await this.jobs.findOneByOrFail({ id: job.id }));
+    }
+
+    await this.jobs.update(
+      { id: job.id, status: "completed" },
+      {
+        deletedAt: now,
+        zipPath: null,
+        downloadToken: null,
+        downloadTokenExpiresAt: null,
+        cleanupError: null,
+      },
+    );
+    return toExportJob(await this.jobs.findOneByOrFail({ id: job.id }));
+  }
+
+  /** Deletes every completed export whose retention window has elapsed. */
+  async cleanupExpiredExports(now: Date = new Date(this.now())): Promise<string[]> {
+    const candidates = await this.jobs.find({
+      where: [
+        { status: "completed", expiresAt: LessThanOrEqual(now) },
+      ],
+    });
+    const cleaned: string[] = [];
+    for (const candidate of candidates) {
+      const updated = await this.cleanupExport(candidate.id, now);
+      if (updated?.deletedAt !== undefined) cleaned.push(candidate.id);
+    }
+    return cleaned;
+  }
+
+  async cleanupExpiredJobs(now: Date = new Date(this.now())): Promise<{ jobsDeleted: number; archivesDeleted: number }> {
     const candidates = await this.jobs.find({
       where: [
         { status: "running", leaseExpiresAt: LessThanOrEqual(now) },
@@ -221,6 +331,12 @@ export class DocumentExportService {
           },
         );
         if (result.affected && removed) archivesDeleted++;
+        continue;
+      }
+
+      if (candidate.status === "completed") {
+        const cleaned = await this.cleanupExport(candidate.id, now);
+        if (cleaned?.deletedAt !== undefined) archivesDeleted++;
         continue;
       }
 
@@ -300,7 +416,7 @@ export class DocumentExportService {
       {
         status: "running",
         leaseOwner: this.ownerId,
-        leaseExpiresAt: new Date(Date.now() + PROCESSING_LEASE_MS),
+        leaseExpiresAt: new Date(this.now() + PROCESSING_LEASE_MS),
       },
     );
     if (!claimed.affected) return;
@@ -310,7 +426,7 @@ export class DocumentExportService {
     const heartbeat = setInterval(() => {
       void this.jobs.update(
         { id: jobId, status: "running", leaseOwner: this.ownerId },
-        { leaseExpiresAt: new Date(Date.now() + PROCESSING_LEASE_MS) },
+        { leaseExpiresAt: new Date(this.now() + PROCESSING_LEASE_MS) },
       ).catch((error: unknown) => this.appLogger.error("document_export.lease_renewal.failed", {
         job_id: jobId,
         error: error instanceof Error ? error.message : String(error),
@@ -340,21 +456,31 @@ export class DocumentExportService {
         return;
       }
 
-      const { token, expiresAt } = createSignedDownloadToken(
-        this.dependencies.signingSecret,
-        jobId,
+      const completedAt = new Date(this.now());
+      const retentionExpiresAt = completedAt.getTime() + this.retentionMs;
+      // A signed URL must never outlive the archive it points at (#809).
+      const urlExpiresAt = boundExportUrlExpiry(
+        completedAt.getTime(),
         this.dependencies.urlTtlMinutes,
+        retentionExpiresAt,
       );
-      const completedAt = new Date();
+      const signedDownload = urlExpiresAt === null
+        ? null
+        : createSignedDownloadToken(
+            this.dependencies.signingSecret,
+            jobId,
+            (urlExpiresAt - completedAt.getTime()) / (60 * 1000),
+            completedAt,
+          );
       await this.jobs.update(
         { id: jobId, status: "running", leaseOwner: this.ownerId },
         {
           status: "completed",
           progress: 100,
-          downloadToken: token,
-          downloadTokenExpiresAt: new Date(expiresAt),
+          downloadToken: signedDownload?.token ?? null,
+          downloadTokenExpiresAt: signedDownload ? new Date(signedDownload.expiresAt) : null,
           completedAt,
-          expiresAt: new Date(Math.max(expiresAt, completedAt.getTime() + this.retentionMs)),
+          expiresAt: new Date(retentionExpiresAt),
           leaseOwner: null,
           leaseExpiresAt: null,
         },
@@ -367,8 +493,8 @@ export class DocumentExportService {
         {
           status: "failed",
           error: message,
-          completedAt: new Date(),
-          expiresAt: new Date(Date.now() + this.retentionMs),
+          completedAt: new Date(this.now()),
+          expiresAt: new Date(this.now() + this.retentionMs),
           leaseOwner: null,
           leaseExpiresAt: null,
         },

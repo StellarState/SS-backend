@@ -1,5 +1,6 @@
 import "reflect-metadata";
-import { DataSource, getMetadataArgsStorage } from "typeorm";
+import { DataSource } from "typeorm";
+import { initializeSQLiteDataSource } from "../helpers/sqlite-metadata";
 import { WebhookDispatcherService } from "../../src/services/webhook-dispatcher.service";
 import { WebhookSubscription } from "../../src/models/WebhookSubscription.model";
 import { WebhookDeliveryLog } from "../../src/models/WebhookDeliveryLog.model";
@@ -14,25 +15,6 @@ import { KycHistory } from "../../src/models/KycHistory.model";
 import { SecondaryListing } from "../../src/models/SecondaryListing.model";
 import { Watchlist } from "../../src/models/Watchlist.model";
 import type { AppLogger, LogMetadata } from "../../src/observability/logger";
-
-/**
- * SQLite does not support PostgreSQL-specific types (timestamptz, jsonb, enum);
- * we remap them to SQLite-compatible equivalents before DataSource init.
- */
-function patchEntityMetadataForSQLite(): void {
-  const columns = getMetadataArgsStorage().columns;
-  for (const col of columns) {
-    if (col.options.type === "timestamptz") {
-      col.options.type = "datetime" as any;
-    }
-    if (col.options.type === "jsonb") {
-      col.options.type = "simple-json" as any;
-    }
-    if (col.options.type === "enum") {
-      col.options.type = "varchar" as any;
-    }
-  }
-}
 
 interface LogEntry {
   level: "debug" | "info" | "warn" | "error";
@@ -83,9 +65,7 @@ describe("Webhook delivery idempotency (issue #224)", () => {
   const PAYLOAD = { invoiceId: "invoice-1", amount: "6000" };
 
   beforeAll(async () => {
-    patchEntityMetadataForSQLite();
-
-    dataSource = new DataSource({
+    dataSource = await initializeSQLiteDataSource({
       type: "sqlite",
       database: ":memory:",
       synchronize: true,
@@ -105,8 +85,6 @@ describe("Webhook delivery idempotency (issue #224)", () => {
         WebhookDeliveryLog,
       ],
     });
-
-    await dataSource.initialize();
 
     const userRepository = dataSource.getRepository(User);
     const user = (await userRepository.save(

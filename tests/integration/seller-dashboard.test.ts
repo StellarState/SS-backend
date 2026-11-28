@@ -1,6 +1,7 @@
 import "reflect-metadata";
 import request from "supertest";
-import { DataSource, getMetadataArgsStorage } from "typeorm";
+import { DataSource } from "typeorm";
+import { initializeSQLiteDataSource } from "../helpers/sqlite-metadata";
 import jwt from "jsonwebtoken";
 import { createApp } from "../../src/app";
 import { User } from "../../src/models/User.model";
@@ -19,21 +20,6 @@ import { createInvoiceService } from "../../src/services/invoice.service";
 import { createSellerService } from "../../src/services/seller.service";
 import type { AppConfig } from "../../src/config/env";
 
-function patchEntityMetadataForSQLite(): void {
-  const columns = getMetadataArgsStorage().columns;
-  for (const col of columns) {
-    if (col.options.type === "timestamptz") {
-      col.options.type = "datetime" as any;
-    }
-    if (col.options.type === "jsonb") {
-      col.options.type = "text" as any;
-    }
-    if (col.options.type === "enum") {
-      col.options.type = "varchar" as any;
-    }
-  }
-}
-
 describe("Integration: Seller Invoice Isolation", () => {
   let dataSource: DataSource;
   let app: ReturnType<typeof createApp>;
@@ -42,15 +28,13 @@ describe("Integration: Seller Invoice Isolation", () => {
 
   beforeAll(async () => {
     process.env.JWT_SECRET = "test-secret-at-least-32-characters-long";
-    patchEntityMetadataForSQLite();
-    dataSource = new DataSource({
+    dataSource = await initializeSQLiteDataSource({
       type: "sqlite",
       database: ":memory:",
       entities: [User, Invoice, Investment, AuthChallenge, Transaction, KYCVerification, Notification, KycHistory, SecondaryListing, Watchlist],
       synchronize: true,
       dropSchema: true,
-    });
-    await dataSource.initialize();
+    }, { jsonb: "text" });
 
     config = {
       port: 3000,
@@ -141,15 +125,13 @@ describe("Integration: Seller Dashboard Aggregates", () => {
   const JWT_SECRET = "test-jwt-secret-key-32-chars-minimum-length";
 
   beforeAll(async () => {
-    patchEntityMetadataForSQLite();
-    dataSource = new DataSource({
+    dataSource = await initializeSQLiteDataSource({
       type: "sqlite",
       database: ":memory:",
       entities: [User, Invoice, Investment, AuthChallenge, Transaction, KYCVerification, Notification, KycHistory, SecondaryListing, Watchlist],
       synchronize: true,
       dropSchema: true,
-    });
-    await dataSource.initialize();
+    }, { jsonb: "text" });
 
     const config = {
       jwt: { secret: JWT_SECRET, expiresIn: "1h" },

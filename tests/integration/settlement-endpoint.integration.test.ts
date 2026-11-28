@@ -1,6 +1,7 @@
 import "reflect-metadata";
 import request from "supertest";
-import { DataSource, getMetadataArgsStorage } from "typeorm";
+import { DataSource } from "typeorm";
+import { initializeSQLiteDataSource } from "../helpers/sqlite-metadata";
 import { Keypair } from "@stellar/stellar-sdk";
 import crypto from "crypto";
 import { createApp } from "../../src/app";
@@ -27,21 +28,6 @@ import { InvoiceStatusHistory } from "../../src/models/InvoiceStatusHistory.mode
 import { InvoiceStatus, InvestmentStatus, KYCStatus, UserType } from "../../src/types/enums";
 import type { AppConfig } from "../../src/config/env";
 import { logger } from "../../src/observability/logger";
-
-function patchEntityMetadataForSQLite(): void {
-  const columns = getMetadataArgsStorage().columns;
-  for (const col of columns) {
-    if (col.options.type === "timestamptz") {
-      col.options.type = "datetime" as any;
-    }
-    if (col.options.type === "jsonb") {
-      col.options.type = "text" as any;
-    }
-    if (col.options.type === "enum") {
-      col.options.type = "varchar" as any;
-    }
-  }
-}
 
 describe("Settlement Endpoint Integration", () => {
   let dataSource: DataSource;
@@ -96,9 +82,7 @@ describe("Settlement Endpoint Integration", () => {
       },
     } as unknown as AppConfig;
 
-    patchEntityMetadataForSQLite();
-
-    dataSource = new DataSource({
+    dataSource = await initializeSQLiteDataSource({
       type: "sqlite",
       database: ":memory:",
       dropSchema: true,
@@ -119,8 +103,7 @@ describe("Settlement Endpoint Integration", () => {
       ],
       synchronize: true,
       logging: false,
-    });
-    await dataSource.initialize();
+    }, { jsonb: "text" });
 
     const authService = createAuthService(dataSource, config);
     

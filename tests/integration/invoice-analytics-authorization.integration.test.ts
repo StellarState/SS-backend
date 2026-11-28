@@ -1,27 +1,13 @@
 import "reflect-metadata";
 import request from "supertest";
-import { DataSource, getMetadataArgsStorage } from "typeorm";
+import { DataSource } from "typeorm";
+import { initializeSQLiteDataSource } from "../helpers/sqlite-metadata";
 import { createApp } from "../../src/app";
 import { User } from "../../src/models/User.model";
 import { Invoice } from "../../src/models/Invoice.model";
 import { Investment } from "../../src/models/Investment.model";
 import { InvoiceStatus } from "../../src/types/enums";
 import type { AppConfig } from "../../src/config/env";
-
-function patchEntityMetadataForSQLite(): void {
-  const columns = getMetadataArgsStorage().columns;
-  for (const col of columns) {
-    if (col.options.type === "timestamptz") {
-      col.options.type = "datetime" as any;
-    }
-    if (col.options.type === "jsonb") {
-      col.options.type = "text" as any;
-    }
-    if (col.options.type === "enum") {
-      col.options.type = "varchar" as any;
-    }
-  }
-}
 
 import { createAuthService } from "../../src/services/auth.service";
 import { createInvoiceService } from "../../src/services/invoice.service";
@@ -41,8 +27,7 @@ describe("Integration: Invoice Token Holders Authorization", () => {
 
   beforeAll(async () => {
     process.env.JWT_SECRET = "test-secret";
-    patchEntityMetadataForSQLite();
-    dataSource = new DataSource({
+    dataSource = await initializeSQLiteDataSource({
       type: "sqlite",
       database: ":memory:",
       entities: [
@@ -59,8 +44,7 @@ describe("Integration: Invoice Token Holders Authorization", () => {
       ],
       synchronize: true,
       dropSchema: true,
-    });
-    await dataSource.initialize();
+    }, { jsonb: "text" });
 
     config = {
       port: 3000,

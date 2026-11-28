@@ -86,7 +86,10 @@ export class BulkPayoutWizard {
   }
 
   aggregatePayouts(payouts: AffiliatePayout[]): AggregatedPayout {
-    const addressMap = new Map<string, { count: number; totalAmount: bigint }>();
+    const addressMap = new Map<
+      string,
+      { recipient: PayoutRecipient; count: number; totalAmount: bigint }
+    >();
     const recipients: PayoutRecipient[] = [];
 
     for (const payout of payouts) {
@@ -94,15 +97,20 @@ export class BulkPayoutWizard {
       if (existing) {
         existing.count += 1;
         existing.totalAmount += payout.amountStroops;
+        existing.recipient.amountStroops = existing.totalAmount;
       } else {
-        addressMap.set(payout.address, { count: 1, totalAmount: payout.amountStroops });
-        recipients.push({ address: payout.address, amountStroops: payout.amountStroops });
+        const recipient: PayoutRecipient = {
+          address: payout.address,
+          amountStroops: payout.amountStroops,
+        };
+        addressMap.set(payout.address, { recipient, count: 1, totalAmount: payout.amountStroops });
+        recipients.push(recipient);
       }
     }
 
     const duplicates = Array.from(addressMap.entries())
       .filter(([, value]) => value.count > 1)
-      .map(([address, value]) => ({ address, ...value }));
+      .map(([address, value]) => ({ address, count: value.count, totalAmount: value.totalAmount }));
 
     const totalAmount = recipients.reduce((sum, r) => sum + BigInt(r.amountStroops), 0n);
 
@@ -133,7 +141,7 @@ export class BulkPayoutWizard {
     if (!balanceCheck.sufficient) {
       throw new ServiceError(
         "insufficient_escrow_balance",
-        `Escrow balance ${balanceCheck.escrowBalance} is insufficient for required ${balanceCheck.requiredAmount}`,
+        `insufficient_escrow_balance: escrow balance ${balanceCheck.escrowBalance} is insufficient for required ${balanceCheck.requiredAmount}`,
         422,
         { shortfall: balanceCheck.shortfall?.toString() }
       );

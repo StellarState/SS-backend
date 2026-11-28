@@ -55,6 +55,12 @@ export class DocumentExportJob {
   @Column({ name: "expires_at", type: "timestamptz", nullable: true })
   expiresAt!: Date | null;
 
+  @Column({ name: "deleted_at", type: "timestamptz", nullable: true })
+  deletedAt!: Date | null;
+
+  @Column({ name: "cleanup_error", type: "text", nullable: true })
+  cleanupError!: string | null;
+
   @CreateDateColumn({ name: "created_at", type: "timestamptz" })
   createdAt!: Date;
 

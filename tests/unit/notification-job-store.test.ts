@@ -1,38 +1,25 @@
 import "reflect-metadata";
-import { DataSource, getMetadataArgsStorage } from "typeorm";
+import { DataSource } from "typeorm";
+import { initializeSQLiteDataSource } from "../helpers/sqlite-metadata";
 import { NotificationDispatchJob } from "../../src/models/NotificationDispatchJob.model";
+import { NotificationDeadLetterAudit } from "../../src/models/NotificationDeadLetterAudit.model";
 import { TypeOrmNotificationJobStore } from "../../src/services/notification-job-store.service";
 
 const invoice = { id: "inv-1", sellerId: "seller-1", invoiceNumber: "INV-001" };
 const event = { kind: "funded" as const, invoice };
-
-/** Mirrors the repo's SQLite test convention for Postgres-only column types. */
-function patchEntityMetadataForSQLite(): void {
-  const columns = getMetadataArgsStorage().columns;
-  for (const col of columns) {
-    if (col.options.type === "timestamptz") {
-      col.options.type = "datetime" as typeof col.options.type;
-    }
-    if (col.options.type === "jsonb") {
-      col.options.type = "text" as typeof col.options.type;
-    }
-  }
-}
 
 describe("TypeOrmNotificationJobStore", () => {
   let dataSource: DataSource;
   let store: TypeOrmNotificationJobStore;
 
   beforeEach(async () => {
-    patchEntityMetadataForSQLite();
-    dataSource = new DataSource({
+    dataSource = await initializeSQLiteDataSource({
       type: "sqlite",
       database: ":memory:",
-      entities: [NotificationDispatchJob],
+      entities: [NotificationDispatchJob, NotificationDeadLetterAudit],
       synchronize: true,
       logging: false,
-    });
-    await dataSource.initialize();
+    }, { jsonb: "text" });
     store = new TypeOrmNotificationJobStore(dataSource);
   });
 
@@ -102,7 +89,7 @@ describe("TypeOrmNotificationJobStore", () => {
       expect.objectContaining({ eventId: "evt", attempts: 2, error: "db unavailable" }),
     ]);
 
-    expect(await replacement.replayDeadLetter("evt", retryAt)).toBe(true);
+    expect(await replacement.replayDeadLetter("evt", "system", retryAt)).toBe(true);
     expect(await replacement.countActive()).toBe(1);
     expect(await replacement.listDeadLetters()).toHaveLength(0);
   });
