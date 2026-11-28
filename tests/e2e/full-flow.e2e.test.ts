@@ -27,7 +27,8 @@
 
 import "reflect-metadata";
 import request from "supertest";
-import { DataSource, getMetadataArgsStorage } from "typeorm";
+import { DataSource } from "typeorm";
+import { initializeSQLiteDataSource } from "../helpers/sqlite-metadata";
 import { Keypair } from "@stellar/stellar-sdk";
 import { createApp } from "../../src/app";
 import { createAuthService } from "../../src/services/auth.service";
@@ -72,26 +73,6 @@ const mockIPFSService = {
     };
   },
 } as unknown as IPFSService;
-
-/**
- * Patch entity metadata for SQLite compatibility.
- * SQLite does not support PostgreSQL-specific types (timestamptz, jsonb, enum).
- * We remap them to SQLite-compatible equivalents before DataSource init.
- */
-function patchEntityMetadataForSQLite(): void {
-  const columns = getMetadataArgsStorage().columns;
-  for (const col of columns) {
-    if (col.options.type === "timestamptz" || col.options.type === "timestamp") {
-      col.options.type = "datetime" as any;
-    }
-    if (col.options.type === "jsonb") {
-      col.options.type = "text" as any;
-    }
-    if (col.options.type === "enum") {
-      col.options.type = "varchar" as any;
-    }
-  }
-}
 
 /**
  * Normalize a decimal value that may come back from SQLite as a number
@@ -373,9 +354,7 @@ describe("E2E: Complete Invoice Financing Flow", () => {
       } as unknown as AppConfig;
 
       // Initialize test database (SQLite in-memory)
-      patchEntityMetadataForSQLite();
-
-      dataSource = new DataSource({
+      dataSource = await initializeSQLiteDataSource({
         type: "sqlite",
         database: ":memory:",
         synchronize: true,
@@ -392,15 +371,13 @@ describe("E2E: Complete Invoice Financing Flow", () => {
           SecondaryListing,
           Watchlist,
           InvoiceStatusHistory,
-            InvestorReturn,
-            SettlementRemainder,
-            InvestorAcknowledgement,
-            // auth/verify records a session per issued token (#919).
-            WalletSession,
-          ],
-      });
-
-      await dataSource.initialize();
+          InvestorReturn,
+          SettlementRemainder,
+          InvestorAcknowledgement,
+          // auth/verify records a session per issued token (#919).
+          WalletSession,
+        ],
+      }, { jsonb: "text" });
 
       const dbInitMs = Date.now() - setupStartedAt;
       logger.info("E2E test database initialized successfully", { durationMs: dbInitMs });

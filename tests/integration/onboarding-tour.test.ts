@@ -1,7 +1,8 @@
 import "reflect-metadata";
 import request from "supertest";
 import jwt from "jsonwebtoken";
-import { DataSource, getMetadataArgsStorage } from "typeorm";
+import { DataSource } from "typeorm";
+import { initializeSQLiteDataSource } from "../helpers/sqlite-metadata";
 
 import { createApp } from "../../src/app";
 import { OnboardingProgress } from "../../src/models/OnboardingProgress.model";
@@ -25,24 +26,13 @@ const JWT_SECRET = "test-jwt-secret-key-32-chars-minimum-length";
 const WALLET = "GWALLETA0000000000000000000000000000000000000000000000000000AA";
 const OTHER_WALLET = "GWALLETB00000000000000000000000000000000000000000000000000000AA";
 
-function patchEntityMetadataForSQLite(): void {
-  for (const column of getMetadataArgsStorage().columns) {
-    if (column.options.type === "timestamptz" || column.options.type === "timestamp")
-      column.options.type = "datetime" as never;
-    if (column.options.type === "jsonb") column.options.type = "text" as never;
-    if (column.options.type === "enum") column.options.type = "varchar" as never;
-  }
-}
-
 describe("Integration: Onboarding tour completion (issue #540)", () => {
   let dataSource: DataSource;
   let app: ReturnType<typeof createApp>;
 
   beforeAll(async () => {
     process.env.JWT_SECRET = JWT_SECRET;
-    patchEntityMetadataForSQLite();
-
-    dataSource = new DataSource({
+    dataSource = await initializeSQLiteDataSource({
       type: "sqlite",
       database: ":memory:",
       entities: [
@@ -60,8 +50,7 @@ describe("Integration: Onboarding tour completion (issue #540)", () => {
       ],
       synchronize: true,
       dropSchema: true,
-    });
-    await dataSource.initialize();
+    }, { jsonb: "text" });
 
     const config = {
       jwt: { secret: JWT_SECRET, expiresIn: "1h" },

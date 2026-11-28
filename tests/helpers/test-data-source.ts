@@ -1,4 +1,5 @@
-import { DataSource, getMetadataArgsStorage } from "typeorm";
+import { DataSource } from "typeorm";
+import { initializeSQLiteDataSource } from "./sqlite-metadata";
 import { FeeSchedule, FeeScheduleHistory } from "../../src/models/FeeSchedule.model";
 import { IssuerReputation, IssuerReputationHistory } from "../../src/models/IssuerReputation.model";
 import { InvestorRiskProfile } from "../../src/models/InvestorRiskProfile.model";
@@ -13,27 +14,6 @@ import { Notification } from "../../src/models/Notification.model";
 import { SecondaryListing } from "../../src/models/SecondaryListing.model";
 import { Watchlist } from "../../src/models/Watchlist.model";
 
-// Postgres-only column types (enum/jsonb/timestamptz) aren't in sqlite's
-// supported type list, so TypeORM's metadata validator rejects them outright.
-// Other integration tests in this repo work around it the same way: rewrite
-// the column metadata in place before the sqlite DataSource is built.
-function patchEntityMetadataForSQLite(): void {
-  const columns = getMetadataArgsStorage().columns;
-  for (const col of columns) {
-    if (col.options.type === "timestamptz" || col.options.type === "timestamp") {
-      col.options.type = "datetime" as unknown as typeof col.options.type;
-    }
-    if (col.options.type === "jsonb") {
-      // SQLite has no native jsonb; simple-json preserves object round-trips
-      // where a plain text column would return the serialized string.
-      col.options.type = "simple-json" as unknown as typeof col.options.type;
-    }
-    if (col.options.type === "enum") {
-      col.options.type = "varchar" as unknown as typeof col.options.type;
-    }
-  }
-}
-
 /**
  * @param extraEntities Entities a test needs beyond the shared set, e.g. the
  *   indexer tables. Appended, so existing callers are unaffected.
@@ -41,8 +21,9 @@ function patchEntityMetadataForSQLite(): void {
 export async function createTestDataSource(
   extraEntities: Array<new (...args: never[]) => unknown> = []
 ): Promise<DataSource> {
-  patchEntityMetadataForSQLite();
-  const dataSource = new DataSource({
+  // SQLite has no native jsonb; `simple-json` preserves object round-trips
+  // where a plain text column would return the serialized string.
+  return initializeSQLiteDataSource({
     type: "sqlite",
     database: ":memory:",
     entities: [
@@ -70,7 +51,4 @@ export async function createTestDataSource(
     synchronize: false,
     logging: false,
   });
-
-  await dataSource.initialize();
-  return dataSource;
 }

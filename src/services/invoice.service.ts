@@ -1,4 +1,4 @@
-import { DataSource, In, LessThan, IsNull, type SelectQueryBuilder, type FindOptionsWhere } from "typeorm";
+import { DataSource, In, LessThan, IsNull, type EntityManager, type SelectQueryBuilder, type FindOptionsWhere } from "typeorm";
 import Decimal from "decimal.js";
 import { Invoice } from "../models/Invoice.model";
 import { Investment } from "../models/Investment.model";
@@ -235,6 +235,28 @@ export class InvoiceService {
   }
 
   /**
+   * Load an invoice for update without locking joined rows.
+   *
+   * A bare PostgreSQL `FOR UPDATE` also tries to lock tables on the nullable
+   * side of a relation join (e.g. `seller`), which PostgreSQL rejects. Listing
+   * the invoices table in `lock.tables` emits `FOR UPDATE OF "Invoice"` instead.
+   */
+  private findInvoiceForUpdate(
+    manager: EntityManager,
+    invoiceId: string,
+    relations: string[] = []
+  ): Promise<Invoice | null> {
+    const lock = this.invoiceWriteLock();
+    return manager.findOne(Invoice, {
+      where: { id: invoiceId },
+      relations,
+      lock: lock
+        ? { ...lock, tables: ["invoices"] }
+        : undefined,
+    });
+  }
+
+  /**
    * Calculate net_amount from amount and discount_rate
    * Formula: net_amount = amount - (amount * discount_rate / 100)
    *
@@ -284,7 +306,7 @@ export class InvoiceService {
     let transition: InvoiceTransition;
     if (this.dataSource) {
       transition = await this.dataSource.transaction(async (manager) => {
-        const current = await manager.findOne(Invoice, { where: { id: invoice.id }, lock: this.invoiceWriteLock() });
+        const current = await this.findInvoiceForUpdate(manager, invoice.id);
         if (!current) throw new ServiceError("invoice_not_found", "Invoice not found", 404);
         return this.stateMachine.transition(entityManagerTransitionStore(manager), current, to, options);
       });
@@ -656,10 +678,7 @@ export class InvoiceService {
           503
         );
       const transition = await this.dataSource.transaction(async (manager) => {
-        const invoice = await manager.findOne(Invoice, {
-          where: { id: invoiceId },
-          lock: this.invoiceWriteLock(),
-        });
+        const invoice = await this.findInvoiceForUpdate(manager, invoiceId);
         if (!invoice) throw new ServiceError("invoice_not_found", "Invoice not found", 404);
         assertDraftDeletion(invoice, { role: "seller", id: sellerId });
         // Include historical and soft-deleted activity: linkage is permanent.
@@ -711,11 +730,7 @@ export class InvoiceService {
     try {
       if (this.dataSource) {
         const transition = await this.dataSource.transaction(async (manager) => {
-          const invoice = await manager.findOne(Invoice, {
-            where: { id: input.invoiceId },
-            relations: ["seller"],
-            lock: this.invoiceWriteLock(),
-          });
+          const invoice = await this.findInvoiceForUpdate(manager, input.invoiceId, ["seller"]);
           if (!invoice) throw new ServiceError("invoice_not_found", "Invoice not found", 404);
           if (invoice.sellerId !== input.sellerId) {
             throw new ServiceError(
@@ -1107,7 +1122,7 @@ export class InvoiceService {
       const store = entityManagerTransitionStore(manager);
       const results: InvoiceTransition[] = [];
       for (const { invoice, sellerWallet } of publishable.sort((a, b) => a.invoice.id.localeCompare(b.invoice.id))) {
-        const current = await manager.findOne(Invoice, { where: { id: invoice.id }, lock: this.invoiceWriteLock() });
+        const current = await this.findInvoiceForUpdate(manager, invoice.id);
         if (!current) throw new ServiceError("invoice_not_found", "Invoice not found", 404);
         results.push(
           await this.stateMachine.transition(store, current, InvoiceStatus.PUBLISHED, {

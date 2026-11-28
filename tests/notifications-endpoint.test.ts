@@ -1,7 +1,8 @@
 import request from "supertest";
 import express from "express";
 import jwt from "jsonwebtoken";
-import { DataSource, getMetadataArgsStorage } from "typeorm";
+import { DataSource } from "typeorm";
+import { initializeSQLiteDataSource } from "./helpers/sqlite-metadata";
 import { User } from "../src/models/User.model";
 import { Invoice } from "../src/models/Invoice.model";
 import { Investment } from "../src/models/Investment.model";
@@ -21,21 +22,6 @@ import { createNotificationRouter } from "../src/routes/notification.routes";
 import { createErrorMiddleware } from "../src/middleware/error.middleware";
 import { logger } from "../src/observability/logger";
 
-function patchEntityMetadataForSQLite(): void {
-  const columns = getMetadataArgsStorage().columns;
-  for (const col of columns) {
-    if (col.options.type === "timestamptz" || col.options.type === "timestamp") {
-      col.options.type = "datetime" as any;
-    }
-    if (col.options.type === "jsonb") {
-      col.options.type = "text" as any;
-    }
-    if (col.options.type === "enum") {
-      col.options.type = "varchar" as any;
-    }
-  }
-}
-
 describe("Notifications Endpoint (Issue #458)", () => {
   let app: express.Application;
   let dataSource: DataSource;
@@ -50,9 +36,7 @@ describe("Notifications Endpoint (Issue #458)", () => {
 
   beforeAll(async () => {
     process.env.JWT_SECRET = "test-secret";
-    patchEntityMetadataForSQLite();
-
-    dataSource = new DataSource({
+    dataSource = await initializeSQLiteDataSource({
       type: "sqlite",
       database: ":memory:",
       dropSchema: true,
@@ -73,8 +57,7 @@ describe("Notifications Endpoint (Issue #458)", () => {
       ],
       synchronize: true,
       logging: false,
-    });
-    await dataSource.initialize();
+    }, { jsonb: "text" });
 
     notificationService = createNotificationService(dataSource);
 

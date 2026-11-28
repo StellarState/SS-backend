@@ -1,6 +1,7 @@
 import "reflect-metadata";
 import crypto from "crypto";
-import { DataSource, getMetadataArgsStorage } from "typeorm";
+import { DataSource } from "typeorm";
+import { initializeSQLiteDataSource } from "../helpers/sqlite-metadata";
 import {
   MarketplaceService,
   createMarketplaceService,
@@ -18,25 +19,6 @@ import { AuthChallenge } from "../../src/models/AuthChallenge.model";
 import { InvoiceStatus, UserType, KYCStatus } from "../../src/types/enums";
 
 /**
- * SQLite does not support PostgreSQL-specific types (timestamptz, jsonb, enum);
- * we remap them to SQLite-compatible equivalents before DataSource init.
- */
-function patchEntityMetadataForSQLite(): void {
-  const columns = getMetadataArgsStorage().columns;
-  for (const col of columns) {
-    if (col.options.type === "timestamptz" || col.options.type === "timestamp") {
-      col.options.type = "datetime" as any;
-    }
-    if (col.options.type === "jsonb") {
-      col.options.type = "simple-json" as any;
-    }
-    if (col.options.type === "enum") {
-      col.options.type = "varchar" as any;
-    }
-  }
-}
-
-/**
  * Integration coverage for issue #226: marketplace cursor pagination must be
  * deterministic when listings share the primary sort value (equal face values
  * or equal creation timestamps). Pages must follow the documented primary sort
@@ -50,9 +32,7 @@ describe("Marketplace cursor pagination stable ordering (issue #226)", () => {
   let seededInvoiceIds: string[];
 
   beforeAll(async () => {
-    patchEntityMetadataForSQLite();
-
-    dataSource = new DataSource({
+    dataSource = await initializeSQLiteDataSource({
       type: "sqlite",
       database: ":memory:",
       synchronize: true,
@@ -70,8 +50,6 @@ describe("Marketplace cursor pagination stable ordering (issue #226)", () => {
         AuthChallenge,
       ],
     });
-
-    await dataSource.initialize();
 
     const userRepository = dataSource.getRepository(User);
     const seller = (await userRepository.save(
