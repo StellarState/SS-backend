@@ -81,7 +81,7 @@ const mockIPFSService = {
 function patchEntityMetadataForSQLite(): void {
   const columns = getMetadataArgsStorage().columns;
   for (const col of columns) {
-    if (col.options.type === "timestamptz") {
+    if (col.options.type === "timestamptz" || col.options.type === "timestamp") {
       col.options.type = "datetime" as any;
     }
     if (col.options.type === "jsonb") {

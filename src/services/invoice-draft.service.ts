@@ -1,4 +1,4 @@
-import { DataSource, OptimisticLockVersionMismatchError } from "typeorm";
+import { DataSource, type QueryDeepPartialEntity } from "typeorm";
 import { InvoiceDraft } from "../models/InvoiceDraft.model";
 import { ServiceError } from "../utils/service-error";
 import { logger } from "../observability/logger";
@@ -129,43 +129,53 @@ export class InvoiceDraftService {
         );
       }
 
-      // Update existing draft atomically
-      existingDraft.draftData = cleanedDraftData;
-      existingDraft.lastSavedAt = new Date();
-      existingDraft.expiresAt = expiresAt;
+      // Update existing draft with an explicit compare-and-swap on the
+      // revision. Relying on entity-level optimistic locking alone lets two
+      // concurrent readers both observe the same revision and both save.
+      const now = new Date();
+      const result = await repository
+        .createQueryBuilder()
+        .update(InvoiceDraft)
+        .set({
+          draftData: cleanedDraftData,
+          lastSavedAt: now,
+          expiresAt,
+          revision: parsedExpectedRevision + 1,
+        } as QueryDeepPartialEntity<InvoiceDraft>)
+        .where("id = :id AND revision = :revision", {
+          id,
+          revision: parsedExpectedRevision,
+        })
+        .execute();
 
-      try {
-        const saved = await repository.save(existingDraft);
-
-        logger.info("invoice_draft.updated", {
-          draftId: id,
-          sellerId,
-          sellerWallet,
-          revision: saved.revision,
-        });
-
-        return saved;
-      } catch (err: unknown) {
-        const errorObj = err as { name?: string; code?: string; message?: string } | undefined;
-        if (
-          err instanceof OptimisticLockVersionMismatchError ||
-          errorObj?.name === "OptimisticLockVersionMismatchError"
-        ) {
-          const current = await repository.findOne({ where: { id } });
-          throw new ServiceError(
-            "REVISION_CONFLICT",
-            `Draft revision conflict: expected revision ${parsedExpectedRevision}, but current revision is ${current?.revision}`,
-            409,
-            {
-              currentRevision: current?.revision,
-              revision: current?.revision,
-              lastSavedAt: current?.lastSavedAt,
-              draftData: current?.draftData,
-            }
-          );
-        }
-        throw err;
+      if (result.affected !== 1) {
+        const current = await repository.findOne({ where: { id } });
+        throw new ServiceError(
+          "REVISION_CONFLICT",
+          `Draft revision conflict: expected revision ${parsedExpectedRevision}, but current revision is ${current?.revision}`,
+          409,
+          {
+            currentRevision: current?.revision,
+            revision: current?.revision,
+            lastSavedAt: current?.lastSavedAt,
+            draftData: current?.draftData,
+          }
+        );
       }
+
+      const saved = await repository.findOne({ where: { id } });
+      if (!saved) {
+        throw new ServiceError("DRAFT_NOT_FOUND", "Draft not found", 404);
+      }
+
+      logger.info("invoice_draft.updated", {
+        draftId: id,
+        sellerId,
+        sellerWallet,
+        revision: saved.revision,
+      });
+
+      return saved;
     } else {
       // Create new draft with revision 1
       const draft = repository.create({

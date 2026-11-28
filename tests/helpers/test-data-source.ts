@@ -20,11 +20,13 @@ import { Watchlist } from "../../src/models/Watchlist.model";
 function patchEntityMetadataForSQLite(): void {
   const columns = getMetadataArgsStorage().columns;
   for (const col of columns) {
-    if (col.options.type === "timestamptz") {
+    if (col.options.type === "timestamptz" || col.options.type === "timestamp") {
       col.options.type = "datetime" as unknown as typeof col.options.type;
     }
     if (col.options.type === "jsonb") {
-      col.options.type = "text" as unknown as typeof col.options.type;
+      // SQLite has no native jsonb; simple-json preserves object round-trips
+      // where a plain text column would return the serialized string.
+      col.options.type = "simple-json" as unknown as typeof col.options.type;
     }
     if (col.options.type === "enum") {
       col.options.type = "varchar" as unknown as typeof col.options.type;

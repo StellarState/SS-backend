@@ -166,7 +166,10 @@ export class PaymentDistributorContractService {
       (sum, recipient) => sum + BigInt(recipient.amountStroops),
       0n
     );
-    const fee = (input.totalAmountStroops * BigInt(input.feeBps)) / 10_000n;
+    // The fee is charged on the amount actually paid out, not on the
+    // total that already includes the fee. Computing it from the inclusive
+    // total would charge fee-on-fee and can make a valid batch look overdrawn.
+    const fee = (recipientTotal * BigInt(input.feeBps)) / 10_000n;
     if (recipientTotal + fee > input.totalAmountStroops) {
       throw new Error("Payout recipients and protocol fee exceed the settlement total.");
     }

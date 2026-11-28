@@ -27,7 +27,7 @@ describe("BulkPayoutWizard (Enterprise Bulk Affiliate Payout Distribution)", () 
     chunkSize: number;
   }> = {}) {
     const rpc = createMockRpc(overrides.rpcStatus ?? "SUCCESS");
-    return new BulkPayoutWizard({
+    const wizard = new BulkPayoutWizard({
       contractId,
       rpcUrl,
       networkPassphrase,
@@ -37,6 +37,17 @@ describe("BulkPayoutWizard (Enterprise Bulk Affiliate Payout Distribution)", () 
       chunkSize: overrides.chunkSize ?? 50,
       logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() } as any,
     });
+    // Use the mocked RPC instead of the real testnet endpoint; otherwise
+    // balance checks and batch confirmations can hit the network and time out.
+    (wizard as any).distributor = new PaymentDistributorContractService({
+      contractId,
+      server: rpc,
+      networkPassphrase,
+      platformSecretKey,
+      confirmationPollMs: 0,
+      confirmationAttempts: 1,
+    });
+    return wizard;
   }
 
   function createAffiliatePayouts(count: number, baseAmount = 1000n): AffiliatePayout[] {

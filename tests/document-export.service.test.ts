@@ -146,7 +146,10 @@ describe("DocumentExportService", () => {
       createdAt: new Date(),
     });
     rows.push(job);
-    await fs.symlink("/dev/full", job.zipPath!);
+    // Simulate a partial archive left behind by an earlier attempt. The
+    // writeZip spy below supplies the failure, so a regular file is enough
+    // and keeps the test portable (a /dev/full symlink is Unix-only).
+    await fs.writeFile(job.zipPath!, "partial archive");
 
     const servicePrototype = Object.getPrototypeOf(service) as {
       writeZip: (...args: unknown[]) => Promise<void>;

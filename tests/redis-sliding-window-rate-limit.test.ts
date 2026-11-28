@@ -108,7 +108,7 @@ describe("Redis Sliding Window Rate Limiting", () => {
 
     it("should reset counters correctly after window expires", async () => {
       const key = "test:sliding:window:expiry";
-      const windowMs = 150;
+      const windowMs = 2_000;
       const maxRequests = 2;
 
       const r1 = await checkSlidingWindow({ key, windowMs, maxRequests, client: redisMock });
@@ -119,8 +119,8 @@ describe("Redis Sliding Window Rate Limiting", () => {
       const r3 = await checkSlidingWindow({ key, windowMs, maxRequests, client: redisMock });
       expect(r3.allowed).toBe(false);
 
-      // Wait for window to expire
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      // Wait for window to expire with margin for a loaded test runner.
+      await new Promise((resolve) => setTimeout(resolve, 2_100));
 
       // After expiry, quota should be completely reset
       const r4 = await checkSlidingWindow({ key, windowMs, maxRequests, client: redisMock });

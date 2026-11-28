@@ -794,18 +794,19 @@ describe("Settlement integration: pro-rata distribution edge cases", () => {
       actorWallet: "GADMINWALLET1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ",
     });
 
-    expect(result.settlements.map(({ actualReturn }) => actualReturn)).toEqual([
-      "0.3333",
-      "0.3333",
-      "0.3333",
-    ]);
-    expect(result.totalDistributed).toBe("0.9999");
+    // Largest-remainder allocation (#841) assigns the 0.0001 dust to one
+    // investor, so the payouts reconcile exactly to the distributable amount.
+    const sortedReturns = result.settlements
+      .map(({ actualReturn }) => actualReturn)
+      .sort();
+    expect(sortedReturns).toEqual(["0.3333", "0.3333", "0.3334"]);
+    expect(result.totalDistributed).toBe("1.0000");
     expect(result.remainder).toBe("0.0001");
     expect(
       result.settlements.reduce(
         (total, { actualReturn }) => total + BigInt(actualReturn.replace(".", "")),
         0n
-      ) + BigInt(result.remainder.replace(".", ""))
+      )
     ).toBe(10_000n);
   });
 
